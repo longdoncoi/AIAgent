@@ -1,0 +1,99 @@
+# ==============================================================================
+# Istio Service Mesh Zero-Trust Security & mTLS Policies
+# ==============================================================================
+
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default-strict-mtls
+  namespace: agentic-platform
+spec:
+  # Enforce STRICT mutual TLS for all service-to-service communications
+  mtls:
+    mode: STRICT
+---
+# ------------------------------------------------------------------------------
+# 1. AuthorizationPolicy: Ingress to L1 API
+# ------------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-ingress-to-api
+  namespace: agentic-platform
+spec:
+  selector:
+    matchLabels:
+      app: agentic-api
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]
+      to:
+        - operation:
+            ports: ["8000"]
+---
+# ------------------------------------------------------------------------------
+# 2. AuthorizationPolicy: L1 API to L3 Sub-Agents (A2A Protocol)
+# ------------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-api-to-subagents
+  namespace: agentic-platform
+spec:
+  selector:
+    matchLabels:
+      tier: l3-agent
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/agentic-platform/sa/agentic-api-sa"]
+      to:
+        - operation:
+            ports: ["9100", "9101", "9102"]
+            methods: ["POST", "GET"]
+---
+# ------------------------------------------------------------------------------
+# 3. AuthorizationPolicy: L3 Agents to L4 MCP Tools
+# ------------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-agents-to-mcp-tools
+  namespace: agentic-platform
+spec:
+  selector:
+    matchLabels:
+      tier: l4-tools
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/agentic-platform/sa/agentic-coding-agent-sa"
+              - "cluster.local/ns/agentic-platform/sa/agentic-chat-agent-sa"
+              - "cluster.local/ns/agentic-platform/sa/agentic-rag-agent-sa"
+      to:
+        - operation:
+            ports: ["9001", "9002", "9003"]
+            methods: ["POST", "GET"]
+---
+# ------------------------------------------------------------------------------
+# 4. AuthorizationPolicy: Strict Deny for Sandbox Pods accessing Cluster Network
+# ------------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-sandbox-egress-to-internal
+  namespace: agentic-platform
+spec:
+  selector:
+    matchLabels:
+      tier: sandbox-gvisor
+  action: DENY
+  rules:
+    - to:
+        - operation:
+            ports: ["5432", "6379", "6333", "7233", "8000", "9100", "9101", "9102"]

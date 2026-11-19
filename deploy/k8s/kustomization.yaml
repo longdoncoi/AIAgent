@@ -1,0 +1,18 @@
+# ==============================================================================
+# Kustomize Base Definition for Agentic Multi-Agent Platform
+# ==============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - deployment.yaml
+  - configmap-secrets.yaml
+  - external-secret.yaml
+  - network-policy.yaml
+  - ingress.yaml
+  - pgbouncer.yaml
+  - istio-security.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: agentic-platform
+  app.kubernetes.io/managed-by: argocd

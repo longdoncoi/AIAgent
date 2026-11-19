@@ -1,0 +1,95 @@
+# ==============================================================================
+# Kubernetes NetworkPolicies: Defense-in-Depth East-West Isolation
+# ==============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: default
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Allow API to receive traffic from Ingress and communicate with Sub-Agents, Postgres, Qdrant
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-agentic-api
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: agentic-api
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 8000
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              tier: l3-agent
+        - podSelector:
+            matchLabels:
+              tier: l4-tools
+      ports:
+        - protocol: TCP
+          port: 9100
+        - protocol: TCP
+          port: 9101
+        - protocol: TCP
+          port: 9102
+        - protocol: TCP
+          port: 9001
+    - ports:
+        - protocol: TCP
+          port: 5432 # Postgres
+        - protocol: TCP
+          port: 6379 # Redis
+        - protocol: TCP
+          port: 6333 # Qdrant
+        - protocol: TCP
+          port: 4000 # LiteLLM
+        - protocol: TCP
+          port: 4317 # OTel Collector
+        - protocol: UDP
+          port: 53   # DNS
+---
+# Allow Sub-Agents to only accept calls from API and reach Model Gateway & MCP
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-subagents
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      tier: l3-agent
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: agentic-api
+      ports:
+        - protocol: TCP
+          port: 9100
+        - protocol: TCP
+          port: 9101
+        - protocol: TCP
+          port: 9102
+  egress:
+    - ports:
+        - protocol: TCP
+          port: 4000 # LiteLLM
+        - protocol: TCP
+          port: 9001 # MCP Code Exec
+        - protocol: TCP
+          port: 9002 # MCP Repo
+        - protocol: TCP
+          port: 9003 # MCP Web Search
+        - protocol: TCP
+          port: 4317 # OTel Collector
+        - protocol: UDP
+          port: 53   # DNS

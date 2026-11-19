@@ -1,0 +1,46 @@
+# ---------------------------------------------------------
+# Stage 1: Build & Dependencies
+# ---------------------------------------------------------
+FROM python:3.11-slim AS builder
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    git \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+
+ENV VIRTUAL_ENV=/opt/venv
+RUN uv venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN uv pip install -e .
+
+# ---------------------------------------------------------
+# Stage 2: Hardened Non-Root Runtime
+# ---------------------------------------------------------
+FROM python:3.11-slim AS runtime
+
+RUN groupadd -g 10001 appgroup && \
+    useradd -u 10001 -g appgroup -s /bin/bash -m appuser
+
+WORKDIR /app
+
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY --chown=appuser:appgroup . /app
+
+USER 10001:10001
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')" || exit 1
+
+CMD ["uvicorn", "src.agentic.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

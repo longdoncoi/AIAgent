@@ -1,0 +1,71 @@
+# ==============================================================================
+# Prometheus Alerting Rules for Agentic AI Platform
+# ==============================================================================
+groups:
+  - name: agentic_platform_alerts
+    rules:
+      # 1. API Error Rate Alert
+      - alert: HighAPIErrorRate
+        expr: |
+          sum(rate(agent_request_duration_seconds_count{status="error"}[5m]))
+          /
+          sum(rate(agent_request_duration_seconds_count[5m])) > 0.02
+        for: 2m
+        labels:
+          severity: critical
+          tier: l1-interface
+        annotations:
+          summary: "API Error rate exceeds 2% over 5 minutes"
+          description: "High rate of failed requests detected on Agentic Platform API."
+
+      # 2. P99 LLM Latency Degradation
+      - alert: HighLLMLatencyP99
+        expr: |
+          histogram_quantile(0.99, sum(rate(agent_request_duration_seconds_bucket[5m])) by (le)) > 5.0
+        for: 3m
+        labels:
+          severity: warning
+          tier: l7-gateway
+        annotations:
+          summary: "Agent response P99 latency exceeds 5 seconds"
+          description: "End-to-end reasoning and tool execution latency is degraded."
+
+      # 3. Model Circuit Breaker Tripped
+      - alert: ModelCircuitBreakerTripped
+        expr: |
+          increase(agent_tokens_total{model_alias="fast-llm"}[5m]) > 0
+          and
+          rate(agent_tokens_total{model_alias="reasoning-llm"}[5m]) == 0
+        for: 1m
+        labels:
+          severity: critical
+          tier: l7-gateway
+        annotations:
+          summary: "Model Circuit Breaker tripped to CPU / Fallback endpoint"
+          description: "Primary reasoning-llm (GPU/vLLM) is unresponsive; traffic redirected to CPU fallback."
+
+      # 4. Excessive Pending HITL Approvals
+      - alert: HighPendingApprovalsQueue
+        expr: |
+          sum(rate(agent_hitl_approvals_total{decision="pending"}[10m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+          tier: l2-orchestration
+        annotations:
+          summary: "High volume of paused workflows waiting for Human-in-the-Loop review"
+          description: "Backlog of high-risk actions awaiting supervisor approval."
+
+      # 5. RAG Cache Miss Ratio Spike
+      - alert: RAGCacheMissSpike
+        expr: |
+          rate(agent_rag_cache_misses_total[5m])
+          /
+          (rate(agent_rag_cache_hits_total[5m]) + rate(agent_rag_cache_misses_total[5m])) > 0.8
+        for: 10m
+        labels:
+          severity: info
+          tier: l5-knowledge
+        annotations:
+          summary: "RAG Semantic Cache miss rate exceeds 80%"
+          description: "Cache efficiency low; check vector store load and query diversity."

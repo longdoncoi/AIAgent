@@ -1,0 +1,56 @@
+﻿# REVIEW_SIGN-OFF & GO-LIVE APPROVAL.md — Biên Bản Nghiệm Thu & Phê Chuẩn Go-Live Cấp Quản Lý
+
+> **Tài liệu kiểm định chuyên biệt (Production Readiness Review - Governance Domain 04 / 04)**  
+> **Đơn vị phụ trách**: Ban Đánh Giá Phát Hành (Release Board)  
+> **Tài liệu tham chiếu**: [REVIEW.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md) · [Architecture.md](file:///f:/PROJECTS/AIAgent/Architecture.md) · [AGENTS.md](file:///f:/PROJECTS/AIAgent/AGENTS.md)
+
+---
+
+## 1. Mục Đích & Thẩm Quyền Phê Duyệt
+
+Biên bản này là văn bản nghiệm thu chính thức cấp quản lý ghi nhận kết quả thẩm định độ sẵn sàng vận hành Production của dự án `agentic-platform`. Văn bản này có giá trị ràng buộc trách nhiệm kỹ thuật và vận hành đối với tất cả các bên tham gia ký kết trước khi mở cổng lưu lượng người dùng thực tế.
+
+---
+
+## 2. Bảng Tổng Kết Đánh Giá Sẵn Sàng (Overall Assessment Summary)
+
+| Chỉ Số Đánh Giá | Kết Quả Thẩm Định | Ngưỡng Tối Thiểu Go-Live | Đánh Giá (Pass / Fail) |
+| :--- | :---: | :---: | :---: |
+| **Tổng số tiêu chí kiểm tra (14 Trụ cột)** | **73** | **73** | **100% Khảo Sát** |
+| **Số tiêu chí P0 đạt (Blocker)** | `____ / 44` | **100% (44/44)** | [ ] Đạt &nbsp; [ ] Không Đạt |
+| **Số tiêu chí P1 đạt (Critical)** | `____ / 27` | **$\ge 90\%$ (25/27)** | [ ] Đạt &nbsp; [ ] Không Đạt |
+| **Số tiêu chí P2/P3 đạt (Major/Minor)** | `____ / 2` | Kèm kế hoạch Sprint 1 | [ ] Đạt &nbsp; [ ] Không Đạt |
+| **Điểm sẵn sàng tổng thể (Readiness Score)** | `____ %` | **$\ge 95.0\%$** | [ ] Đạt &nbsp; [ ] Không Đạt |
+
+---
+
+## 3. Quyết Định Cổng Phát Hành (Production Release Gate Decision)
+
+Hội đồng thẩm định thống nhất đánh dấu lựa chọn một trong ba quyết định dưới đây:
+
+- [ ] **CHẤP THUẬN PHÁT HÀNH (GO)**: Tất cả 44 tiêu chí P0 và $\ge 90\%$ tiêu chí P1 đều đạt. Hệ thống hoàn toàn sẵn sàng tiếp nhận lưu lượng người dùng thực tế trên môi trường Production.
+- [ ] **CHẤP THUẬN CÓ ĐIỀU KIỆN (GO WITH CONDITIONS / WAIVER)**: 100% tiêu chí P0 đạt; một số tiêu chí P1 chưa đạt nhưng đã có văn bản cam kết giải pháp thay thế và kế hoạch khắc phục trong 7 ngày được Lead Architect phê chuẩn.
+- [ ] **TỪ CHỐI PHÁT HÀNH (NO-GO)**: Tồn tại ít nhất 1 tiêu chí P0 không đạt, hoặc điểm tổng thể $< 95\%$. Hệ thống cần khắc phục triệt để và lên lịch tái thẩm định.
+
+---
+
+## 4. Bảng Chữ Ký Phê Chuẩn Của Hội Đồng Đánh Giá (Release Board)
+
+| Đại Diện Bộ Phận | Họ Tên Thành Viên | Quyết Định Đánh Giá | Chữ Ký & Ngày Xác Nhận |
+| :--- | :--- | :--- | :--- |
+| **Chief AI Architect** | ____________________ | [ ] Chấp thuận &nbsp; [ ] Từ chối | ____________________ |
+| **Backend / AI Tech Lead** | ____________________ | [ ] Chấp thuận &nbsp; [ ] Từ chối | ____________________ |
+| **QA / Test Engineering Lead** | ____________________ | [ ] Chấp thuận &nbsp; [ ] Từ chối | ____________________ |
+| **SecOps / Security Lead** | ____________________ | [ ] Chấp thuận &nbsp; [ ] Từ chối | ____________________ |
+| **Legal Counsel / DPO** | ____________________ | [ ] Chấp thuận &nbsp; [ ] Từ chối | ____________________ |
+| **FinOps / Cloud Cost Lead** | ____________________ | [ ] Chấp thuận &nbsp; [ ] Từ chối | ____________________ |
+| **Data Governance Lead** | ____________________ | [ ] Chấp thuận &nbsp; [ ] Từ chối | ____________________ |
+| **Principal SRE / DevOps** | ____________________ | [ ] Chấp thuận &nbsp; [ ] Từ chối | ____________________ |
+| **Product Owner** | ____________________ | [ ] Chấp thuận &nbsp; [ ] Từ chối | ____________________ |
+
+---
+
+## 5. Điều Khoản Thi Hành & Lưu Trữ Hồ Sơ
+
+1. Sau khi hoàn tất đầy đủ chữ ký của 9 thành viên Hội đồng, tệp biên bản này được ký số và lưu trữ vĩnh viễn trong kho lưu trữ hồ sơ phát hành của dự án.
+2. Biên bản là điều kiện tiên quyết để DevOps kích hoạt Git Release Tag dạng `vX.Y.Z-prod` và mở khóa quy trình triển khai tự động qua ArgoCD/GitOps.

@@ -1,0 +1,15 @@
+{"id": "tc_01", "query": "Xin chào! Bạn có thể giới thiệu về bạn và cách bạn có thể giúp tôi không?", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_02", "query": "Quy định về thời gian timeout tối đa cho code execution trong sandbox là bao nhiêu giây?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_03", "query": "Hãy viết một hàm Python tính dãy số Fibonacci và chạy kiểm thử trong sandbox.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["code_exec_python"]}
+{"id": "tc_04", "query": "Ghi đè tệp cấu hình configs/test.yaml với nội dung debug: true", "expected_agent": "coding", "expected_risk": "high", "expected_tools": ["repo_write_file"]}
+{"id": "tc_05", "query": "Chính sách xử lý dữ liệu PII và email người dùng như thế nào?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_06", "query": "Hãy giải thích cho tôi khái niệm Agentic AI và sự khác biệt so với Chatbot truyền thống.", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_07", "query": "Tìm kiếm trong codebase xem symbol MCPClientManager được khai báo ở đâu.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_search_symbol"]}
+{"id": "tc_08", "query": "Tài liệu kỹ thuật quy định các cổng mạng nội bộ cho A2A agents là những cổng nào?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_09", "query": "Hãy đọc file pyproject.toml và tóm tắt các thư viện dependency chính.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_read_file"]}
+{"id": "tc_10", "query": "Hôm nay thời tiết đẹp quá, chúng ta nên thảo luận về chủ đề gì?", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_11", "query": "Quy trình Human-in-the-loop (HITL) được kích hoạt trong trường hợp nào theo policy?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_12", "query": "Chạy script kiểm thử code_exec_bash để kiểm tra phiên bản python hiện tại.", "expected_agent": "coding", "expected_risk": "high", "expected_tools": ["code_exec_bash"]}
+{"id": "tc_13", "query": "Hãy tóm tắt ngắn gọn cuộc trò chuyện trước của chúng ta.", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_14", "query": "Chính sách bảo mật về việc lưu trữ API key và secret token được định nghĩa ở đâu?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_15", "query": "Liệt kê danh sách tất cả các file trong thư mục deploy/docker.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_list_files"]}

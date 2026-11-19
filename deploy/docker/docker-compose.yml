@@ -1,0 +1,161 @@
+version: '3.8'
+
+services:
+  # Infrastructure Services
+  postgres:
+    image: postgres:16-alpine
+    container_name: agentic-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: agentic_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: agentic-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  neo4j:
+    image: neo4j:5
+    container_name: agentic-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/agentic_neo4j_password
+      NEO4J_PLUGINS: '["apoc"]'
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: agentic-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: agentic-litellm
+    ports:
+      - "4000:4000"
+    volumes:
+      - ../../configs/litellm_config.yaml:/app/config.yaml
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+
+  # MCP Tool Servers
+  mcp-code-exec:
+    build:
+      context: ../../
+      dockerfile: deploy/docker/Dockerfile.mcp
+    container_name: mcp-code-exec
+    environment:
+      MCP_SERVER_MODULE: "src.agentic.tools.servers.code_exec_server"
+      MCP_PORT: 9001
+    ports:
+      - "9001:9001"
+
+  mcp-repo:
+    build:
+      context: ../../
+      dockerfile: deploy/docker/Dockerfile.mcp
+    container_name: mcp-repo
+    environment:
+      MCP_SERVER_MODULE: "src.agentic.tools.servers.repo_server"
+      MCP_PORT: 9002
+    ports:
+      - "9002:9002"
+
+  mcp-web-search:
+    build:
+      context: ../../
+      dockerfile: deploy/docker/Dockerfile.mcp
+    container_name: mcp-web-search
+    environment:
+      MCP_SERVER_MODULE: "src.agentic.tools.servers.web_search_server"
+      MCP_PORT: 9003
+    ports:
+      - "9003:9003"
+
+  # A2A Sub-Agents
+  agent-chat:
+    build:
+      context: ../../
+      dockerfile: deploy/docker/Dockerfile.agent
+    container_name: agent-chat
+    environment:
+      AGENT_MODULE: "src.agentic.agents.chat.server"
+      AGENT_PORT: 9100
+    ports:
+      - "9100:9100"
+
+  agent-rag:
+    build:
+      context: ../../
+      dockerfile: deploy/docker/Dockerfile.agent
+    container_name: agent-rag
+    environment:
+      AGENT_MODULE: "src.agentic.agents.rag.server"
+      AGENT_PORT: 9101
+    ports:
+      - "9101:9101"
+
+  agent-coding:
+    build:
+      context: ../../
+      dockerfile: deploy/docker/Dockerfile.agent
+    container_name: agent-coding
+    environment:
+      AGENT_MODULE: "src.agentic.agents.coding.server"
+      AGENT_PORT: 9102
+    ports:
+      - "9102:9102"
+
+  # L1 Interface API
+  api:
+    build:
+      context: ../../
+      dockerfile: deploy/docker/Dockerfile.api
+    container_name: agentic-api
+    ports:
+      - "8000:8000"
+    environment:
+      - POSTGRES_URI=postgresql://postgres:postgres@postgres:5432/agentic_db
+      - QDRANT_HOST=qdrant
+      - REDIS_URL=redis://redis:6379/0
+      - ENABLE_REDIS_RATE_LIMIT=true
+      - ENABLE_REDIS_CACHE=true
+      - LITELLM_BASE_URL=http://litellm:4000/v1
+      - A2A_CHAT_AGENT_URL=http://agent-chat:9100/a2a
+      - A2A_RAG_AGENT_URL=http://agent-rag:9101/a2a
+      - A2A_CODING_AGENT_URL=http://agent-coding:9102/a2a
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  redis_data:
+  neo4j_data:

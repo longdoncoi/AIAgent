@@ -1,0 +1,40 @@
+model_list:
+  - model_name: reasoning-llm
+    litellm_params:
+      model: openai/Qwen/Qwen2.5-72B-Instruct
+      api_base: http://localhost:8001/v1
+      api_key: sk-vllm-dummy
+    fallbacks:
+      - llama-chat-backup
+
+  - model_name: fast-llm
+    litellm_params:
+      model: openai/Qwen/Qwen2.5-14B-Instruct
+      api_base: http://localhost:8080/v1
+      api_key: sk-llama-dummy
+
+  - model_name: coding-llm
+    litellm_params:
+      model: openai/Qwen/Qwen2.5-Coder-32B-Instruct
+      api_base: http://localhost:8001/v1
+      api_key: sk-vllm-dummy
+    fallbacks:
+      - llama-chat-backup
+
+  - model_name: llama-chat-backup
+    litellm_params:
+      model: openai/llama-server
+      api_base: http://localhost:8080/v1
+      api_key: sk-llama-dummy
+
+  - model_name: text-embedding-bge
+    litellm_params:
+      model: openai/BAAI/bge-large-en-v1.5
+      api_base: http://localhost:8081/v1
+      api_key: sk-embed-dummy
+
+router_settings:
+  routing_strategy: least-busy
+  num_retries: 2
+  timeout: 60.0
+  allowed_fails: 3

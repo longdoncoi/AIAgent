@@ -1,0 +1,420 @@
+"""RAG Query and Semantic Retrieval Cache with Multi-Tier (L1 In-Memory + L2 Distributed Redis) Architecture."""
+
+import hashlib
+import json
+import logging
+import math
+import threading
+import time
+from collections import OrderedDict
+from typing import Any
+
+from src.agentic.core.config import get_settings
+from src.agentic.observability.metrics import RAG_CACHE_HITS_TOTAL, RAG_CACHE_MISSES_TOTAL
+
+logger = logging.getLogger(__name__)
+
+
+class RAGCache:
+    """Thread-safe Multi-Tier TTL/LRU Cache for RAG retrieval results.
+
+    Tier 1 (L1): Local in-memory LRU cache for ultra-fast pod-local hit.
+    Tier 2 (L2): Distributed Redis cache shared across multi-replica Kubernetes clusters.
+    """
+
+    def __init__(
+        self,
+        max_entries: int = 2048,
+        default_ttl: int = 3600,
+        redis_url: str | None = None,
+        enable_redis: bool = False,
+    ) -> None:
+        self.settings = get_settings()
+        self.max_entries = max_entries
+        self.default_ttl = default_ttl
+        self._cache: OrderedDict[str, tuple[float, str, dict[str, Any]]] = OrderedDict()
+        self._semantic_entries: list[dict[str, Any]] = []
+        self._lock = threading.Lock()
+        self._inflight_locks: set[str] = set()
+        self._hits = 0
+        self._misses = 0
+        self._semantic_hits = 0
+        self._redis_client: Any = None
+
+        target_redis_url = redis_url or self.settings.redis_url
+        should_use_redis = enable_redis or self.settings.enable_redis_cache or self.settings.enable_redis_rate_limit
+
+        if should_use_redis and target_redis_url:
+            try:
+                import redis
+                client = redis.Redis.from_url(target_redis_url, socket_timeout=0.5, decode_responses=True)
+                client.ping()
+                self._redis_client = client
+                logger.info(f"Initialized Distributed Redis L2 backend for RAGCache at {target_redis_url}")
+            except Exception as e:
+                logger.debug(f"Redis L2 backend not reachable for RAGCache ({e}). Operating in L1 local memory mode.")
+
+    @staticmethod
+    def _normalize_query(query: str) -> str:
+        """Normalizes query text for deterministic hashing."""
+        return " ".join(query.strip().lower().split())
+
+    def _hash_key(self, query: str, top_k: int, **kwargs: Any) -> str:
+        norm = self._normalize_query(query)
+        extra = f":k={top_k}:" + ":".join(f"{k}={v}" for k, v in sorted(kwargs.items()))
+        return hashlib.sha256((norm + extra).encode("utf-8")).hexdigest()
+
+    def get(self, query: str, top_k: int = 5, **kwargs: Any) -> str | None:
+        """Retrieves cached result if still valid (checking L1 memory then L2 Redis)."""
+        if not self.settings.enable_rag_cache:
+            return None
+
+        key = self._hash_key(query, top_k, **kwargs)
+        now = time.time()
+
+        # 1. Check L1 In-Memory Cache
+        with self._lock:
+            if key in self._cache:
+                expire_at, value, meta = self._cache[key]
+                if now < expire_at:
+                    self._cache.move_to_end(key)
+                    self._hits += 1
+                    RAG_CACHE_HITS_TOTAL.inc()
+                    logger.debug(f"RAG Cache L1 HIT for query='{query[:40]}...' (key={key[:8]})")
+                    return value
+                else:
+                    del self._cache[key]
+
+        # 2. Check L2 Distributed Redis Cache
+        if self._redis_client is not None:
+            try:
+                redis_key = f"rag_cache:{key}"
+                cached_data = self._redis_client.get(redis_key)
+                if cached_data is not None:
+                    # Deserialize and populate back into L1
+                    payload = json.loads(cached_data) if cached_data.startswith("{") else {"result": cached_data}
+                    result_val = payload.get("result", cached_data)
+                    meta_val = payload.get("metadata", {})
+                    ttl_left = max(60, self._redis_client.ttl(redis_key))
+                    with self._lock:
+                        if len(self._cache) >= self.max_entries:
+                            self._cache.popitem(last=False)
+                        self._cache[key] = (now + ttl_left, result_val, meta_val)
+                    self._hits += 1
+                    RAG_CACHE_HITS_TOTAL.inc()
+                    logger.debug(f"RAG Cache L2 (Redis) HIT for query='{query[:40]}...' (key={key[:8]})")
+                    return result_val
+            except Exception as ex:
+                logger.debug(f"Redis L2 read exception in RAGCache: {ex}")
+
+        with self._lock:
+            self._misses += 1
+        RAG_CACHE_MISSES_TOTAL.inc()
+        return None
+
+    def set(
+        self,
+        query: str,
+        result: str,
+        top_k: int = 5,
+        ttl: int | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Stores retrieval result in both L1 memory and L2 distributed Redis."""
+        if not self.settings.enable_rag_cache:
+            return
+
+        key = self._hash_key(query, top_k)
+        effective_ttl = ttl if ttl is not None else self.settings.rag_cache_ttl_seconds
+        expire_at = time.time() + effective_ttl
+
+        # 1. Set in L1 In-Memory Cache
+        with self._lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+            elif len(self._cache) >= self.max_entries:
+                self._cache.popitem(last=False)
+            self._cache[key] = (expire_at, result, metadata or {})
+
+        # 2. Set in L2 Distributed Redis Cache
+        if self._redis_client is not None:
+            try:
+                redis_key = f"rag_cache:{key}"
+                payload = json.dumps({"result": result, "metadata": metadata or {}}, ensure_ascii=False)
+                self._redis_client.set(redis_key, payload, ex=effective_ttl)
+                logger.debug(f"RAG Cache L2 (Redis) SET for query='{query[:40]}...' (TTL={effective_ttl}s)")
+            except Exception as ex:
+                logger.debug(f"Redis L2 write exception in RAGCache: {ex}")
+
+    def get_domain_threshold(self, domain: str = "general") -> float:
+        """Retrieves domain-adaptive cosine similarity threshold.
+
+        Higher thresholds (e.g. 0.96-0.97) for sensitive/legal/finance domains;
+        Lower thresholds (e.g. 0.88-0.90) for chat/general domains.
+        """
+        domain_clean = domain.lower().strip()
+        return self.settings.semantic_cache_domain_thresholds.get(
+            domain_clean,
+            self.settings.semantic_cache_default_threshold,
+        )
+
+    @staticmethod
+    def _compute_similarity(vec1: list[float], vec2: list[float]) -> float:
+        """Computes cosine similarity between two dense vectors."""
+        if not vec1 or not vec2 or len(vec1) != len(vec2):
+            return 0.0
+        dot = sum(a * b for a, b in zip(vec1, vec2))
+        norm1 = math.sqrt(sum(a * a for a in vec1))
+        norm2 = math.sqrt(sum(b * b for b in vec2))
+        if norm1 == 0.0 or norm2 == 0.0:
+            return 0.0
+        return dot / (norm1 * norm2)
+
+    def _generate_text_vector(self, text: str, dim: int = 128) -> list[float]:
+        """Generates a deterministic pseudo-dense vector for query semantic comparison."""
+        vec = [0.0] * dim
+        words = text.lower().split()
+        if not words:
+            return vec
+        for w in words:
+            grams = [w[i:i+3] for i in range(max(1, len(w)-2))]
+            for g in grams:
+                idx = int(hashlib.md5(g.encode("utf-8")).hexdigest()[:8], 16) % dim
+                vec[idx] += 1.0
+        norm = math.sqrt(sum(x * x for x in vec))
+        if norm > 0.0:
+            vec = [x / norm for x in vec]
+        return vec
+
+    def get_semantic(
+        self,
+        query: str,
+        domain: str = "general",
+        top_k: int = 5,
+        query_vector: list[float] | None = None,
+        **kwargs: Any,
+    ) -> str | None:
+        """Retrieves cached result matching semantic similarity >= domain threshold."""
+        if not self.settings.enable_rag_cache:
+            return None
+
+        # 1. Exact match check first
+        exact_hit = self.get(query, top_k=top_k, **kwargs)
+        if exact_hit is not None:
+            return exact_hit
+
+        if not self.settings.enable_semantic_cache:
+            return None
+
+        now = time.time()
+        threshold = self.get_domain_threshold(domain)
+        target_vec = query_vector or self._generate_text_vector(query)
+
+        with self._lock:
+            # Purge expired semantic entries
+            self._semantic_entries = [e for e in self._semantic_entries if e["expire_at"] > now]
+            best_candidate: dict[str, Any] | None = None
+            best_score = 0.0
+
+            for entry in self._semantic_entries:
+                if entry.get("top_k", top_k) != top_k:
+                    continue
+                entry_domain = entry.get("domain", "general")
+                if entry_domain != domain and entry_domain != "general" and domain != "general":
+                    continue
+                sim = self._compute_similarity(target_vec, entry["vector"])
+                if sim >= threshold and sim > best_score:
+                    best_score = sim
+                    best_candidate = entry
+
+            if best_candidate is not None:
+                self._hits += 1
+                self._semantic_hits += 1
+                RAG_CACHE_HITS_TOTAL.inc()
+                logger.debug(
+                    f"RAG Cache Semantic HIT for domain='{domain}' "
+                    f"(score={best_score:.4f} >= threshold={threshold:.2f}, query='{query[:30]}...')"
+                )
+                return str(best_candidate["result"])
+
+        return None
+
+    def set_semantic(
+        self,
+        query: str,
+        result: str,
+        domain: str = "general",
+        top_k: int = 5,
+        query_vector: list[float] | None = None,
+        ttl: int | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Stores query result in both exact match cache and semantic entry list."""
+        self.set(query, result, top_k=top_k, ttl=ttl, metadata=metadata)
+        if not self.settings.enable_semantic_cache:
+            return
+
+        effective_ttl = ttl if ttl is not None else self.settings.rag_cache_ttl_seconds
+        expire_at = time.time() + effective_ttl
+        target_vec = query_vector or self._generate_text_vector(query)
+
+        entry = {
+            "query": query,
+            "vector": target_vec,
+            "domain": domain.lower().strip(),
+            "result": result,
+            "top_k": top_k,
+            "expire_at": expire_at,
+            "metadata": metadata or {},
+        }
+
+        with self._lock:
+            if len(self._semantic_entries) >= self.max_entries:
+                self._semantic_entries.pop(0)
+            self._semantic_entries.append(entry)
+
+    def acquire_lock(self, key: str, timeout: float = 5.0) -> bool:
+        """Acquires a distributed Redis or in-memory lock for a key to prevent cache stampede."""
+        if self._redis_client is not None:
+            try:
+                acquired = bool(self._redis_client.set(f"lock:rag:{key}", "1", nx=True, ex=max(1, int(timeout))))
+                return acquired
+            except Exception:
+                pass
+        with self._lock:
+            if key in self._inflight_locks:
+                return False
+            self._inflight_locks.add(key)
+            return True
+
+    def release_lock(self, key: str) -> None:
+        """Releases the stampede lock for a key."""
+        if self._redis_client is not None:
+            try:
+                self._redis_client.delete(f"lock:rag:{key}")
+            except Exception:
+                pass
+        with self._lock:
+            self._inflight_locks.discard(key)
+
+    async def get_or_compute_async(
+        self,
+        query: str,
+        compute_fn: Any,
+        top_k: int = 5,
+        ttl: int | None = None,
+        timeout: float = 5.0,
+        domain: str = "general",
+        query_vector: list[float] | None = None,
+    ) -> str:
+        """Stampede-guarded async retrieval with adaptive semantic caching."""
+        cached = self.get_semantic(query, domain=domain, top_k=top_k, query_vector=query_vector)
+        if cached is not None:
+            return cached
+
+        key = self._hash_key(query, top_k)
+        has_lock = self.acquire_lock(key, timeout=timeout)
+
+        if has_lock:
+            try:
+                import inspect
+                if inspect.iscoroutinefunction(compute_fn):
+                    computed = await compute_fn()
+                else:
+                    computed = compute_fn()
+                self.set_semantic(query, str(computed), domain=domain, top_k=top_k, query_vector=query_vector, ttl=ttl)
+                return str(computed)
+            finally:
+                self.release_lock(key)
+        else:
+            import asyncio
+            start_wait = time.time()
+            while time.time() - start_wait < timeout:
+                await asyncio.sleep(0.05)
+                cached = self.get_semantic(query, domain=domain, top_k=top_k, query_vector=query_vector)
+                if cached is not None:
+                    return cached
+            import inspect
+            if inspect.iscoroutinefunction(compute_fn):
+                return str(await compute_fn())
+            return str(compute_fn())
+
+    def get_or_compute(
+        self,
+        query: str,
+        compute_fn: Any,
+        top_k: int = 5,
+        ttl: int | None = None,
+        timeout: float = 5.0,
+        domain: str = "general",
+        query_vector: list[float] | None = None,
+    ) -> str:
+        """Synchronous stampede-guarded retrieval with adaptive semantic caching."""
+        cached = self.get_semantic(query, domain=domain, top_k=top_k, query_vector=query_vector)
+        if cached is not None:
+            return cached
+
+        key = self._hash_key(query, top_k)
+        has_lock = self.acquire_lock(key, timeout=timeout)
+
+        if has_lock:
+            try:
+                computed = str(compute_fn())
+                self.set_semantic(query, computed, domain=domain, top_k=top_k, query_vector=query_vector, ttl=ttl)
+                return computed
+            finally:
+                self.release_lock(key)
+        else:
+            start_wait = time.time()
+            while time.time() - start_wait < timeout:
+                time.sleep(0.05)
+                cached = self.get_semantic(query, domain=domain, top_k=top_k, query_vector=query_vector)
+                if cached is not None:
+                    return cached
+            return str(compute_fn())
+
+    def clear(self) -> None:
+        """Flushes all cached entries from L1 and L2."""
+        with self._lock:
+            self._cache.clear()
+            self._semantic_entries.clear()
+        if self._redis_client is not None:
+            try:
+                keys = self._redis_client.keys("rag_cache:*")
+                if keys:
+                    self._redis_client.delete(*keys)
+            except Exception as ex:
+                logger.debug(f"Redis L2 clear exception: {ex}")
+
+    @property
+    def stats(self) -> dict[str, Any]:
+        """Returns cache metrics."""
+        with self._lock:
+            total = self._hits + self._misses
+            hit_rate = (self._hits / total) if total > 0 else 0.0
+            return {
+                "size": len(self._cache),
+                "hits": self._hits,
+                "misses": self._misses,
+                "hit_rate": round(hit_rate, 4),
+                "has_redis_backend": self._redis_client is not None,
+                "semantic_entries": len(self._semantic_entries),
+                "semantic_hits": self._semantic_hits,
+            }
+
+
+_rag_cache_instance: RAGCache | None = None
+
+
+def get_rag_cache() -> RAGCache:
+    """Returns singleton RAGCache instance."""
+    global _rag_cache_instance
+    if _rag_cache_instance is None:
+        settings = get_settings()
+        _rag_cache_instance = RAGCache(
+            max_entries=settings.cache_max_entries,
+            default_ttl=settings.rag_cache_ttl_seconds,
+            redis_url=settings.redis_url,
+            enable_redis=settings.enable_redis_cache,
+        )
+    return _rag_cache_instance

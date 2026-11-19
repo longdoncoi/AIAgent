@@ -1,0 +1,46 @@
+# ---------------------------------------------------------
+# Stage 1: Build & Dependencies
+# ---------------------------------------------------------
+FROM python:3.11-slim AS builder
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    git \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+
+ENV VIRTUAL_ENV=/opt/venv
+RUN uv venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN uv pip install -e .
+
+# ---------------------------------------------------------
+# Stage 2: Hardened Runtime
+# ---------------------------------------------------------
+FROM python:3.11-slim AS runtime
+
+RUN groupadd -g 10001 appgroup && \
+    useradd -u 10001 -g appgroup -s /bin/bash -m appuser
+
+WORKDIR /app
+
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY --chown=appuser:appgroup . /app
+
+USER 10001:10001
+
+ENV MCP_SERVER_MODULE="src.agentic.tools.servers.code_exec_server"
+ENV MCP_PORT=9001
+
+EXPOSE 9001 9002 9003
+
+CMD ["sh", "-c", "python -m ${MCP_SERVER_MODULE} --port ${MCP_PORT} --transport sse"]
