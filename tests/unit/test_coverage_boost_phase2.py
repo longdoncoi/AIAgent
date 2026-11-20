@@ -869,5 +869,6 @@ async def test_workflows_cdc_and_ingestion_runs():
 
     # 3. worker_main execution
     with patch("asyncio.run") as mock_run:
-        worker_main()
-        assert mock_run.called
+        with patch("src.agentic.workflows.worker.run_worker", return_value=None):
+            worker_main()
+            assert mock_run.called

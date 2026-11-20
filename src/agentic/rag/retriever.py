@@ -27,33 +27,65 @@ class HybridRetriever:
         self._load_storage()
 
     def _load_storage(self) -> None:
-        """Attempts to load persisted index from disk."""
-        if self.index_dir.exists() and (self.index_dir / "docstore.json").exists():
+        """Attempts to load persisted index from Qdrant vector store or disk."""
+        import socket
+
+        from llama_index.core import Settings as LlamaSettings
+
+        has_embed_server = False
+        try:
+            with socket.create_connection(("localhost", 8081), timeout=0.2):
+                has_embed_server = True
+        except Exception:
+            pass
+
+        try:
+            if has_embed_server:
+                from llama_index.embeddings.openai import OpenAIEmbedding
+
+                LlamaSettings.embed_model = OpenAIEmbedding(
+                    api_base=self.settings.llama_embed_base_url,
+                    api_key="sk-dummy",
+                    model_name=self.settings.default_embedding_model,
+                )
+            else:
+                from llama_index.core.embeddings.mock_embed_model import MockEmbedding
+
+                LlamaSettings.embed_model = MockEmbedding(embed_dim=768)
+        except Exception as e:
+            logger.debug(f"Could not configure embedding model: {e}")
+
+        # 1. Try Qdrant if enabled
+        qdrant_store = get_qdrant_vector_store()
+        if qdrant_store is not None:
             try:
-                import socket
+                from llama_index.core import VectorStoreIndex
 
-                from llama_index.core import Settings as LlamaSettings
-
-                has_embed_server = False
-                try:
-                    with socket.create_connection(("localhost", 8081), timeout=0.2):
-                        has_embed_server = True
-                except Exception:
-                    pass
-
-                if has_embed_server:
-                    from llama_index.embeddings.openai import OpenAIEmbedding
-
-                    LlamaSettings.embed_model = OpenAIEmbedding(
-                        api_base=self.settings.llama_embed_base_url,
-                        api_key="sk-dummy",
-                        model_name=self.settings.default_embedding_model,
+                if self.index_dir.exists() and (self.index_dir / "docstore.json").exists():
+                    storage_context = StorageContext.from_defaults(
+                        vector_store=qdrant_store,
+                        persist_dir=str(self.index_dir),
                     )
                 else:
-                    from llama_index.core.embeddings.mock_embed_model import MockEmbedding
+                    storage_context = StorageContext.from_defaults(vector_store=qdrant_store)
 
-                    LlamaSettings.embed_model = MockEmbedding(embed_dim=768)
+                self._storage_context = storage_context
+                self._index = VectorStoreIndex.from_vector_store(
+                    qdrant_store, storage_context=storage_context
+                )
+                self._docstore = storage_context.docstore
+                logger.info(
+                    "Successfully loaded VectorStoreIndex and StorageContext backed by Qdrant (HNSW mmap + Scalar Quantization)."
+                )
+                return
+            except Exception as e:
+                logger.warning(
+                    f"Could not load index from Qdrant ({e}). Falling back to local storage."
+                )
 
+        # 2. Local disk fallback
+        if self.index_dir.exists() and (self.index_dir / "docstore.json").exists():
+            try:
                 storage_context = StorageContext.from_defaults(persist_dir=str(self.index_dir))
                 self._storage_context = storage_context
                 self._index = load_index_from_storage(storage_context)
@@ -180,3 +212,64 @@ def get_hybrid_retriever() -> HybridRetriever:
     if _retriever_instance is None:
         _retriever_instance = HybridRetriever()
     return _retriever_instance
+
+
+def get_qdrant_vector_store(
+    collection_name: str | None = None,
+    embed_dim: int = 768,
+    client: Any | None = None,
+) -> Any | None:
+    """Initializes QdrantVectorStore with HNSW on-disk mmap and INT8 Scalar Quantization.
+
+    Optimizations for Production:
+    - HNSW on_disk=True: Maps graph links into disk memory map, reducing RAM consumption by up to 70%.
+    - Scalar Quantization (INT8): Quantizes 32-bit float vectors to 8-bit integers, reducing memory by 4x.
+    """
+    settings = get_settings()
+    if not settings.enable_qdrant and client is None:
+        return None
+
+    target_collection = collection_name or settings.qdrant_collection_name
+    try:
+        from llama_index.vector_stores.qdrant import QdrantVectorStore
+        from qdrant_client import QdrantClient
+        from qdrant_client.http import models as qmodels
+
+        q_client = client or QdrantClient(
+            host=settings.qdrant_host,
+            port=settings.qdrant_port,
+            api_key=settings.qdrant_api_key,
+            timeout=5,
+        )
+
+        collections = [c.name for c in q_client.get_collections().collections]
+
+        if target_collection not in collections:
+            q_client.create_collection(
+                collection_name=target_collection,
+                vectors_config=qmodels.VectorParams(
+                    size=embed_dim,
+                    distance=qmodels.Distance.COSINE,
+                    on_disk=True,
+                ),
+                hnsw_config=qmodels.HnswConfigDiff(
+                    m=16,
+                    ef_construct=100,
+                    on_disk=True,
+                ),
+                quantization_config=qmodels.ScalarQuantization(
+                    scalar=qmodels.ScalarQuantizationConfig(
+                        type=qmodels.ScalarType.INT8,
+                        quantile=0.99,
+                        always_ram=True,
+                    )
+                ),
+            )
+            logger.info(
+                f"Configured Qdrant collection '{target_collection}' with HNSW on-disk mmap and INT8 Scalar Quantization."
+            )
+
+        return QdrantVectorStore(client=q_client, collection_name=target_collection)
+    except Exception as e:
+        logger.debug(f"QdrantVectorStore not available ({e}). Operating in local disk/memory mode.")
+        return None

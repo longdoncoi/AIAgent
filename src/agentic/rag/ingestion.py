@@ -101,7 +101,18 @@ def ingest_documents(
     docstore = SimpleDocumentStore()
     docstore.add_documents(nodes)
 
-    storage_context = StorageContext.from_defaults(docstore=docstore)
+    from src.agentic.rag.retriever import get_qdrant_vector_store
+
+    qdrant_store = get_qdrant_vector_store()
+    if qdrant_store is not None:
+        storage_context = StorageContext.from_defaults(
+            docstore=docstore, vector_store=qdrant_store
+        )
+        logger.info(
+            "Using QdrantVectorStore with HNSW on-disk mmap and INT8 Scalar Quantization for ingestion."
+        )
+    else:
+        storage_context = StorageContext.from_defaults(docstore=docstore)
 
     # Embedding model configuration
     import socket

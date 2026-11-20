@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
     qdrant_api_key: str | None = None
+    enable_qdrant: bool = False
+    qdrant_collection_name: str = "agentic_knowledge"
 
     # Knowledge Graph (Neo4j / NetworkX)
     enable_knowledge_graph: bool = True
@@ -210,6 +212,8 @@ class Settings(BaseSettings):
                 self.mcp_repo_url = "http://agentic-mcp-repo-svc:9002/sse"
             if self.mcp_web_search_url == "http://localhost:9003/sse":
                 self.mcp_web_search_url = "http://agentic-mcp-web-search-svc:9003/sse"
+            if self.enable_qdrant and self.qdrant_host == "localhost":
+                self.qdrant_host = "qdrant-svc"
         return self
 
 

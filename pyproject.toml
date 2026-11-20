@@ -26,7 +26,6 @@ dependencies = [
     "llama-index-llms-openai>=0.2.8",
     "llama-index-vector-stores-qdrant>=0.2.14",
     # Storage & Persistence
-    "asyncpg>=0.29.0",
     "psycopg[binary,pool]>=3.2.3",
     "qdrant-client>=1.11.3",
     "redis>=5.0.0",

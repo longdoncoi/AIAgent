@@ -859,8 +859,11 @@ async def test_docker_and_k8s_sandbox_execution_branches():
         assert "hello docker stdout" in res
 
     # 2. Test _execute_in_docker timeout
+    mock_proc_to = MagicMock()
+    mock_proc_to.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
+    mock_proc_to.kill = MagicMock(return_value=None)
     with patch(
-        "asyncio.create_subprocess_exec", new_callable=AsyncMock, side_effect=asyncio.TimeoutError()
+        "asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc_to
     ):
         res_to = await _execute_in_docker("import time; time.sleep(10)", is_python=True, timeout=1)
         assert "timed out in container" in res_to

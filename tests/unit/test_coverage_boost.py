@@ -568,6 +568,7 @@ async def test_health_routes_tcp_failure():
 async def test_code_exec_server_docker_branches():
     # 1. Docker execution success
     mock_proc = AsyncMock()
+    mock_proc.kill = MagicMock(return_value=None)
     mock_proc.communicate.return_value = (b"Hello from docker container\n", b"")
     mock_proc.returncode = 0
 
