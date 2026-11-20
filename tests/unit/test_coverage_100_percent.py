@@ -16,6 +16,7 @@ Covers all remaining statements across:
 """
 
 import asyncio
+import inspect
 import runpy
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -494,6 +495,7 @@ async def test_redis_saver_full_branches():
 
 def test_short_term_store_pool_and_checkpointer_exceptions():
     """Test short_term.py connection pool error and checkpointer fallback warnings (lines 45-46, 56, 81)."""
+    close_postgres_pool()
     with patch("psycopg_pool.ConnectionPool", side_effect=RuntimeError("Pool fail")):
         assert get_postgres_pool() is None
 
@@ -564,11 +566,15 @@ async def test_orchestrator_nodes_remaining_branches(tmp_path: Path):
 
     mock_task = MagicMock()
     mock_task.cancelled.side_effect = RuntimeError("Task state error")
-    with patch("asyncio.create_task", return_value=mock_task):
-        track_background_task(dummy_bg())
-        # Execute registered done callback
-        cb = mock_task.add_done_callback.call_args[0][0]
-        cb(mock_task)  # Should execute try...except pass
+    coro = dummy_bg()
+    try:
+        with patch("asyncio.create_task", return_value=mock_task):
+            track_background_task(coro)
+            # Execute registered done callback
+            cb = mock_task.add_done_callback.call_args[0][0]
+            cb(mock_task)  # Should execute try...except pass
+    finally:
+        coro.close()
 
     # 3. planner prompt file read error (lines 142-143)
     mock_llm = MagicMock()
@@ -700,11 +706,16 @@ async def test_mcp_client_tool_success_metric():
 def test_cli_main_entrypoints():
     """Test CLI main functions and __main__ guards across tool servers and workers."""
     mock_args = MagicMock(transport="stdio", port=9001)
+
+    def close_coro_run(coro):
+        if inspect.iscoroutine(coro):
+            coro.close()
+
     with (
         patch("argparse.ArgumentParser.parse_args", return_value=mock_args),
         patch("uvicorn.run"),
         patch("mcp.server.mcpserver.MCPServer.run"),
-        patch("asyncio.run"),
+        patch("asyncio.run", side_effect=close_coro_run),
     ):
         runpy.run_module("src.agentic.tools.servers.code_exec_server", run_name="__main__")
         runpy.run_module("src.agentic.tools.servers.repo_server", run_name="__main__")

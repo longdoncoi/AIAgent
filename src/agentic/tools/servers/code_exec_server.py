@@ -206,7 +206,8 @@ async def _execute_in_docker(code_or_cmd: str, is_python: bool, timeout: int = 3
             return "\n".join(output)
         except asyncio.TimeoutError:
             try:
-                proc.kill()
+                if proc is not None:
+                    proc.kill()
             except Exception:
                 pass
             return f"Execution timed out in container after {timeout} seconds."
@@ -264,8 +265,11 @@ async def execute_python_code(code: str, timeout: int = 30) -> str:
             return "\n".join(output) if output else "Executed with no output (Exit Code: 0)"
         except asyncio.TimeoutError:
             try:
-                proc.kill()
-                await proc.wait()
+                if proc is not None:
+                    proc.kill()
+                    res_w = proc.wait()
+                    if asyncio.iscoroutine(res_w):
+                        await res_w
             except Exception:
                 pass
             return f"Execution timed out after {timeout} seconds."
@@ -320,8 +324,11 @@ async def execute_bash_command(command: str, timeout: int = 30) -> str:
             return "\n".join(output) if output else "Command executed with no output."
         except asyncio.TimeoutError:
             try:
-                proc.kill()
-                await proc.wait()
+                if proc is not None:
+                    proc.kill()
+                    res_w = proc.wait()
+                    if asyncio.iscoroutine(res_w):
+                        await res_w
             except Exception:
                 pass
             return f"Command timed out after {timeout} seconds."
