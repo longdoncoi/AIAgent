@@ -46,8 +46,11 @@ class RAGCache:
 
         if should_use_redis and target_redis_url:
             try:
-                import redis
-                client = redis.Redis.from_url(target_redis_url, socket_timeout=0.5, decode_responses=True)
+                from src.agentic.core.redis import get_redis_client
+                client = get_redis_client(target_redis_url)
+                if client is None:
+                    import redis
+                    client = redis.Redis.from_url(target_redis_url, socket_timeout=0.5, decode_responses=True)
                 client.ping()
                 self._redis_client = client
                 logger.info(f"Initialized Distributed Redis L2 backend for RAGCache at {target_redis_url}")

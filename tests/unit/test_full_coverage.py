@@ -820,13 +820,13 @@ async def test_docker_and_k8s_sandbox_execution_branches():
     mock_proc = MagicMock()
     mock_proc.returncode = 0
     mock_proc.communicate = AsyncMock(return_value=(b"hello docker stdout", b""))
-    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc):
         res = await _execute_in_docker("print('hello')", is_python=True, timeout=5)
         assert "[DOCKER SANDBOX ISOLATION ACTIVE]" in res
         assert "hello docker stdout" in res
 
     # 2. Test _execute_in_docker timeout
-    with patch("asyncio.create_subprocess_exec", side_effect=asyncio.TimeoutError()):
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, side_effect=asyncio.TimeoutError()):
         res_to = await _execute_in_docker("import time; time.sleep(10)", is_python=True, timeout=1)
         assert "timed out in container" in res_to
 
@@ -834,14 +834,14 @@ async def test_docker_and_k8s_sandbox_execution_branches():
     mock_k8s_proc = MagicMock()
     mock_k8s_proc.returncode = 0
     mock_k8s_proc.communicate = AsyncMock(return_value=(b"k8s pod stdout", b""))
-    with patch("asyncio.create_subprocess_exec", return_value=mock_k8s_proc):
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_k8s_proc):
         res_k8s = await _execute_in_k8s_sandbox("echo 1", is_python=False, timeout=5)
         assert "KUBERNETES GVISOR SANDBOX ACTIVE" in res_k8s
         assert "k8s pod stdout" in res_k8s
 
     # 4. Test execute_python_code and execute_bash_command with k8s enabled
     with patch("src.agentic.tools.servers.code_exec_server._is_k8s_available", return_value=True):
-        with patch("src.agentic.tools.servers.code_exec_server._execute_in_k8s_sandbox", return_value="k8s executed"):
+        with patch("src.agentic.tools.servers.code_exec_server._execute_in_k8s_sandbox", new_callable=AsyncMock, return_value="k8s executed"):
             res_py = await execute_python_code("print('test')")
             assert res_py == "k8s executed"
             res_sh = await execute_bash_command("ls")

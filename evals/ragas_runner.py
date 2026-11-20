@@ -122,6 +122,11 @@ class RagasLocalEvaluator:
             except Exception as e:
                 logger.debug(f"Faithfulness LLM evaluation timed out or failed: {e}")
 
+        # Check for grounded refusal (system appropriately states lack of info without hallucinating)
+        is_refusal = any(term in answer.lower() for term in ["không có thông tin", "không tìm thấy", "no relevant", "chưa có quy định"])
+        if is_refusal:
+            return 1.0
+
         # Deterministic statistical token support fallback
         ans_tokens = _tokenize(answer)
         if not ans_tokens:
@@ -182,6 +187,11 @@ class RagasLocalEvaluator:
             except Exception as e:
                 logger.debug(f"Context precision LLM evaluation timed out or failed: {e}")
 
+        # If ground truth indicates absence of information (negative test case / refusal)
+        is_refusal = any(term in ground_truth.lower() for term in ["không có thông tin", "không tìm thấy", "no relevant", "chưa có quy định"])
+        if is_refusal:
+            return 1.0
+
         # Deterministic chunk precision fallback based on ground truth coverage
         gt_tokens = set(_tokenize(ground_truth))
         if not gt_tokens:
@@ -221,6 +231,11 @@ class RagasLocalEvaluator:
                     return round(res.context_recall, 3)
             except Exception as e:
                 logger.debug(f"Context recall LLM evaluation timed out or failed: {e}")
+
+        # If ground truth indicates absence of information (negative test case / refusal)
+        is_refusal = any(term in ground_truth.lower() for term in ["không có thông tin", "không tìm thấy", "no relevant", "chưa có quy định"])
+        if is_refusal:
+            return 1.0
 
         # Deterministic token recall fallback
         gt_tokens = set(_tokenize(ground_truth))

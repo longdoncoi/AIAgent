@@ -49,6 +49,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as e:
         logger.warning(f"Error while closing PostgreSQL pool: {e}")
 
+    try:
+        from src.agentic.core.redis import close_redis_pools
+        close_redis_pools()
+    except Exception as e:
+        logger.warning(f"Error while closing Redis pools: {e}")
+
 
 def create_app() -> FastAPI:
     """Application factory for FastAPI server."""

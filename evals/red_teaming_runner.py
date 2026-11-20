@@ -15,8 +15,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.agentic.core.errors import GuardrailViolation
-from src.agentic.safety.guardrails import get_guardrails
+from src.agentic.core.errors import GuardrailViolation  # noqa: E402
+from src.agentic.safety.guardrails import get_guardrails  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

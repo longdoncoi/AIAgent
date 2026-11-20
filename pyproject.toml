@@ -81,6 +81,9 @@ mypy_path = "."
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+filterwarnings = [
+    "ignore:.*langchain-community.*is being sunset:DeprecationWarning",
+]
 
 [dependency-groups]
 dev = [

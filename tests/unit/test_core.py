@@ -52,3 +52,43 @@ def test_policy_manager():
     allowed = policy.get_agent_tools("coding_agent")
     assert "repo_write_file" in allowed
     assert "code_exec_python" in allowed
+
+
+def test_singleton_redis_connection_pools():
+    from unittest.mock import MagicMock, patch
+
+    from src.agentic.core.redis import (
+        close_redis_pools,
+        get_async_redis_client,
+        get_async_redis_connection_pool,
+        get_redis_client,
+        get_redis_connection_pool,
+    )
+
+    mock_pool = MagicMock()
+    mock_async_pool = MagicMock()
+
+    with patch("redis.ConnectionPool.from_url", return_value=mock_pool):
+        with patch("redis.asyncio.ConnectionPool.from_url", return_value=mock_async_pool):
+            close_redis_pools()
+            p1 = get_redis_connection_pool()
+            p2 = get_redis_connection_pool()
+            assert p1 == p2
+
+            ap1 = get_async_redis_connection_pool()
+            ap2 = get_async_redis_connection_pool()
+            assert ap1 == ap2
+
+            with patch("redis.Redis", return_value=MagicMock()) as mock_redis_cls:
+                c1 = get_redis_client()
+                assert c1 is not None
+                mock_redis_cls.assert_called_once_with(connection_pool=p1)
+
+            with patch("redis.asyncio.Redis", return_value=MagicMock()) as mock_aredis_cls:
+                ac1 = get_async_redis_client()
+                assert ac1 is not None
+                mock_aredis_cls.assert_called_once_with(connection_pool=ap1)
+
+            close_redis_pools()
+            mock_pool.disconnect.assert_called_once()
+

@@ -9,6 +9,12 @@ from src.agentic.core.errors import (
     LLMGatewayError,
     ToolExecutionError,
 )
+from src.agentic.core.redis import (
+    close_redis_pools,
+    get_async_redis_client,
+    get_redis_client,
+    get_redis_connection_pool,
+)
 from src.agentic.core.schemas import (
     ApprovalRequest,
     ApprovalResponse,
@@ -28,6 +34,10 @@ __all__ = [
     "ToolExecutionError",
     "A2ACommunicationError",
     "LLMGatewayError",
+    "get_redis_connection_pool",
+    "get_redis_client",
+    "get_async_redis_client",
+    "close_redis_pools",
     "ChatRequest",
     "ChatResponse",
     "SSEEvent",

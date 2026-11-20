@@ -54,18 +54,30 @@ class RedisSaver(MemorySaver):
             client.ping()
             self._redis_client = client
             logger.info(f"Initialized sync RedisSaver backend at {self.redis_url} (TTL={self.ttl}s)")
-        except Exception as e:
-            logger.debug(f"Redis backend not reachable for RedisSaver ({e}). Operating in memory mode.")
-            self._redis_client = None
+        except Exception:
+            try:
+                from src.agentic.core.redis import get_redis_client
+                pool_client = get_redis_client(self.redis_url)
+                if pool_client is not None:
+                    pool_client.ping()
+                    self._redis_client = pool_client
+                    logger.info(f"Initialized sync RedisSaver backend from connection pool at {self.redis_url}")
+            except Exception as e:
+                logger.debug(f"Redis backend not reachable for RedisSaver ({e}). Operating in memory mode.")
+                self._redis_client = None
 
         if self._redis_client is not None:
             try:
                 import redis.asyncio as aioredis
                 self._async_redis_client = aioredis.from_url(self.redis_url, socket_timeout=1.0)
                 logger.info(f"Initialized async RedisSaver backend at {self.redis_url}")
-            except Exception as e:
-                logger.debug(f"Async Redis backend not reachable for RedisSaver ({e}).")
-                self._async_redis_client = None
+            except Exception:
+                try:
+                    from src.agentic.core.redis import get_async_redis_client
+                    self._async_redis_client = get_async_redis_client(self.redis_url)
+                except Exception as e:
+                    logger.debug(f"Async Redis backend not reachable for RedisSaver ({e}).")
+                    self._async_redis_client = None
         else:
             self._async_redis_client = None
 
