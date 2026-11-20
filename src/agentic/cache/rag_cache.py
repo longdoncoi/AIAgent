@@ -28,6 +28,7 @@ class RAGCache:
         default_ttl: int = 3600,
         redis_url: str | None = None,
         enable_redis: bool = False,
+        embed_fn: Any | None = None,
     ) -> None:
         self.settings = get_settings()
         self.max_entries = max_entries
@@ -40,22 +41,35 @@ class RAGCache:
         self._misses = 0
         self._semantic_hits = 0
         self._redis_client: Any = None
+        self._embed_fn: Any = embed_fn or self._resolve_default_embed_fn()
 
         target_redis_url = redis_url or self.settings.redis_url
-        should_use_redis = enable_redis or self.settings.enable_redis_cache or self.settings.enable_redis_rate_limit
+        should_use_redis = (
+            enable_redis
+            or self.settings.enable_redis_cache
+            or self.settings.enable_redis_rate_limit
+        )
 
         if should_use_redis and target_redis_url:
             try:
                 from src.agentic.core.redis import get_redis_client
+
                 client = get_redis_client(target_redis_url)
                 if client is None:
                     import redis
-                    client = redis.Redis.from_url(target_redis_url, socket_timeout=0.5, decode_responses=True)
+
+                    client = redis.Redis.from_url(
+                        target_redis_url, socket_timeout=0.5, decode_responses=True
+                    )
                 client.ping()
                 self._redis_client = client
-                logger.info(f"Initialized Distributed Redis L2 backend for RAGCache at {target_redis_url}")
+                logger.info(
+                    f"Initialized Distributed Redis L2 backend for RAGCache at {target_redis_url}"
+                )
             except Exception as e:
-                logger.debug(f"Redis L2 backend not reachable for RAGCache ({e}). Operating in L1 local memory mode.")
+                logger.debug(
+                    f"Redis L2 backend not reachable for RAGCache ({e}). Operating in L1 local memory mode."
+                )
 
     @staticmethod
     def _normalize_query(query: str) -> str:
@@ -95,7 +109,11 @@ class RAGCache:
                 cached_data = self._redis_client.get(redis_key)
                 if cached_data is not None:
                     # Deserialize and populate back into L1
-                    payload = json.loads(cached_data) if cached_data.startswith("{") else {"result": cached_data}
+                    payload = (
+                        json.loads(cached_data)
+                        if cached_data.startswith("{")
+                        else {"result": cached_data}
+                    )
                     result_val = payload.get("result", cached_data)
                     meta_val = payload.get("metadata", {})
                     ttl_left = max(60, self._redis_client.ttl(redis_key))
@@ -105,7 +123,9 @@ class RAGCache:
                         self._cache[key] = (now + ttl_left, result_val, meta_val)
                     self._hits += 1
                     RAG_CACHE_HITS_TOTAL.inc()
-                    logger.debug(f"RAG Cache L2 (Redis) HIT for query='{query[:40]}...' (key={key[:8]})")
+                    logger.debug(
+                        f"RAG Cache L2 (Redis) HIT for query='{query[:40]}...' (key={key[:8]})"
+                    )
                     return result_val
             except Exception as ex:
                 logger.debug(f"Redis L2 read exception in RAGCache: {ex}")
@@ -143,9 +163,13 @@ class RAGCache:
         if self._redis_client is not None:
             try:
                 redis_key = f"rag_cache:{key}"
-                payload = json.dumps({"result": result, "metadata": metadata or {}}, ensure_ascii=False)
+                payload = json.dumps(
+                    {"result": result, "metadata": metadata or {}}, ensure_ascii=False
+                )
                 self._redis_client.set(redis_key, payload, ex=effective_ttl)
-                logger.debug(f"RAG Cache L2 (Redis) SET for query='{query[:40]}...' (TTL={effective_ttl}s)")
+                logger.debug(
+                    f"RAG Cache L2 (Redis) SET for query='{query[:40]}...' (TTL={effective_ttl}s)"
+                )
             except Exception as ex:
                 logger.debug(f"Redis L2 write exception in RAGCache: {ex}")
 
@@ -180,7 +204,7 @@ class RAGCache:
         if not words:
             return vec
         for w in words:
-            grams = [w[i:i+3] for i in range(max(1, len(w)-2))]
+            grams = [w[i : i + 3] for i in range(max(1, len(w) - 2))]
             for g in grams:
                 idx = int(hashlib.md5(g.encode("utf-8")).hexdigest()[:8], 16) % dim
                 vec[idx] += 1.0
@@ -188,6 +212,66 @@ class RAGCache:
         if norm > 0.0:
             vec = [x / norm for x in vec]
         return vec
+
+    def _resolve_default_embed_fn(self) -> Any | None:
+        """Attempts to discover active neural embedding provider if available."""
+        try:
+            from llama_index.core import Settings as LlamaSettings
+
+            if hasattr(LlamaSettings, "embed_model") and LlamaSettings.embed_model is not None:
+                embed_model = LlamaSettings.embed_model
+                class_name = embed_model.__class__.__name__.lower()
+                embed_name = str(getattr(embed_model, "model_name", "")).lower()
+                if (
+                    "mock" not in class_name
+                    and "mock" not in embed_name
+                    and embed_name not in ("", "unknown")
+                    and not type(embed_model).__module__.startswith("unittest.mock")
+                ):
+                    return lambda t: embed_model.get_text_embedding(t)
+        except Exception:
+            pass
+        return None
+
+    def set_embed_fn(self, embed_fn: Any) -> None:
+        """Sets or updates the dense embedding function used for semantic vector extraction."""
+        self._embed_fn = embed_fn
+
+    def get_embedding(self, text: str) -> list[float]:
+        """Generates embedding vector for query comparison.
+
+        Uses registered neural embed_fn if available, otherwise falls back to deterministic n-gram vector.
+        """
+        if self._embed_fn is not None:
+            try:
+                vec = self._embed_fn(text)
+                if isinstance(vec, (list, tuple)) and len(vec) > 0:
+                    return list(vec)
+            except Exception as e:
+                logger.debug(
+                    f"Custom embed_fn call failed ({e}). Falling back to pseudo-dense vector."
+                )
+        return self._generate_text_vector(text)
+
+    async def aget_embedding(self, text: str) -> list[float]:
+        """Asynchronously generates embedding vector for query comparison."""
+        if self._embed_fn is not None:
+            try:
+                import inspect
+
+                if inspect.iscoroutinefunction(self._embed_fn):
+                    vec = await self._embed_fn(text)
+                else:
+                    import asyncio
+
+                    vec = await asyncio.to_thread(self._embed_fn, text)
+                if isinstance(vec, (list, tuple)) and len(vec) > 0:
+                    return list(vec)
+            except Exception as e:
+                logger.debug(
+                    f"Custom async embed_fn call failed ({e}). Falling back to pseudo-dense vector."
+                )
+        return self._generate_text_vector(text)
 
     def get_semantic(
         self,
@@ -211,7 +295,7 @@ class RAGCache:
 
         now = time.time()
         threshold = self.get_domain_threshold(domain)
-        target_vec = query_vector or self._generate_text_vector(query)
+        target_vec = query_vector if query_vector is not None else self.get_embedding(query)
 
         with self._lock:
             # Purge expired semantic entries
@@ -259,7 +343,7 @@ class RAGCache:
 
         effective_ttl = ttl if ttl is not None else self.settings.rag_cache_ttl_seconds
         expire_at = time.time() + effective_ttl
-        target_vec = query_vector or self._generate_text_vector(query)
+        target_vec = query_vector if query_vector is not None else self.get_embedding(query)
 
         entry = {
             "query": query,
@@ -280,7 +364,9 @@ class RAGCache:
         """Acquires a distributed Redis or in-memory lock for a key to prevent cache stampede."""
         if self._redis_client is not None:
             try:
-                acquired = bool(self._redis_client.set(f"lock:rag:{key}", "1", nx=True, ex=max(1, int(timeout))))
+                acquired = bool(
+                    self._redis_client.set(f"lock:rag:{key}", "1", nx=True, ex=max(1, int(timeout)))
+                )
                 return acquired
             except Exception:
                 pass
@@ -311,7 +397,11 @@ class RAGCache:
         query_vector: list[float] | None = None,
     ) -> str:
         """Stampede-guarded async retrieval with adaptive semantic caching."""
-        cached = self.get_semantic(query, domain=domain, top_k=top_k, query_vector=query_vector)
+        target_vec = query_vector
+        if target_vec is None:
+            target_vec = await self.aget_embedding(query)
+
+        cached = self.get_semantic(query, domain=domain, top_k=top_k, query_vector=target_vec)
         if cached is not None:
             return cached
 
@@ -321,23 +411,35 @@ class RAGCache:
         if has_lock:
             try:
                 import inspect
+
                 if inspect.iscoroutinefunction(compute_fn):
                     computed = await compute_fn()
                 else:
                     computed = compute_fn()
-                self.set_semantic(query, str(computed), domain=domain, top_k=top_k, query_vector=query_vector, ttl=ttl)
+                self.set_semantic(
+                    query,
+                    str(computed),
+                    domain=domain,
+                    top_k=top_k,
+                    query_vector=target_vec,
+                    ttl=ttl,
+                )
                 return str(computed)
             finally:
                 self.release_lock(key)
         else:
             import asyncio
+
             start_wait = time.time()
             while time.time() - start_wait < timeout:
                 await asyncio.sleep(0.05)
-                cached = self.get_semantic(query, domain=domain, top_k=top_k, query_vector=query_vector)
+                cached = self.get_semantic(
+                    query, domain=domain, top_k=top_k, query_vector=target_vec
+                )
                 if cached is not None:
                     return cached
             import inspect
+
             if inspect.iscoroutinefunction(compute_fn):
                 return str(await compute_fn())
             return str(compute_fn())
@@ -353,7 +455,11 @@ class RAGCache:
         query_vector: list[float] | None = None,
     ) -> str:
         """Synchronous stampede-guarded retrieval with adaptive semantic caching."""
-        cached = self.get_semantic(query, domain=domain, top_k=top_k, query_vector=query_vector)
+        target_vec = query_vector
+        if target_vec is None:
+            target_vec = self.get_embedding(query)
+
+        cached = self.get_semantic(query, domain=domain, top_k=top_k, query_vector=target_vec)
         if cached is not None:
             return cached
 
@@ -363,7 +469,9 @@ class RAGCache:
         if has_lock:
             try:
                 computed = str(compute_fn())
-                self.set_semantic(query, computed, domain=domain, top_k=top_k, query_vector=query_vector, ttl=ttl)
+                self.set_semantic(
+                    query, computed, domain=domain, top_k=top_k, query_vector=target_vec, ttl=ttl
+                )
                 return computed
             finally:
                 self.release_lock(key)
@@ -371,10 +479,62 @@ class RAGCache:
             start_wait = time.time()
             while time.time() - start_wait < timeout:
                 time.sleep(0.05)
-                cached = self.get_semantic(query, domain=domain, top_k=top_k, query_vector=query_vector)
+                cached = self.get_semantic(
+                    query, domain=domain, top_k=top_k, query_vector=target_vec
+                )
                 if cached is not None:
                     return cached
             return str(compute_fn())
+
+    def invalidate_by_source(self, source: str) -> int:
+        """Selectively invalidates cached RAG entries associated with a document or source."""
+        if not source:
+            return 0
+        removed_count = 0
+        norm_source = source.lower().strip()
+
+        with self._lock:
+            # 1. Invalidate matching L1 exact cache entries
+            keys_to_del = []
+            for k, (_, res, meta) in self._cache.items():
+                meta_str = json.dumps(meta).lower()
+                if norm_source in meta_str or norm_source in str(res).lower():
+                    keys_to_del.append(k)
+            for k in keys_to_del:
+                del self._cache[k]
+                removed_count += 1
+
+            # 2. Invalidate matching semantic entries
+            before_len = len(self._semantic_entries)
+            self._semantic_entries = [
+                e
+                for e in self._semantic_entries
+                if norm_source not in json.dumps(e.get("metadata", {})).lower()
+                and norm_source not in str(e.get("result", "")).lower()
+                and norm_source not in str(e.get("query", "")).lower()
+            ]
+            removed_count += before_len - len(self._semantic_entries)
+
+        # 3. Invalidate in L2 Redis if active
+        if self._redis_client is not None:
+            try:
+                keys = self._redis_client.keys("rag_cache:*")
+                for key in keys:
+                    raw_val = self._redis_client.get(key)
+                    if raw_val and norm_source in str(raw_val).lower():
+                        self._redis_client.delete(key)
+                        removed_count += 1
+            except Exception as ex:
+                logger.debug(f"Redis selective invalidation note: {ex}")
+
+        logger.info(
+            f"Selectively invalidated {removed_count} RAG cache entries for source '{source}'."
+        )
+        return removed_count
+
+    def invalidate_document(self, doc_id: str) -> int:
+        """Selectively invalidates cache entries for a specific document identifier."""
+        return self.invalidate_by_source(doc_id)
 
     def clear(self) -> None:
         """Flushes all cached entries from L1 and L2."""

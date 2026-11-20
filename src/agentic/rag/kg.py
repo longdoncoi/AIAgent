@@ -33,7 +33,9 @@ class KnowledgeGraphStore:
 
     def __init__(self, persist_path: Path | None = None) -> None:
         self.settings = get_settings()
-        self.persist_path = persist_path or (self.settings.project_root / "data" / "index" / "kg_graph.json")
+        self.persist_path = persist_path or (
+            self.settings.project_root / "data" / "index" / "kg_graph.json"
+        )
         self.graph = nx.DiGraph()
         self._neo4j_driver: Any = None
         self._init_neo4j()
@@ -43,6 +45,7 @@ class KnowledgeGraphStore:
         """Attempts connection to Neo4j database."""
         try:
             import neo4j
+
             driver = neo4j.GraphDatabase.driver(
                 self.settings.neo4j_url,
                 auth=(self.settings.neo4j_user, self.settings.neo4j_password),
@@ -63,8 +66,12 @@ class KnowledgeGraphStore:
                 for node_data in data.get("nodes", []):
                     self.graph.add_node(node_data["id"], **node_data.get("attrs", {}))
                 for edge in data.get("edges", []):
-                    self.graph.add_edge(edge["u"], edge["v"], relation=edge.get("relation", "related_to"))
-                logger.info(f"Loaded {self.graph.number_of_nodes()} nodes and {self.graph.number_of_edges()} edges into Knowledge Graph.")
+                    self.graph.add_edge(
+                        edge["u"], edge["v"], relation=edge.get("relation", "related_to")
+                    )
+                logger.info(
+                    f"Loaded {self.graph.number_of_nodes()} nodes and {self.graph.number_of_edges()} edges into Knowledge Graph."
+                )
             except Exception as e:
                 logger.warning(f"Could not load graph from {self.persist_path}: {e}")
 
@@ -82,7 +89,9 @@ class KnowledgeGraphStore:
         except Exception as e:
             logger.warning(f"Failed to persist Knowledge Graph: {e}")
 
-    def add_triple(self, subject: str, predicate: str, object_: str, metadata: dict[str, Any] | None = None) -> None:
+    def add_triple(
+        self, subject: str, predicate: str, object_: str, metadata: dict[str, Any] | None = None
+    ) -> None:
         """Adds an entity-relation-entity triple to both in-memory graph and Neo4j if available."""
         sub = subject.strip()
         obj = object_.strip()
@@ -154,10 +163,18 @@ class KnowledgeGraphStore:
 
         # Patterns for policy/rules: X yêu cầu Y, X requires Y, X quy định Y
         rule_patterns = [
-            re.compile(r"([^.,;\n]+)\s+(yêu cầu|requires|phải có|bắt buộc)\s+([^.,;\n]+)", re.IGNORECASE),
-            re.compile(r"([^.,;\n]+)\s+(áp dụng cho|applies to|dành cho)\s+([^.,;\n]+)", re.IGNORECASE),
-            re.compile(r"([^.,;\n]+)\s+(thuộc về|belongs to|là một phần của)\s+([^.,;\n]+)", re.IGNORECASE),
-            re.compile(r"([^.,;\n]+)\s+(có quyền|has permission|được phép)\s+([^.,;\n]+)", re.IGNORECASE),
+            re.compile(
+                r"([^.,;\n]+)\s+(yêu cầu|requires|phải có|bắt buộc)\s+([^.,;\n]+)", re.IGNORECASE
+            ),
+            re.compile(
+                r"([^.,;\n]+)\s+(áp dụng cho|applies to|dành cho)\s+([^.,;\n]+)", re.IGNORECASE
+            ),
+            re.compile(
+                r"([^.,;\n]+)\s+(thuộc về|belongs to|là một phần của)\s+([^.,;\n]+)", re.IGNORECASE
+            ),
+            re.compile(
+                r"([^.,;\n]+)\s+(có quyền|has permission|được phép)\s+([^.,;\n]+)", re.IGNORECASE
+            ),
         ]
 
         for line in lines:
@@ -187,11 +204,13 @@ class KnowledgeGraphStore:
     async def aindex_text(self, text: str, source_doc: str = "document") -> int:
         """Asynchronously extracts and adds triples to Knowledge Graph without blocking loop."""
         import asyncio
+
         return await asyncio.to_thread(self.index_text, text, source_doc)
 
     async def aquery_graph(self, query: str, top_k: int = 5) -> list[NodeWithScore]:
         """Asynchronously queries the Knowledge Graph."""
         import asyncio
+
         return await asyncio.to_thread(self.query_graph, query, top_k)
 
     def query_graph(self, query: str, top_k: int = 5) -> list[NodeWithScore]:
@@ -215,9 +234,13 @@ class KnowledgeGraphStore:
 
             rel_descriptions: list[str] = []
             for _, target, data in out_edges[:5]:
-                rel_descriptions.append(f"• {node_id} -> [{data.get('relation', 'related_to')}] -> {target}")
+                rel_descriptions.append(
+                    f"• {node_id} -> [{data.get('relation', 'related_to')}] -> {target}"
+                )
             for source, _, data in in_edges[:5]:
-                rel_descriptions.append(f"• {source} -> [{data.get('relation', 'related_to')}] -> {node_id}")
+                rel_descriptions.append(
+                    f"• {source} -> [{data.get('relation', 'related_to')}] -> {node_id}"
+                )
 
             if rel_descriptions:
                 graph_text = f"Knowledge Graph Entity [{node_id}]:\n" + "\n".join(rel_descriptions)

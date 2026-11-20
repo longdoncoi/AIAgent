@@ -22,8 +22,12 @@ logger = logging.getLogger(__name__)
 # 1. Structured DeepEval Metric Output Schemas
 # ------------------------------------------------------------------------------
 class FaithfulnessJudgeOutput(BaseModel):
-    faithfulness_score: float = Field(ge=0.0, le=1.0, description="Ratio of claims supported by context")
-    unsupported_claims: list[str] = Field(default_factory=list, description="Extracted claims not found in context")
+    faithfulness_score: float = Field(
+        ge=0.0, le=1.0, description="Ratio of claims supported by context"
+    )
+    unsupported_claims: list[str] = Field(
+        default_factory=list, description="Extracted claims not found in context"
+    )
     reasoning: str = Field(description="Explanation of factual fidelity")
 
 
@@ -33,7 +37,9 @@ class RelevancyJudgeOutput(BaseModel):
 
 
 class HallucinationJudgeOutput(BaseModel):
-    hallucination_score: float = Field(ge=0.0, le=1.0, description="Ratio of fabricated or conflicting facts")
+    hallucination_score: float = Field(
+        ge=0.0, le=1.0, description="Ratio of fabricated or conflicting facts"
+    )
     hallucination_detected: bool = Field(description="True if unsupported claims are found")
     reasoning: str = Field(description="Explanation of hallucination detection")
 
@@ -51,6 +57,7 @@ class LocalJudge:
     def _is_online(self) -> bool:
         """Fast probe to check if LiteLLM Gateway is running."""
         import socket
+
         try:
             with socket.create_connection(("localhost", 4000), timeout=0.1):
                 return True
@@ -76,7 +83,9 @@ class LocalJudge:
                 if isinstance(res, FaithfulnessJudgeOutput):
                     return round(res.faithfulness_score, 3)
             except Exception as e:
-                logger.debug(f"Judge LLM offline/timeout ({e}). Using deterministic token overlap fallback.")
+                logger.debug(
+                    f"Judge LLM offline/timeout ({e}). Using deterministic token overlap fallback."
+                )
 
         # Deterministic fallback: token inclusion ratio
         ans_tokens = [w.lower() for w in answer.split() if len(w) > 3]
@@ -182,7 +191,12 @@ async def run_deepeval_benchmark() -> bool:
             actual_agent = plan.steps[0].agent if plan and plan.steps else "unknown"
 
             # Routing Accuracy
-            r_score = 1.0 if actual_agent.lower().replace("_agent", "") == exp_agent.lower().replace("_agent", "") else 0.0
+            r_score = (
+                1.0
+                if actual_agent.lower().replace("_agent", "")
+                == exp_agent.lower().replace("_agent", "")
+                else 0.0
+            )
             routing_scores.append(r_score)
 
             # Tool Correctness
@@ -192,8 +206,12 @@ async def run_deepeval_benchmark() -> bool:
 
     avg_routing = sum(routing_scores) / max(1, len(routing_scores))
     avg_tool = sum(tool_scores) / max(1, len(tool_scores))
-    print(f"  >> Avg Routing Accuracy:  {avg_routing * 100:.1f}% (Threshold: {thresholds['routing_accuracy'] * 100:.1f}%)")
-    print(f"  >> Avg Tool Correctness:   {avg_tool * 100:.1f}% (Threshold: {thresholds['tool_selection'] * 100:.1f}%)")
+    print(
+        f"  >> Avg Routing Accuracy:  {avg_routing * 100:.1f}% (Threshold: {thresholds['routing_accuracy'] * 100:.1f}%)"
+    )
+    print(
+        f"  >> Avg Tool Correctness:   {avg_tool * 100:.1f}% (Threshold: {thresholds['tool_selection'] * 100:.1f}%)"
+    )
 
     # 2. RAG Faithfulness, Groundedness & Relevancy Evaluation
     from src.agentic.rag.tools import search_policy
@@ -224,8 +242,12 @@ async def run_deepeval_benchmark() -> bool:
     avg_relevancy = sum(relevancy_scores) / max(1, len(relevancy_scores))
     avg_hallucination = sum(hallucination_scores) / max(1, len(hallucination_scores))
 
-    print(f"  >> Avg Faithfulness:       {avg_faith:.2f} (Threshold: {thresholds['faithfulness']:.2f})")
-    print(f"  >> Avg Answer Relevancy:   {avg_relevancy:.2f} (Threshold: {thresholds['answer_relevancy']:.2f})")
+    print(
+        f"  >> Avg Faithfulness:       {avg_faith:.2f} (Threshold: {thresholds['faithfulness']:.2f})"
+    )
+    print(
+        f"  >> Avg Answer Relevancy:   {avg_relevancy:.2f} (Threshold: {thresholds['answer_relevancy']:.2f})"
+    )
     print(f"  >> Avg Hallucination Rate: {avg_hallucination:.2f} (Max Tolerance: 0.15)")
 
     # Gate verification

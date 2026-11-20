@@ -12,7 +12,9 @@ class AgentCard(BaseModel):
     name: str = Field(..., description="Agent identifier")
     description: str = Field(..., description="Detailed role and specialty of the agent")
     endpoint: str = Field(..., description="URL endpoint where the agent serves A2A requests")
-    skills: list[str] = Field(default_factory=list, description="List of skills supported by the agent")
+    skills: list[str] = Field(
+        default_factory=list, description="List of skills supported by the agent"
+    )
     version: str = Field(default="1.0.0")
 
 

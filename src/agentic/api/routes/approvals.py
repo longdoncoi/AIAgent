@@ -43,7 +43,9 @@ async def resume_hitl_endpoint(
     try:
         # Resume LangGraph by passing Command(resume=...)
         await graph.ainvoke(Command(resume=resume_payload), config=config)
-        action_status: Literal["resumed", "aborted"] = "resumed" if req.decision.approved else "aborted"
+        action_status: Literal["resumed", "aborted"] = (
+            "resumed" if req.decision.approved else "aborted"
+        )
         return ApprovalResponse(
             thread_id=thread_id,
             status=action_status,

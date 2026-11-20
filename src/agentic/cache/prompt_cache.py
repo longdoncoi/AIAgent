@@ -39,20 +39,32 @@ class PromptCache:
         self._redis_client: Any = None
 
         target_redis_url = redis_url or self.settings.redis_url
-        should_use_redis = enable_redis or self.settings.enable_redis_cache or self.settings.enable_redis_rate_limit
+        should_use_redis = (
+            enable_redis
+            or self.settings.enable_redis_cache
+            or self.settings.enable_redis_rate_limit
+        )
 
         if should_use_redis and target_redis_url:
             try:
                 from src.agentic.core.redis import get_redis_client
+
                 client = get_redis_client(target_redis_url)
                 if client is None:
                     import redis
-                    client = redis.Redis.from_url(target_redis_url, socket_timeout=0.5, decode_responses=True)
+
+                    client = redis.Redis.from_url(
+                        target_redis_url, socket_timeout=0.5, decode_responses=True
+                    )
                 client.ping()
                 self._redis_client = client
-                logger.info(f"Initialized Distributed Redis L2 backend for PromptCache at {target_redis_url}")
+                logger.info(
+                    f"Initialized Distributed Redis L2 backend for PromptCache at {target_redis_url}"
+                )
             except Exception as e:
-                logger.debug(f"Redis L2 backend not reachable for PromptCache ({e}). Operating in L1 local memory mode.")
+                logger.debug(
+                    f"Redis L2 backend not reachable for PromptCache ({e}). Operating in L1 local memory mode."
+                )
 
     @staticmethod
     def _serialize_messages(messages: list[Any]) -> str:
@@ -62,7 +74,9 @@ class PromptCache:
             if hasattr(m, "type") and hasattr(m, "content"):
                 clean_list.append({"role": str(m.type), "content": str(m.content)})
             elif isinstance(m, dict):
-                clean_list.append({"role": str(m.get("role", "")), "content": str(m.get("content", ""))})
+                clean_list.append(
+                    {"role": str(m.get("role", "")), "content": str(m.get("content", ""))}
+                )
             else:
                 clean_list.append({"role": "user", "content": str(m)})
         return json.dumps(clean_list, sort_keys=True, ensure_ascii=False)
@@ -72,7 +86,9 @@ class PromptCache:
         raw_key = f"{model_alias}:{temperature:.2f}:{serialized}"
         return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
-    def get_response(self, model_alias: str, messages: list[Any], temperature: float = 0.2) -> str | None:
+    def get_response(
+        self, model_alias: str, messages: list[Any], temperature: float = 0.2
+    ) -> str | None:
         """Returns cached completion if hit and not expired (checking L1 then L2)."""
         if not self.settings.enable_prompt_cache:
             return None
@@ -110,7 +126,9 @@ class PromptCache:
                         self._cache[key] = (now + ttl_left, cached_data, {})
                     self._hits += 1
                     PROMPT_CACHE_HITS_TOTAL.labels(model_alias=model_alias).inc()
-                    logger.debug(f"Prompt Cache L2 (Redis) HIT for model='{model_alias}' (key={key[:8]})")
+                    logger.debug(
+                        f"Prompt Cache L2 (Redis) HIT for model='{model_alias}' (key={key[:8]})"
+                    )
                     return cached_data
             except Exception as ex:
                 logger.debug(f"Redis L2 read exception in PromptCache: {ex}")
@@ -150,7 +168,9 @@ class PromptCache:
             try:
                 redis_key = f"prompt_cache:{key}"
                 self._redis_client.set(redis_key, response, ex=effective_ttl)
-                logger.debug(f"Prompt Cache L2 (Redis) SET for model='{model_alias}' (TTL={effective_ttl}s)")
+                logger.debug(
+                    f"Prompt Cache L2 (Redis) SET for model='{model_alias}' (TTL={effective_ttl}s)"
+                )
             except Exception as ex:
                 logger.debug(f"Redis L2 write exception in PromptCache: {ex}")
 
@@ -158,7 +178,11 @@ class PromptCache:
         """Acquires a distributed Redis or in-memory lock for a key to prevent cache stampede."""
         if self._redis_client is not None:
             try:
-                acquired = bool(self._redis_client.set(f"lock:prompt:{key}", "1", nx=True, ex=max(1, int(timeout))))
+                acquired = bool(
+                    self._redis_client.set(
+                        f"lock:prompt:{key}", "1", nx=True, ex=max(1, int(timeout))
+                    )
+                )
                 return acquired
             except Exception:
                 pass
@@ -198,6 +222,7 @@ class PromptCache:
         if has_lock:
             try:
                 import inspect
+
                 if inspect.iscoroutinefunction(compute_fn):
                     computed = await compute_fn()
                 else:
@@ -208,6 +233,7 @@ class PromptCache:
                 self.release_lock(key)
         else:
             import asyncio
+
             start_wait = time.time()
             while time.time() - start_wait < timeout:
                 await asyncio.sleep(0.05)
@@ -215,6 +241,7 @@ class PromptCache:
                 if cached is not None:
                     return cached
             import inspect
+
             if inspect.iscoroutinefunction(compute_fn):
                 return str(await compute_fn())
             return str(compute_fn())

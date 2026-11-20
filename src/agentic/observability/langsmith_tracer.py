@@ -23,13 +23,17 @@ def setup_langsmith(settings: Settings | None = None) -> None:
     if settings is None:
         settings = get_settings()
 
-    tracing_enabled = settings.langchain_tracing_v2 or os.getenv("LANGCHAIN_TRACING_V2", "").lower() in ("true", "1")
+    tracing_enabled = settings.langchain_tracing_v2 or os.getenv(
+        "LANGCHAIN_TRACING_V2", ""
+    ).lower() in ("true", "1")
     api_key = settings.langchain_api_key or os.getenv("LANGCHAIN_API_KEY")
 
     if tracing_enabled and api_key:
         os.environ["LANGCHAIN_TRACING_V2"] = "true"
         os.environ["LANGCHAIN_API_KEY"] = api_key
-        os.environ["LANGCHAIN_PROJECT"] = settings.langchain_project or os.getenv("LANGCHAIN_PROJECT", "agentic-platform")
+        os.environ["LANGCHAIN_PROJECT"] = settings.langchain_project or os.getenv(
+            "LANGCHAIN_PROJECT", "agentic-platform"
+        )
         if settings.langchain_endpoint:
             os.environ["LANGCHAIN_ENDPOINT"] = settings.langchain_endpoint
         _langsmith_initialized = True
@@ -44,7 +48,10 @@ def setup_langsmith(settings: Settings | None = None) -> None:
 def is_langsmith_enabled() -> bool:
     """Returns True if LangSmith tracing is active with valid API key configuration."""
     api_key = os.getenv("LANGCHAIN_API_KEY") or get_settings().langchain_api_key
-    tracing_v2 = os.getenv("LANGCHAIN_TRACING_V2", "").lower() in ("true", "1") or get_settings().langchain_tracing_v2
+    tracing_v2 = (
+        os.getenv("LANGCHAIN_TRACING_V2", "").lower() in ("true", "1")
+        or get_settings().langchain_tracing_v2
+    )
     return bool(tracing_v2 and api_key)
 
 
@@ -61,7 +68,8 @@ def get_langsmith_client() -> Any | None:
             settings = get_settings()
             _langsmith_client = Client(
                 api_key=settings.langchain_api_key or os.getenv("LANGCHAIN_API_KEY"),
-                api_url=settings.langchain_endpoint or os.getenv("LANGCHAIN_ENDPOINT", "https://api.smith.langchain.com"),
+                api_url=settings.langchain_endpoint
+                or os.getenv("LANGCHAIN_ENDPOINT", "https://api.smith.langchain.com"),
             )
             logger.info("Initialized LangSmith Client successfully.")
         except Exception as e:
@@ -105,6 +113,7 @@ def traceable_operation(
 
     Gracefully falls back to normal execution if LangSmith is disabled or unconfigured.
     """
+
     def decorator(func: Callable) -> Callable:
         op_name = name or func.__name__
         op_tags = list(tags) if tags else ["agentic-platform"]
@@ -123,18 +132,24 @@ def traceable_operation(
                 )(func)
                 return wrapped_func
             except Exception as e:
-                logger.debug(f"LangSmith traceable wrapper failed for '{op_name}': {e}. Using fallback.")
+                logger.debug(
+                    f"LangSmith traceable wrapper failed for '{op_name}': {e}. Using fallback."
+                )
 
         # Fallback wrapper
         if hasattr(func, "__await__") or asyncio_iscoroutinefunction(func):
+
             @functools.wraps(func)
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
                 return await func(*args, **kwargs)
+
             return async_wrapper
         else:
+
             @functools.wraps(func)
             def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
                 return func(*args, **kwargs)
+
             return sync_wrapper
 
     return decorator
@@ -143,6 +158,7 @@ def traceable_operation(
 def asyncio_iscoroutinefunction(fn: Any) -> bool:
     """Helper to detect coroutine functions safely."""
     import inspect
+
     return inspect.iscoroutinefunction(fn)
 
 
@@ -198,7 +214,9 @@ async def trace_langsmith_run_async(
     metadata: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Context manager for tracing custom async code blocks with LangSmith run tree."""
-    with trace_langsmith_run(name=name, run_type=run_type, inputs=inputs, tags=tags, metadata=metadata) as ctx:
+    with trace_langsmith_run(
+        name=name, run_type=run_type, inputs=inputs, tags=tags, metadata=metadata
+    ) as ctx:
         yield ctx
 
 
@@ -256,8 +274,14 @@ def sync_evaluation_dataset(
 
         # Sync examples
         for item in examples:
-            inputs = {k: v for k, v in item.items() if k in ("query", "question", "input", "instruction")}
-            outputs = {k: v for k, v in item.items() if k in ("expected_agent", "ground_truth", "output", "expected_tools")}
+            inputs = {
+                k: v for k, v in item.items() if k in ("query", "question", "input", "instruction")
+            }
+            outputs = {
+                k: v
+                for k, v in item.items()
+                if k in ("expected_agent", "ground_truth", "output", "expected_tools")
+            }
             metadata = {k: v for k, v in item.items() if k not in inputs and k not in outputs}
             client.create_example(
                 inputs=inputs,

@@ -99,7 +99,9 @@ def test_isolated_env_scrubbing():
 @pytest.mark.asyncio
 async def test_code_exec_python_normal():
     code = "print('hello_sandbox_123')"
-    with patch("src.agentic.tools.servers.code_exec_server._is_docker_available", return_value=False):
+    with patch(
+        "src.agentic.tools.servers.code_exec_server._is_docker_available", return_value=False
+    ):
         res = await execute_python_code(code, timeout=5)
         assert "hello_sandbox_123" in res
         assert "Exit Code: 0" in res
@@ -108,14 +110,18 @@ async def test_code_exec_python_normal():
 @pytest.mark.asyncio
 async def test_code_exec_bash_normal():
     cmd = "echo shell_test_success"
-    with patch("src.agentic.tools.servers.code_exec_server._is_docker_available", return_value=False):
+    with patch(
+        "src.agentic.tools.servers.code_exec_server._is_docker_available", return_value=False
+    ):
         res = await execute_bash_command(cmd, timeout=5)
         assert "shell_test_success" in res
 
 
 @pytest.mark.asyncio
 async def test_code_exec_tools_wrapper():
-    with patch("src.agentic.tools.servers.code_exec_server._is_docker_available", return_value=False):
+    with patch(
+        "src.agentic.tools.servers.code_exec_server._is_docker_available", return_value=False
+    ):
         res_py = await code_exec_python("print('wrap_py')")
         assert "wrap_py" in res_py
 
@@ -127,7 +133,9 @@ async def test_code_exec_tools_wrapper():
 async def test_docker_and_k8s_sandboxes_mock():
     mock_settings = MagicMock()
     mock_settings.enable_docker_sandbox = True
-    with patch("src.agentic.tools.servers.code_exec_server.get_settings", return_value=mock_settings):
+    with patch(
+        "src.agentic.tools.servers.code_exec_server.get_settings", return_value=mock_settings
+    ):
         with patch("shutil.which", return_value="/usr/bin/docker"):
             assert _is_docker_available() is True
         with patch("shutil.which", return_value=None):
@@ -225,14 +233,18 @@ async def test_web_search_mock():
 @pytest.mark.asyncio
 async def test_temporal_execute_plan_step():
     mock_client = AsyncMock()
-    mock_client.call_agent.return_value = MagicMock(status="completed", output="Executed successfully")
+    mock_client.call_agent.return_value = MagicMock(
+        status="completed", output="Executed successfully"
+    )
 
     with patch("src.agentic.workflows.agent_workflow.get_a2a_client", return_value=mock_client):
         out = await execute_plan_step("chat_agent", "step_01", "Hello")
         assert out == "Executed successfully"
 
     mock_err_client = AsyncMock()
-    mock_err_client.call_agent.return_value = MagicMock(status="failed", error="Fatal error occurred")
+    mock_err_client.call_agent.return_value = MagicMock(
+        status="failed", error="Fatal error occurred"
+    )
     with patch("src.agentic.workflows.agent_workflow.get_a2a_client", return_value=mock_err_client):
         with pytest.raises(RuntimeError) as exc_info:
             await execute_plan_step("chat_agent", "step_02", "Crash")
@@ -254,7 +266,9 @@ async def test_temporal_agent_execution_workflow():
 
 @pytest.mark.asyncio
 async def test_temporal_run_worker_exception_handling():
-    with patch("temporalio.client.Client.connect", side_effect=ConnectionError("Temporal unreachable")):
+    with patch(
+        "temporalio.client.Client.connect", side_effect=ConnectionError("Temporal unreachable")
+    ):
         await run_worker()
 
 
@@ -328,7 +342,9 @@ def test_redis_saver_in_memory_persistence():
 @pytest.mark.asyncio
 async def test_a2a_server_endpoints():
     mock_graph = MagicMock()
-    mock_graph.ainvoke = AsyncMock(return_value={"messages": [AIMessage(content="A2A response content")]})
+    mock_graph.ainvoke = AsyncMock(
+        return_value={"messages": [AIMessage(content="A2A response content")]}
+    )
 
     a2a_app = create_a2a_server(card=CHAT_AGENT_CARD, graph=mock_graph)
     transport = ASGITransport(app=a2a_app)
@@ -379,7 +395,9 @@ async def test_approvals_resume_not_interrupted():
                 "reason": "Allowed by admin",
             },
         }
-        resp = await client.post("/api/v1/approvals/non_interrupted_thread_999/resume", json=payload, headers=headers)
+        resp = await client.post(
+            "/api/v1/approvals/non_interrupted_thread_999/resume", json=payload, headers=headers
+        )
         assert resp.status_code == 400
         assert "not in an interrupted state" in resp.text
 
@@ -449,8 +467,11 @@ async def test_code_exec_host_disabled_in_production(monkeypatch):
     monkeypatch.setenv("USE_POSTGRES_CHECKPOINT", "true")
     get_settings.cache_clear()
 
-    with patch("src.agentic.tools.servers.code_exec_server._is_k8s_available", return_value=False), patch(
-        "src.agentic.tools.servers.code_exec_server._is_docker_available", return_value=False
+    with (
+        patch("src.agentic.tools.servers.code_exec_server._is_k8s_available", return_value=False),
+        patch(
+            "src.agentic.tools.servers.code_exec_server._is_docker_available", return_value=False
+        ),
     ):
         out_py = await execute_python_code("print(1)")
         assert "Host subprocess execution is strictly disabled in production" in out_py
@@ -509,8 +530,12 @@ async def test_code_exec_timeout_and_exceptions():
     assert "timed out" in res_to and "1 seconds" in res_to
 
     # General Exception branch
-    with patch("src.agentic.tools.servers.code_exec_server._is_docker_available", return_value=False):
-        with patch("asyncio.create_subprocess_exec", side_effect=Exception("System level fork failed")):
+    with patch(
+        "src.agentic.tools.servers.code_exec_server._is_docker_available", return_value=False
+    ):
+        with patch(
+            "asyncio.create_subprocess_exec", side_effect=Exception("System level fork failed")
+        ):
             res_err = await execute_python_code("print(1)")
             assert "Execution error:" in res_err or "failed" in res_err
 
@@ -612,7 +637,9 @@ def test_redis_saver_full_methods():
     from src.agentic.memory.redis_saver import RedisSaver
 
     saver = RedisSaver(redis_url=None)
-    config = {"configurable": {"thread_id": "thread-123", "checkpoint_ns": "", "checkpoint_id": "cp-1"}}
+    config = {
+        "configurable": {"thread_id": "thread-123", "checkpoint_ns": "", "checkpoint_id": "cp-1"}
+    }
     checkpoint = {
         "v": 1,
         "id": "cp-1",
@@ -644,7 +671,9 @@ async def test_dispatch_parallel_fanout_and_failures():
     from src.agentic.orchestrator.state import AgentState, Plan, Step
 
     # 1. Dependency failure scenario
-    s1 = Step(id="step1", description="step 1 desc", agent="chat", input_query="q1", status="failed")
+    s1 = Step(
+        id="step1", description="step 1 desc", agent="chat", input_query="q1", status="failed"
+    )
     s2 = Step(
         id="step2",
         description="step 2 desc",
@@ -659,7 +688,9 @@ async def test_dispatch_parallel_fanout_and_failures():
     assert "Dependency step failed" in (s2.output or "")
 
     # 2. Execution streaming tokens scenario
-    s3 = Step(id="step3", description="step 3 desc", agent="chat", input_query="q3", status="pending")
+    s3 = Step(
+        id="step3", description="step 3 desc", agent="chat", input_query="q3", status="pending"
+    )
     state2 = AgentState(messages=[], plan=Plan(goal="test", steps=[s3]))
 
     async def mock_call_agent_stream(*args, **kwargs):
@@ -685,7 +716,9 @@ async def test_chat_non_streaming_endpoint_full():
     from src.agentic.orchestrator.state import Plan, Step
 
     mock_graph = MagicMock()
-    s = Step(id="s1", description="desc", agent="chat", input_query="q", output="out", status="completed")
+    s = Step(
+        id="s1", description="desc", agent="chat", input_query="q", output="out", status="completed"
+    )
     mock_graph.ainvoke = AsyncMock(
         return_value={"final_answer": "42", "plan": Plan(goal="g", steps=[s])}
     )
@@ -826,7 +859,9 @@ async def test_docker_and_k8s_sandbox_execution_branches():
         assert "hello docker stdout" in res
 
     # 2. Test _execute_in_docker timeout
-    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, side_effect=asyncio.TimeoutError()):
+    with patch(
+        "asyncio.create_subprocess_exec", new_callable=AsyncMock, side_effect=asyncio.TimeoutError()
+    ):
         res_to = await _execute_in_docker("import time; time.sleep(10)", is_python=True, timeout=1)
         assert "timed out in container" in res_to
 
@@ -834,14 +869,20 @@ async def test_docker_and_k8s_sandbox_execution_branches():
     mock_k8s_proc = MagicMock()
     mock_k8s_proc.returncode = 0
     mock_k8s_proc.communicate = AsyncMock(return_value=(b"k8s pod stdout", b""))
-    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_k8s_proc):
+    with patch(
+        "asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_k8s_proc
+    ):
         res_k8s = await _execute_in_k8s_sandbox("echo 1", is_python=False, timeout=5)
         assert "KUBERNETES GVISOR SANDBOX ACTIVE" in res_k8s
         assert "k8s pod stdout" in res_k8s
 
     # 4. Test execute_python_code and execute_bash_command with k8s enabled
     with patch("src.agentic.tools.servers.code_exec_server._is_k8s_available", return_value=True):
-        with patch("src.agentic.tools.servers.code_exec_server._execute_in_k8s_sandbox", new_callable=AsyncMock, return_value="k8s executed"):
+        with patch(
+            "src.agentic.tools.servers.code_exec_server._execute_in_k8s_sandbox",
+            new_callable=AsyncMock,
+            return_value="k8s executed",
+        ):
             res_py = await execute_python_code("print('test')")
             assert res_py == "k8s executed"
             res_sh = await execute_bash_command("ls")

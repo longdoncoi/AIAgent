@@ -7,8 +7,11 @@ from pydantic import BaseModel, Field
 
 class ChatRequest(BaseModel):
     """User incoming chat request."""
+
     query: str = Field(..., description="User query or instruction")
-    thread_id: str | None = Field(default=None, description="Conversation session ID for checkpointing")
+    thread_id: str | None = Field(
+        default=None, description="Conversation session ID for checkpointing"
+    )
     user_id: str | None = Field(default="default_user", description="Identifier of the requester")
     stream: bool = Field(default=True, description="Whether to stream response via SSE")
     metadata: dict[str, Any] = Field(default_factory=dict, description="Custom request metadata")
@@ -16,6 +19,7 @@ class ChatRequest(BaseModel):
 
 class StepResult(BaseModel):
     """Result of an individual plan step execution."""
+
     step_id: str
     agent: str
     output: str
@@ -26,6 +30,7 @@ class StepResult(BaseModel):
 
 class ChatResponse(BaseModel):
     """Final response returned to caller."""
+
     thread_id: str
     answer: str
     steps: list[StepResult] = Field(default_factory=list)
@@ -36,6 +41,7 @@ class ChatResponse(BaseModel):
 
 class SSEEvent(BaseModel):
     """Server-Sent Event payload."""
+
     event: Literal[
         "plan",
         "step_start",
@@ -52,6 +58,7 @@ class SSEEvent(BaseModel):
 
 class Decision(BaseModel):
     """Human decision payload for approval checkpoints."""
+
     approved: bool = Field(..., description="Whether the action is approved or rejected")
     reason: str | None = Field(default=None, description="Feedback or rejection rationale")
     modified_input: str | None = Field(default=None, description="Optional modified instruction")
@@ -59,6 +66,7 @@ class Decision(BaseModel):
 
 class ApprovalRequest(BaseModel):
     """Payload to resume a suspended HITL execution."""
+
     thread_id: str
     step_id: str
     decision: Decision
@@ -66,6 +74,7 @@ class ApprovalRequest(BaseModel):
 
 class ApprovalResponse(BaseModel):
     """Acknowledgement of approval decision."""
+
     thread_id: str
     status: Literal["resumed", "aborted"]
     message: str

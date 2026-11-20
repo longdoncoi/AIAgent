@@ -67,7 +67,9 @@ def ingest_documents(
     """Ingests documents, builds hierarchical chunks, and persists index."""
     settings = get_settings()
     data_dir = Path(raw_data_dir) if raw_data_dir else settings.project_root / "data" / "raw"
-    persist_dir = Path(index_persist_dir) if index_persist_dir else settings.project_root / "data" / "index"
+    persist_dir = (
+        Path(index_persist_dir) if index_persist_dir else settings.project_root / "data" / "index"
+    )
     persist_dir.mkdir(parents=True, exist_ok=True)
 
     documents = load_documents_from_dir(data_dir)
@@ -103,6 +105,7 @@ def ingest_documents(
 
     # Embedding model configuration
     import socket
+
     def _is_server_active(host: str = "localhost", port: int = 8081) -> bool:
         try:
             with socket.create_connection((host, port), timeout=0.3):
@@ -111,8 +114,10 @@ def ingest_documents(
             return False
 
     from llama_index.core import Settings as LlamaSettings
+
     if _is_server_active("localhost", 8081):
         from llama_index.embeddings.openai import OpenAIEmbedding
+
         LlamaSettings.embed_model = OpenAIEmbedding(
             api_base=settings.llama_embed_base_url,
             api_key="sk-embed-dummy",
@@ -121,8 +126,11 @@ def ingest_documents(
             max_retries=0,
         )
     else:
-        logger.info("Embedding server on port 8081 not active. Using MockEmbedding for local index.")
+        logger.info(
+            "Embedding server on port 8081 not active. Using MockEmbedding for local index."
+        )
         from llama_index.core.embeddings.mock_embed_model import MockEmbedding
+
         LlamaSettings.embed_model = MockEmbedding(embed_dim=768)
 
     # Build Vector Store Index over leaf nodes
@@ -137,14 +145,21 @@ def ingest_documents(
     if settings.enable_knowledge_graph:
         try:
             from src.agentic.rag.kg import get_knowledge_graph_store
+
             kg = get_knowledge_graph_store()
             total_triples = 0
             for doc in documents:
-                file_name = doc.metadata.get("file_name", "doc") if hasattr(doc, "metadata") else "doc"
+                file_name = (
+                    doc.metadata.get("file_name", "doc") if hasattr(doc, "metadata") else "doc"
+                )
                 total_triples += kg.index_text(doc.text, source_doc=file_name)
-            logger.info(f"Successfully extracted and indexed {total_triples} triples into Knowledge Graph.")
+            logger.info(
+                f"Successfully extracted and indexed {total_triples} triples into Knowledge Graph."
+            )
         except Exception as e:
             logger.debug(f"Knowledge graph indexing note: {e}")
 
-    logger.info(f"Successfully ingested {len(documents)} documents, {len(nodes)} total nodes ({len(leaf_nodes)} leaf nodes).")
+    logger.info(
+        f"Successfully ingested {len(documents)} documents, {len(nodes)} total nodes ({len(leaf_nodes)} leaf nodes)."
+    )
     return len(leaf_nodes)

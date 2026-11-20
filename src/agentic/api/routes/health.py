@@ -38,6 +38,7 @@ async def readyz() -> Response:
     if settings.use_postgres_checkpoint or settings.environment == "production":
         try:
             import psycopg
+
             with psycopg.connect(settings.postgres_uri, connect_timeout=1) as conn:
                 with conn.cursor() as cur:
                     cur.execute("SELECT 1;")
@@ -65,10 +66,16 @@ async def readyz() -> Response:
     parsed_llm = urlparse(settings.litellm_base_url)
     llm_host = parsed_llm.hostname or "localhost"
     llm_port = parsed_llm.port or 4000
-    checks["model_gateway"] = "ok" if _check_tcp_port(llm_host, llm_port, timeout=0.3) else "offline_or_fallback"
+    checks["model_gateway"] = (
+        "ok" if _check_tcp_port(llm_host, llm_port, timeout=0.3) else "offline_or_fallback"
+    )
 
     # 4. Vector Store (Qdrant)
-    checks["vector_store"] = "ok" if _check_tcp_port(settings.qdrant_host, settings.qdrant_port, timeout=0.3) else "offline_or_local"
+    checks["vector_store"] = (
+        "ok"
+        if _check_tcp_port(settings.qdrant_host, settings.qdrant_port, timeout=0.3)
+        else "offline_or_local"
+    )
 
     overall_status = "ready" if is_healthy else "unhealthy"
     status_code = status.HTTP_200_OK if is_healthy else status.HTTP_503_SERVICE_UNAVAILABLE

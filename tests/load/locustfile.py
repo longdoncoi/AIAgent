@@ -35,7 +35,9 @@ class AgenticUser(HttpUser):
             "query": query,
             "metadata": {"test_client": "locust"},
         }
-        with self.client.post("/api/v1/chat", json=payload, headers=self.headers, catch_response=True) as resp:
+        with self.client.post(
+            "/api/v1/chat", json=payload, headers=self.headers, catch_response=True
+        ) as resp:
             if resp.status_code == 200:
                 data = resp.json()
                 if "answer" in data:
@@ -55,7 +57,13 @@ class AgenticUser(HttpUser):
             "query": "Tóm tắt ngắn gọn các chính sách bảo mật thông tin.",
             "metadata": {"stream": True},
         }
-        with self.client.post("/api/v1/chat/stream", json=payload, headers=self.headers, stream=True, catch_response=True) as resp:
+        with self.client.post(
+            "/api/v1/chat/stream",
+            json=payload,
+            headers=self.headers,
+            stream=True,
+            catch_response=True,
+        ) as resp:
             if resp.status_code == 200:
                 for line in resp.iter_lines():
                     if line:

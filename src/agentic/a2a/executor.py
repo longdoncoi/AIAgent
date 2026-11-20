@@ -20,7 +20,9 @@ logger = logging.getLogger(__name__)
 
 class A2ATaskPayload(BaseModel):
     instruction: str = Field(..., description="Actionable prompt instruction for the sub-agent")
-    context: dict[str, Any] = Field(default_factory=dict, description="Contextual inputs (e.g. repo path, prior outputs)")
+    context: dict[str, Any] = Field(
+        default_factory=dict, description="Contextual inputs (e.g. repo path, prior outputs)"
+    )
 
 
 class A2ATaskRequest(BaseModel):
@@ -53,9 +55,7 @@ class A2AAgentExecutor:
             if request.payload.context:
                 context_str = f"\nAdditional Context: {request.payload.context}"
 
-            initial_state = {
-                "messages": [HumanMessage(content=instruction + context_str)]
-            }
+            initial_state = {"messages": [HumanMessage(content=instruction + context_str)]}
 
             result_state = await self.graph.ainvoke(initial_state)
 
@@ -91,9 +91,7 @@ class A2AAgentExecutor:
         if request.payload.context:
             context_str = f"\nAdditional Context: {request.payload.context}"
 
-        initial_state = {
-            "messages": [HumanMessage(content=instruction + context_str)]
-        }
+        initial_state = {"messages": [HumanMessage(content=instruction + context_str)]}
 
         accumulated_output: list[str] = []
         try:
@@ -170,7 +168,9 @@ def create_a2a_server(card: AgentCard, graph: Any) -> FastAPI:
                     detail="Unauthorized: Invalid internal service-to-service authentication token.",
                 )
 
-        if request.target_agent != card.name and request.target_agent != card.name.replace("_agent", ""):
+        if request.target_agent != card.name and request.target_agent != card.name.replace(
+            "_agent", ""
+        ):
             raise HTTPException(
                 status_code=400,
                 detail=f"Target agent mismatch: expected '{card.name}', got '{request.target_agent}'",
@@ -179,7 +179,9 @@ def create_a2a_server(card: AgentCard, graph: Any) -> FastAPI:
         # Distributed Tracing context extraction
         tracer = trace.get_tracer("agentic-a2a")
         extracted_context = TraceContextTextMapPropagator().extract(carrier=raw_request.headers)
-        with tracer.start_as_current_span(f"a2a.agent.{card.name}", context=extracted_context) as span:
+        with tracer.start_as_current_span(
+            f"a2a.agent.{card.name}", context=extracted_context
+        ) as span:
             span.set_attribute("a2a.caller", request.caller)
             span.set_attribute("a2a.task_id", request.task_id)
             return await executor.execute(request)
@@ -198,7 +200,9 @@ def create_a2a_server(card: AgentCard, graph: Any) -> FastAPI:
                     detail="Unauthorized: Invalid internal service-to-service authentication token.",
                 )
 
-        if request.target_agent != card.name and request.target_agent != card.name.replace("_agent", ""):
+        if request.target_agent != card.name and request.target_agent != card.name.replace(
+            "_agent", ""
+        ):
             raise HTTPException(
                 status_code=400,
                 detail=f"Target agent mismatch: expected '{card.name}', got '{request.target_agent}'",

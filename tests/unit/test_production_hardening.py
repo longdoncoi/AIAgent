@@ -89,7 +89,9 @@ def test_tool_guardrail_validations() -> None:
 
     # SQL injection must be blocked
     with pytest.raises(GuardrailViolation):
-        guardrails.validate_tool_input("db_query", {"query": "SELECT * FROM users UNION SELECT password FROM admin"})
+        guardrails.validate_tool_input(
+            "db_query", {"query": "SELECT * FROM users UNION SELECT password FROM admin"}
+        )
 
 
 def test_model_circuit_breaker() -> None:
@@ -219,4 +221,3 @@ def test_k8s_sandbox_isolation_checks() -> None:
     # In local test environment, k8s sandbox defaults to disabled unless configured
     avail = _is_k8s_available()
     assert isinstance(avail, bool)
-

@@ -79,8 +79,12 @@ def run_red_teaming_benchmark() -> bool:
     overall_score = (blocked_attacks + passed_benign) / max(1, (total_attacks + total_benign))
 
     print("\n--------------------------------------------------")
-    print(f">> Attack Defense Rate:       {defense_rate * 100:.1f}% ({blocked_attacks}/{total_attacks})")
-    print(f">> Benign Pass Rate:          {benign_accuracy * 100:.1f}% ({passed_benign}/{total_benign})")
+    print(
+        f">> Attack Defense Rate:       {defense_rate * 100:.1f}% ({blocked_attacks}/{total_attacks})"
+    )
+    print(
+        f">> Benign Pass Rate:          {benign_accuracy * 100:.1f}% ({passed_benign}/{total_benign})"
+    )
     print(f">> Overall Red Teaming Score: {overall_score * 100:.1f}%")
     print("--------------------------------------------------")
 

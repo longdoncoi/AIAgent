@@ -12,8 +12,12 @@ from src.agentic.rag.retriever import get_hybrid_retriever
 
 
 class SearchPolicyInput(BaseModel):
-    query: str = Field(description="Policy, rule, or technical concept to query in the enterprise knowledge base")
-    filters: dict[str, Any] | None = Field(default=None, description="Optional metadata filters (e.g. category, document name)")
+    query: str = Field(
+        description="Policy, rule, or technical concept to query in the enterprise knowledge base"
+    )
+    filters: dict[str, Any] | None = Field(
+        default=None, description="Optional metadata filters (e.g. category, document name)"
+    )
 
 
 def search_policy(query: str, filters: dict[str, Any] | None = None) -> str:
@@ -34,12 +38,20 @@ def search_policy(query: str, filters: dict[str, Any] | None = None) -> str:
         for i, item in enumerate(reranked, 1):
             source = item.node.metadata.get("file_name", "internal_doc")
             score = f"{item.score:.3f}" if item.score is not None else "N/A"
-            node_text = item.node.get_content() if hasattr(item.node, "get_content") else getattr(item.node, "text", "")
-            results.append(f"--- Document Source [{i}]: {source} (Score: {score}) ---\n{node_text.strip()}")
+            node_text = (
+                item.node.get_content()
+                if hasattr(item.node, "get_content")
+                else getattr(item.node, "text", "")
+            )
+            results.append(
+                f"--- Document Source [{i}]: {source} (Score: {score}) ---\n{node_text.strip()}"
+            )
 
         return "\n\n".join(results)
 
-    domain = (filters.get("domain") or filters.get("category") or "general") if filters else "general"
+    domain = (
+        (filters.get("domain") or filters.get("category") or "general") if filters else "general"
+    )
     return cache.get_or_compute(query, _do_retrieve, top_k=3, domain=str(domain))
 
 

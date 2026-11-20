@@ -3,7 +3,12 @@
 2. Domain-Adaptive Semantic Cache Distance Threshold
 """
 
-from src.agentic.api.middleware import SlidingWindowRateLimiter
+import pytest
+
+from src.agentic.api.middleware import (
+    SlidingWindowRateLimiter,
+    estimate_tokens_from_request,
+)
 from src.agentic.cache.rag_cache import RAGCache
 
 
@@ -96,3 +101,85 @@ def test_rag_cache_get_or_compute_with_domain():
     )
     assert res2 == "Legal NDA compliance guidelines"
     assert computed_counter == 1
+
+
+def test_estimate_tokens_from_request_multilingual():
+    """Verifies token estimation accuracy for Vietnamese and multi-lingual requests."""
+    # 1. Zero or negative content length
+    assert estimate_tokens_from_request(0) == 10
+    assert estimate_tokens_from_request(-5) == 10
+
+    # 2. Small payload below envelope threshold
+    assert estimate_tokens_from_request(30) == 10
+
+    # 3. Standard JSON payload (e.g. 150 bytes)
+    tok = estimate_tokens_from_request(150, "application/json")
+    # (150 - 30) / 3.2 = 37.5 -> 37
+    assert tok == 37
+
+    # 4. Vietnamese text payload (e.g. 600 bytes)
+    tok_vn = estimate_tokens_from_request(600, "application/json; charset=utf-8")
+    # (600 - 30) / 3.2 = 178
+    assert 170 <= tok_vn <= 190
+
+
+def test_rag_cache_custom_embed_fn_sync():
+    """Verifies RAGCache dense embedding function registration and fallback."""
+    # Mock dense embedding function
+    def mock_embedder(text: str) -> list[float]:
+        if "finance" in text.lower():
+            return [1.0, 0.0, 0.0, 0.0]
+        return [0.0, 1.0, 0.0, 0.0]
+
+    cache = RAGCache(max_entries=20, default_ttl=60, enable_redis=False, embed_fn=mock_embedder)
+
+    v1 = cache.get_embedding("finance reports 2026")
+    assert v1 == [1.0, 0.0, 0.0, 0.0]
+
+    v2 = cache.get_embedding("general overview")
+    assert v2 == [0.0, 1.0, 0.0, 0.0]
+
+    # Test error fallback to pseudo-dense vector
+    def error_embedder(text: str) -> list[float]:
+        raise RuntimeError("Embedding model connection failed")
+
+    cache.set_embed_fn(error_embedder)
+    fallback_v = cache.get_embedding("test fallback text")
+    assert isinstance(fallback_v, list)
+    assert len(fallback_v) == 128
+
+
+@pytest.mark.asyncio
+async def test_rag_cache_custom_embed_fn_async():
+    """Verifies asynchronous dense embedding function and get_or_compute_async."""
+    async def mock_async_embedder(text: str) -> list[float]:
+        if "crypto" in text.lower():
+            return [0.5, 0.5, 0.0]
+        return [0.0, 0.5, 0.5]
+
+    cache = RAGCache(max_entries=20, default_ttl=60, enable_redis=False)
+    cache.set_embed_fn(mock_async_embedder)
+
+    v_async = await cache.aget_embedding("crypto policies")
+    assert v_async == [0.5, 0.5, 0.0]
+
+    # Test get_or_compute_async with neural embedder
+    async def sample_compute():
+        return "Decentralized Finance guidelines"
+
+    res = await cache.get_or_compute_async(
+        "crypto policies",
+        sample_compute,
+        domain="finance",
+        top_k=3,
+    )
+    assert res == "Decentralized Finance guidelines"
+
+    # Async error fallback
+    async def failing_async_embedder(text: str):
+        raise ValueError("Embedder crashed")
+
+    cache.set_embed_fn(failing_async_embedder)
+    v_fallback = await cache.aget_embedding("test fallback")
+    assert len(v_fallback) == 128
+

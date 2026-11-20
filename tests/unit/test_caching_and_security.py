@@ -25,7 +25,9 @@ def test_rag_cache_hit_and_miss():
     assert hit_result == sample_result
 
     # Case insensitivity & whitespace normalization
-    assert cache.get("  quy định về thời gian TIMEOUT của sandbox code execution?  ") == sample_result
+    assert (
+        cache.get("  quy định về thời gian TIMEOUT của sandbox code execution?  ") == sample_result
+    )
 
     stats = cache.stats
     assert stats["hits"] >= 2

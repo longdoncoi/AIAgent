@@ -27,8 +27,12 @@ from src.agentic.rag.ingestion import ingest_documents
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Ingest documents into LlamaIndex")
-    parser.add_argument("--data-dir", type=str, default="data/raw", help="Path to raw documents directory")
-    parser.add_argument("--index-dir", type=str, default="data/index", help="Path to persist index directory")
+    parser.add_argument(
+        "--data-dir", type=str, default="data/raw", help="Path to raw documents directory"
+    )
+    parser.add_argument(
+        "--index-dir", type=str, default="data/index", help="Path to persist index directory"
+    )
     args = parser.parse_args()
 
     print(f"Starting document ingestion from '{args.data_dir}' into '{args.index_dir}'...")

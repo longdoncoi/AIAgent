@@ -43,7 +43,9 @@ class LongTermStore:
         self.is_postgres = False
         self._pg_conn_str = self.settings.postgres_uri
 
-        if not force_sqlite and (self.settings.use_postgres_checkpoint or self.settings.environment == "production"):
+        if not force_sqlite and (
+            self.settings.use_postgres_checkpoint or self.settings.environment == "production"
+        ):
             self._try_init_postgres()
 
         if not self.is_postgres:
@@ -58,6 +60,7 @@ class LongTermStore:
         """Attempts to initialize PostgreSQL database connection and apply versioned Alembic schema migrations."""
         try:
             import psycopg
+
             # Verify connectivity
             with psycopg.connect(self._pg_conn_str, connect_timeout=3) as conn:
                 with conn.cursor() as cur:
@@ -65,23 +68,30 @@ class LongTermStore:
 
             # Apply versioned migrations
             from src.agentic.memory.migrations import run_database_migrations
+
             run_database_migrations(self._pg_conn_str)
 
             self.is_postgres = True
-            logger.info("Initialized PostgreSQL LongTermStore backend with Alembic versioned schema.")
+            logger.info(
+                "Initialized PostgreSQL LongTermStore backend with Alembic versioned schema."
+            )
         except Exception as e:
-            logger.warning(f"Could not connect to PostgreSQL LongTermStore ({e}). Falling back to SQLite WAL mode.")
+            logger.warning(
+                f"Could not connect to PostgreSQL LongTermStore ({e}). Falling back to SQLite WAL mode."
+            )
 
     @contextmanager
     def _get_pg_conn(self) -> Generator[Any, None, None]:
         """Borrows connection from singleton psycopg pool if available, else connects directly."""
         from src.agentic.memory.short_term import get_postgres_pool
+
         pool = get_postgres_pool()
         if pool is not None:
             with pool.connection() as conn:
                 yield conn
         else:
             import psycopg
+
             with psycopg.connect(self._pg_conn_str, prepare_threshold=None) as conn:
                 yield conn
 
@@ -142,12 +152,16 @@ class LongTermStore:
         entry_id = f"sem_{key}"
         self._upsert(entry_id, "semantic", fact, metadata or {})
 
-    def add_episodic(self, task_id: str, summary: str, metadata: dict[str, Any] | None = None) -> None:
+    def add_episodic(
+        self, task_id: str, summary: str, metadata: dict[str, Any] | None = None
+    ) -> None:
         """Stores an episodic record of a completed task or decision."""
         entry_id = f"epi_{task_id}"
         self._upsert(entry_id, "episodic", summary, metadata or {})
 
-    def add_procedural(self, workflow_name: str, steps_guide: str, metadata: dict[str, Any] | None = None) -> None:
+    def add_procedural(
+        self, workflow_name: str, steps_guide: str, metadata: dict[str, Any] | None = None
+    ) -> None:
         """Stores a procedural workflow or recipe."""
         entry_id = f"proc_{workflow_name}"
         self._upsert(entry_id, "procedural", steps_guide, metadata or {})
@@ -175,6 +189,7 @@ class LongTermStore:
                 return
             except Exception as e:
                 from src.agentic.observability.metrics import LTM_WRITE_ERRORS_TOTAL
+
                 LTM_WRITE_ERRORS_TOTAL.labels(backend="postgres").inc()
                 logger.error(
                     f"[DEAD-LETTER-FALLBACK] PostgreSQL upsert error for entry '{entry_id}' ({e}). "

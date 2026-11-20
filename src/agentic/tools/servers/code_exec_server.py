@@ -19,7 +19,9 @@ except ImportError:
 from src.agentic.core.config import get_settings
 
 logger = logging.getLogger(__name__)
-mcp = FastMCP("code_exec_server", instructions="Executes Python and shell code in a controlled environment.")
+mcp = FastMCP(
+    "code_exec_server", instructions="Executes Python and shell code in a controlled environment."
+)
 
 # Prohibited destructive shell patterns & reverse shells
 PROHIBITED_COMMAND_PATTERNS = [
@@ -41,7 +43,16 @@ PROHIBITED_COMMAND_PATTERNS = [
 
 def _build_isolated_env() -> dict[str, str]:
     """Scrubs sensitive credentials and API keys from child environment."""
-    safe_keys = {"PATH", "SYSTEMROOT", "WINDIR", "TMP", "TEMP", "PYTHONIOENCODING", "LC_ALL", "LANG"}
+    safe_keys = {
+        "PATH",
+        "SYSTEMROOT",
+        "WINDIR",
+        "TMP",
+        "TEMP",
+        "PYTHONIOENCODING",
+        "LC_ALL",
+        "LANG",
+    }
     return {k: v for k, v in os.environ.items() if k.upper() in safe_keys}
 
 
@@ -88,7 +99,8 @@ async def _execute_in_k8s_sandbox(code_or_cmd: str, is_python: bool, timeout: in
     kubectl_args = [
         "run",
         pod_name,
-        "--image", image,
+        "--image",
+        image,
         f"--namespace={settings.k8s_sandbox_namespace}",
         "--restart=Never",
         "--rm",
@@ -116,7 +128,13 @@ async def _execute_in_k8s_sandbox(code_or_cmd: str, is_python: bool, timeout: in
     except asyncio.TimeoutError:
         try:
             del_proc = await asyncio.create_subprocess_exec(
-                "kubectl", "delete", "pod", pod_name, f"--namespace={settings.k8s_sandbox_namespace}", "--grace-period=0", "--force"
+                "kubectl",
+                "delete",
+                "pod",
+                pod_name,
+                f"--namespace={settings.k8s_sandbox_namespace}",
+                "--grace-period=0",
+                "--force",
             )
             await del_proc.communicate()
         except Exception:
@@ -154,10 +172,14 @@ async def _execute_in_docker(code_or_cmd: str, is_python: bool, timeout: int = 3
         docker_args = [
             "run",
             "--rm",
-            "--network", "none",
-            "--memory", "512m",
-            "--cpus", "1.0",
-            "-v", f"{script_file.resolve()}:/app/run_target:ro",
+            "--network",
+            "none",
+            "--memory",
+            "512m",
+            "--cpus",
+            "1.0",
+            "-v",
+            f"{script_file.resolve()}:/app/run_target:ro",
             "python:3.11-slim" if is_python else "alpine:latest",
         ]
         if is_python:
@@ -332,13 +354,16 @@ async def code_exec_bash(command: str, timeout: int = 30) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Code Execution MCP Server")
     parser.add_argument("--port", type=int, default=9001, help="Port to listen on (SSE mode)")
-    parser.add_argument("--transport", type=str, default="stdio", choices=["stdio", "sse"], help="MCP transport")
+    parser.add_argument(
+        "--transport", type=str, default="stdio", choices=["stdio", "sse"], help="MCP transport"
+    )
     args = parser.parse_args()
 
     if args.transport == "sse":
         from typing import Any, cast
 
         import uvicorn
+
         app = getattr(mcp, "sse_app", None) or getattr(mcp, "streamable_http_app", None)
         if callable(app):
             uvicorn.run(app(), host="0.0.0.0", port=args.port)

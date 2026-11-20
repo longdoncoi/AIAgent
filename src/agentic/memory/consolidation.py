@@ -8,7 +8,9 @@ from src.agentic.memory.long_term import get_long_term_store
 logger = logging.getLogger(__name__)
 
 
-async def consolidate_session_memory(thread_id: str, goal: str, final_answer: str, metadata: dict[str, Any] | None = None) -> None:
+async def consolidate_session_memory(
+    thread_id: str, goal: str, final_answer: str, metadata: dict[str, Any] | None = None
+) -> None:
     """Extracts summary and writes episodic memory entry upon session completion."""
     try:
         store = get_long_term_store()

@@ -79,9 +79,12 @@ async def evaluate_groundedness(question: str, generated_answer: str, ground_tru
 # ------------------------------------------------------------------------------
 # RAGAS Framework Evaluator Adapters
 # ------------------------------------------------------------------------------
-async def evaluate_ragas_faithfulness(question: str, contexts: list[str] | str, answer: str) -> float:
+async def evaluate_ragas_faithfulness(
+    question: str, contexts: list[str] | str, answer: str
+) -> float:
     """Computes RAGAS faithfulness using RagasLocalEvaluator."""
     from evals.ragas_runner import RagasLocalEvaluator
+
     ctx_list = [contexts] if isinstance(contexts, str) else contexts
     evaluator = RagasLocalEvaluator()
     return await evaluator.evaluate_faithfulness(question, ctx_list, answer)
@@ -90,6 +93,7 @@ async def evaluate_ragas_faithfulness(question: str, contexts: list[str] | str, 
 async def evaluate_ragas_answer_relevance(question: str, answer: str) -> float:
     """Computes RAGAS answer relevance using RagasLocalEvaluator."""
     from evals.ragas_runner import RagasLocalEvaluator
+
     evaluator = RagasLocalEvaluator()
     return await evaluator.evaluate_answer_relevance(question, answer)
 
@@ -99,6 +103,7 @@ async def evaluate_ragas_context_precision(
 ) -> float:
     """Computes RAGAS context precision using RagasLocalEvaluator."""
     from evals.ragas_runner import RagasLocalEvaluator
+
     ctx_list = [contexts] if isinstance(contexts, str) else contexts
     evaluator = RagasLocalEvaluator()
     return await evaluator.evaluate_context_precision(question, ctx_list, ground_truth)
@@ -109,6 +114,7 @@ async def evaluate_ragas_context_recall(
 ) -> float:
     """Computes RAGAS context recall using RagasLocalEvaluator."""
     from evals.ragas_runner import RagasLocalEvaluator
+
     ctx_list = [contexts] if isinstance(contexts, str) else contexts
     evaluator = RagasLocalEvaluator()
     return await evaluator.evaluate_context_recall(question, ctx_list, ground_truth)
@@ -122,6 +128,7 @@ async def evaluate_ragas_sample(
 ) -> dict[str, float]:
     """Evaluates all 4 canonical RAGAS metrics for a single QA turn."""
     from evals.ragas_runner import RagasLocalEvaluator
+
     ctx_list = [contexts] if isinstance(contexts, str) else contexts
     evaluator = RagasLocalEvaluator()
     faith = await evaluator.evaluate_faithfulness(question, ctx_list, answer)

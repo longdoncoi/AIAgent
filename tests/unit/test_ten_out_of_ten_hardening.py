@@ -118,6 +118,7 @@ def test_redis_saver_multi_protocol_serialization() -> None:
 def test_postgres_pool_and_saver_context_cleanup() -> None:
     close_postgres_pool()
     from src.agentic.memory.short_term import _global_checkpointer, _pg_pool, _pg_saver_cm
+
     assert _pg_pool is None
     assert _pg_saver_cm is None
     assert _global_checkpointer is None

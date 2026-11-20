@@ -18,7 +18,9 @@ def main() -> None:
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Host interface")
     args = parser.parse_args()
 
-    uvicorn.run("src.agentic.agents.coding.server:app", host=args.host, port=args.port, reload=False)
+    uvicorn.run(
+        "src.agentic.agents.coding.server:app", host=args.host, port=args.port, reload=False
+    )
 
 
 if __name__ == "__main__":

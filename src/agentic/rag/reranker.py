@@ -25,6 +25,7 @@ class CrossEncoderReranker:
         """Attempts to load a neural CrossEncoder model if dependencies are satisfied."""
         try:
             from sentence_transformers import CrossEncoder  # type: ignore
+
             self._cross_encoder = CrossEncoder(self.model_name)
             logger.info(f"Loaded neural CrossEncoder model: {self.model_name}")
         except Exception:
@@ -53,7 +54,9 @@ class CrossEncoderReranker:
                 tf_norm = (tf * (k1 + 1.0)) / (tf + k1 * norm_len)
                 # Boost if term occurs early in text
                 first_pos = text_lower.find(term)
-                pos_boost = 1.0 + (0.2 * max(0.0, 1.0 - (first_pos / 500.0))) if first_pos != -1 else 1.0
+                pos_boost = (
+                    1.0 + (0.2 * max(0.0, 1.0 - (first_pos / 500.0))) if first_pos != -1 else 1.0
+                )
                 score += tf_norm * pos_boost
 
         # Combine with dense base_score and squash via sigmoid into [0, 1]
@@ -72,7 +75,9 @@ class CrossEncoderReranker:
                 pairs = [
                     [
                         query,
-                        item.node.get_content() if hasattr(item.node, "get_content") else getattr(item.node, "text", ""),
+                        item.node.get_content()
+                        if hasattr(item.node, "get_content")
+                        else getattr(item.node, "text", ""),
                     ]
                     for item in nodes
                 ]
@@ -82,14 +87,18 @@ class CrossEncoderReranker:
                 nodes.sort(key=lambda x: x.score or 0.0, reverse=True)
                 return nodes[: self.top_n]
             except Exception as e:
-                logger.warning(f"Neural CrossEncoder inference failed ({e}). Falling back to statistical scoring.")
+                logger.warning(
+                    f"Neural CrossEncoder inference failed ({e}). Falling back to statistical scoring."
+                )
 
         # Fallback scoring
         scored: list[tuple[NodeWithScore, float]] = []
         for item in nodes:
             base = item.score or 0.0
             node_text = (
-                item.node.get_content() if hasattr(item.node, "get_content") else getattr(item.node, "text", "")
+                item.node.get_content()
+                if hasattr(item.node, "get_content")
+                else getattr(item.node, "text", "")
             )
             computed = self._fallback_score(query, node_text, base)
             scored.append((item, computed))

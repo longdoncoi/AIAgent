@@ -70,8 +70,11 @@ class MCPClientManager:
         self._raw_registry: dict[str, BaseTool] = {}
         self._init_tools()
 
-    def _wrap_async_tool(self, name: str, func: Callable[..., Coroutine[Any, Any, str]]) -> Callable:
+    def _wrap_async_tool(
+        self, name: str, func: Callable[..., Coroutine[Any, Any, str]]
+    ) -> Callable:
         """Wraps an async function with tracing and Prometheus metrics."""
+
         async def wrapped(*args: Any, **kwargs: Any) -> str:
             tracer = get_tracer()
             with tracer.start_as_current_span(f"mcp.tool.{name}"):
@@ -85,6 +88,7 @@ class MCPClientManager:
                     TOOL_EXECUTION_TOTAL.labels(tool_name=name, status="error").inc()
                     logger.error(f"Error executing tool {name}: {ex}")
                     return f"Tool execution error: {str(ex)}"
+
         return wrapped
 
     def _init_tools(self) -> None:

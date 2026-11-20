@@ -43,6 +43,7 @@ class HybridRetriever:
 
                 if has_embed_server:
                     from llama_index.embeddings.openai import OpenAIEmbedding
+
                     LlamaSettings.embed_model = OpenAIEmbedding(
                         api_base=self.settings.llama_embed_base_url,
                         api_key="sk-dummy",
@@ -50,13 +51,16 @@ class HybridRetriever:
                     )
                 else:
                     from llama_index.core.embeddings.mock_embed_model import MockEmbedding
+
                     LlamaSettings.embed_model = MockEmbedding(embed_dim=768)
 
                 storage_context = StorageContext.from_defaults(persist_dir=str(self.index_dir))
                 self._storage_context = storage_context
                 self._index = load_index_from_storage(storage_context)
                 self._docstore = storage_context.docstore
-                logger.info("Successfully loaded VectorStoreIndex and StorageContext from persist directory.")
+                logger.info(
+                    "Successfully loaded VectorStoreIndex and StorageContext from persist directory."
+                )
             except Exception as e:
                 logger.warning(f"Could not load index from {self.index_dir}: {e}")
 
@@ -93,13 +97,18 @@ class HybridRetriever:
         try:
             if self._storage_context:
                 from llama_index.core.retrievers import AutoMergingRetriever
+
                 base_retriever = self._index.as_retriever(similarity_top_k=top_k)
-                retriever = AutoMergingRetriever(base_retriever, storage_context=self._storage_context, verbose=False)
+                retriever = AutoMergingRetriever(
+                    base_retriever, storage_context=self._storage_context, verbose=False
+                )
                 return retriever.retrieve(query)
             retriever = self._index.as_retriever(similarity_top_k=top_k)
             return retriever.retrieve(query)
         except Exception as e:
-            logger.debug(f"AutoMergingRetriever not applicable ({e}). Using standard vector retriever.")
+            logger.debug(
+                f"AutoMergingRetriever not applicable ({e}). Using standard vector retriever."
+            )
             try:
                 retriever = self._index.as_retriever(similarity_top_k=top_k)
                 return retriever.retrieve(query)
@@ -118,7 +127,9 @@ class HybridRetriever:
         for rank_list in retrieval_lists:
             for rank, item in enumerate(rank_list, start=1):
                 node_text = (
-                    item.node.get_content() if hasattr(item.node, "get_content") else getattr(item.node, "text", "")
+                    item.node.get_content()
+                    if hasattr(item.node, "get_content")
+                    else getattr(item.node, "text", "")
                 )
                 node_id = getattr(item.node, "node_id", node_text[:50])
                 rrf_scores[node_id] += 1.0 / (k + rank)
@@ -126,8 +137,7 @@ class HybridRetriever:
                     node_map[node_id] = item.node
 
         fused_items: list[NodeWithScore] = [
-            NodeWithScore(node=node_map[nid], score=score)
-            for nid, score in rrf_scores.items()
+            NodeWithScore(node=node_map[nid], score=score) for nid, score in rrf_scores.items()
         ]
         fused_items.sort(key=lambda x: x.score or 0.0, reverse=True)
         return fused_items
@@ -142,12 +152,14 @@ class HybridRetriever:
         if self.settings.enable_knowledge_graph:
             try:
                 from src.agentic.rag.kg import get_knowledge_graph_store
+
                 kg_store = get_knowledge_graph_store()
                 kg_results = kg_store.query_graph(query, top_k=top_k)
             except Exception as e:
                 logger.debug(f"Knowledge Graph retrieval skipped ({e})")
 
         from src.agentic.rag.fusion import get_fusion_engine
+
         channels: dict[str, list[NodeWithScore]] = {
             "bm25": keyword_results,
             "vector": dense_results,

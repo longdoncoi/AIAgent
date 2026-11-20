@@ -28,7 +28,11 @@ async def run_worker() -> None:
             client,
             task_queue=settings.temporal_task_queue,
             workflows=[AgentExecutionWorkflow, RagIngestionWorkflow, RealtimeKnowledgeCdcWorkflow],
-            activities=[execute_plan_step, ingest_documents_activity, ingest_delta_document_activity],
+            activities=[
+                execute_plan_step,
+                ingest_documents_activity,
+                ingest_delta_document_activity,
+            ],
         )
         logger.info(f"Temporal worker started on task queue '{settings.temporal_task_queue}'.")
         await worker.run()

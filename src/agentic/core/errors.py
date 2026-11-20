@@ -21,8 +21,13 @@ class GuardrailViolation(AgentError):
 class HITLRequiredError(AgentError):
     """Raised when a task or action requires Human-In-The-Loop approval."""
 
-    def __init__(self, step_id: str, action: str, risk_level: str, details: dict | None = None) -> None:
-        super().__init__(f"Action '{action}' in step '{step_id}' requires HITL approval (risk: {risk_level})", details)
+    def __init__(
+        self, step_id: str, action: str, risk_level: str, details: dict | None = None
+    ) -> None:
+        super().__init__(
+            f"Action '{action}' in step '{step_id}' requires HITL approval (risk: {risk_level})",
+            details,
+        )
         self.step_id = step_id
         self.action = action
         self.risk_level = risk_level
@@ -39,8 +44,12 @@ class ToolExecutionError(AgentError):
 class A2ACommunicationError(AgentError):
     """Raised when communication with a sub-agent over A2A protocol fails."""
 
-    def __init__(self, target_agent: str, status_code: int | None = None, message: str = "") -> None:
-        super().__init__(f"A2A communication error with '{target_agent}' (status={status_code}): {message}")
+    def __init__(
+        self, target_agent: str, status_code: int | None = None, message: str = ""
+    ) -> None:
+        super().__init__(
+            f"A2A communication error with '{target_agent}' (status={status_code}): {message}"
+        )
         self.target_agent = target_agent
         self.status_code = status_code
 
@@ -55,4 +64,5 @@ class LLMGatewayError(AgentError):
 
 class ConfigurationError(AgentError):
     """Raised when a required configuration file or parameter is missing/invalid."""
+
     pass

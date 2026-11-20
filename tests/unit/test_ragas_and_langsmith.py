@@ -95,6 +95,7 @@ def test_get_langsmith_client_and_callbacks() -> None:
 @pytest.mark.asyncio
 async def test_traceable_operation_decorator() -> None:
     """Verifies @traceable_operation decorator works on both async and sync functions."""
+
     @traceable_operation(name="test_sync_fn", run_type="tool")
     def sync_tool(x: int, y: int) -> int:
         return x + y
@@ -126,13 +127,19 @@ async def test_trace_langsmith_run_context_managers() -> None:
 def test_langsmith_feedback_and_dataset_sync() -> None:
     """Verifies log_feedback and sync_evaluation_dataset helpers."""
     # Feedback without client returns False
-    with patch("src.agentic.observability.langsmith_tracer.get_langsmith_client", return_value=None):
+    with patch(
+        "src.agentic.observability.langsmith_tracer.get_langsmith_client", return_value=None
+    ):
         assert log_feedback(run_id="run_123", key="quality", score=0.95) is False
 
     # Feedback with active mock client
     mock_client = MagicMock()
-    with patch("src.agentic.observability.langsmith_tracer.get_langsmith_client", return_value=mock_client):
-        success = log_feedback(run_id="run_123", key="faithfulness", score=0.92, comment="High factual fidelity")
+    with patch(
+        "src.agentic.observability.langsmith_tracer.get_langsmith_client", return_value=mock_client
+    ):
+        success = log_feedback(
+            run_id="run_123", key="faithfulness", score=0.92, comment="High factual fidelity"
+        )
         assert success is True
         mock_client.create_feedback.assert_called_once_with(
             run_id="run_123",
@@ -149,7 +156,9 @@ def test_langsmith_feedback_and_dataset_sync() -> None:
     mock_dataset.id = "dataset_uuid_456"
     mock_client.create_dataset.return_value = mock_dataset
 
-    with patch("src.agentic.observability.langsmith_tracer.get_langsmith_client", return_value=mock_client):
+    with patch(
+        "src.agentic.observability.langsmith_tracer.get_langsmith_client", return_value=mock_client
+    ):
         examples = [
             {"question": "Q1", "ground_truth": "A1", "id": "tc_01"},
             {"question": "Q2", "ground_truth": "A2", "id": "tc_02"},
@@ -174,7 +183,9 @@ async def test_ragas_local_evaluator_metrics() -> None:
     ]
     faithful_answer = "Giới hạn thời gian timeout tối đa cho tiến trình chạy thử nghiệm là 30 giây."
     hallucinated_answer = "Thời gian timeout không giới hạn và được phép thoải mái thực hiện mọi thao tác ngoài hệ thống."
-    ground_truth = "Giới hạn thời gian timeout tối đa cho mỗi tiến trình chạy thử nghiệm là 30 giây."
+    ground_truth = (
+        "Giới hạn thời gian timeout tối đa cho mỗi tiến trình chạy thử nghiệm là 30 giây."
+    )
 
     # 1. Faithfulness
     score_f_high = await evaluator.evaluate_faithfulness(question, contexts, faithful_answer)
@@ -238,16 +249,22 @@ async def test_evaluators_ragas_adapters() -> None:
 
 def test_ragas_pydantic_schemas() -> None:
     """Verifies that Pydantic models for RAGAS output validation enforce constraints."""
-    f_out = RagasFaithfulnessOutput(faithfulness=0.95, unsupported_claims=[], reasoning="All claims verified")
+    f_out = RagasFaithfulnessOutput(
+        faithfulness=0.95, unsupported_claims=[], reasoning="All claims verified"
+    )
     assert f_out.faithfulness == 0.95
 
     r_out = RagasAnswerRelevanceOutput(answer_relevance=0.88, reasoning="Addresses prompt directly")
     assert r_out.answer_relevance == 0.88
 
-    p_out = RagasContextPrecisionOutput(context_precision=0.80, relevant_chunks=[0, 1], reasoning="Top chunks relevant")
+    p_out = RagasContextPrecisionOutput(
+        context_precision=0.80, relevant_chunks=[0, 1], reasoning="Top chunks relevant"
+    )
     assert p_out.context_precision == 0.80
 
-    c_out = RagasContextRecallOutput(context_recall=0.92, missing_points=[], reasoning="Full recall achieved")
+    c_out = RagasContextRecallOutput(
+        context_recall=0.92, missing_points=[], reasoning="Full recall achieved"
+    )
     assert c_out.context_recall == 0.92
 
     sample_res = RagasSampleResult(

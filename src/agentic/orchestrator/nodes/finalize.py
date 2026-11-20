@@ -41,13 +41,17 @@ async def wait_all_background_tasks(timeout: float = 5.0) -> None:
     """Waits for all inflight background tasks to finish during graceful process shutdown."""
     if not _background_tasks:
         return
-    logger.info(f"Waiting for {len(_background_tasks)} inflight background task(s) to complete (timeout={timeout}s)...")
+    logger.info(
+        f"Waiting for {len(_background_tasks)} inflight background task(s) to complete (timeout={timeout}s)..."
+    )
     tasks = list(_background_tasks)
     try:
         await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=timeout)
         logger.info("All background tasks completed successfully.")
     except asyncio.TimeoutError:
-        logger.warning(f"Timed out waiting for background tasks ({len(_background_tasks)} still pending).")
+        logger.warning(
+            f"Timed out waiting for background tasks ({len(_background_tasks)} still pending)."
+        )
 
 
 @traced_operation("orchestrator.finalize")
@@ -61,10 +65,7 @@ async def finalize_node(state: AgentState) -> dict[str, Any]:
         }
 
     goal = state.plan.goal
-    step_outputs = [
-        f"### {s.id} ({s.agent})\n{s.output or 'No output'}"
-        for s in state.plan.steps
-    ]
+    step_outputs = [f"### {s.id} ({s.agent})\n{s.output or 'No output'}" for s in state.plan.steps]
     combined_steps = "\n\n".join(step_outputs)
 
     # Synthesis via LLM or direct aggregation

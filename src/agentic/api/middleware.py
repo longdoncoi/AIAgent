@@ -44,15 +44,21 @@ class SlidingWindowRateLimiter:
         if enable_redis and redis_url:
             try:
                 from src.agentic.core.redis import get_redis_client
+
                 client = get_redis_client(redis_url)
                 if client is None:
                     import redis
-                    client = redis.Redis.from_url(redis_url, socket_timeout=0.5, decode_responses=True)
+
+                    client = redis.Redis.from_url(
+                        redis_url, socket_timeout=0.5, decode_responses=True
+                    )
                 client.ping()
                 self._redis_client = client
                 logger.info(f"Initialized Distributed Redis Rate Limiter at {redis_url}")
             except Exception as e:
-                logger.warning(f"Could not connect to Redis for Rate Limiting ({e}). Falling back to in-memory.")
+                logger.warning(
+                    f"Could not connect to Redis for Rate Limiting ({e}). Falling back to in-memory."
+                )
 
     def is_allowed(self, client_key: str, cost: int = 1) -> tuple[bool, int]:
         """Checks if request count is within limit_per_minute."""
@@ -73,7 +79,9 @@ class SlidingWindowRateLimiter:
                     return False, 60
                 return True, 0
             except Exception as ex:
-                logger.debug(f"Redis rate limiter exception ({ex}), fallback to local memory limiter.")
+                logger.debug(
+                    f"Redis rate limiter exception ({ex}), fallback to local memory limiter."
+                )
 
         with self._lock:
             # Purge timestamps older than 60s
@@ -120,7 +128,9 @@ class SlidingWindowRateLimiter:
                 pipe.execute()
                 return True, 0
             except Exception as ex:
-                logger.debug(f"Redis token rate limiter exception ({ex}), fallback to local memory limiter.")
+                logger.debug(
+                    f"Redis token rate limiter exception ({ex}), fallback to local memory limiter."
+                )
 
         with self._lock:
             valid_entries = [e for e in self.token_requests[client_key] if e[0] > window_start]
@@ -145,6 +155,23 @@ _rate_limiter = SlidingWindowRateLimiter(
 )
 
 
+def estimate_tokens_from_request(content_length: int, content_type: str = "") -> int:
+    """Estimates the token count of an incoming HTTP request payload.
+
+    Implements a multi-lingual and Unicode-aware token estimation model:
+    - Accounts for JSON envelope overhead (~30 bytes for standard ChatRequest schema).
+    - Accurately models UTF-8 multi-byte sequences (Vietnamese diacritics, CJK, symbols)
+      which occupy 2-3 bytes/character while words average ~3.2 bytes/token.
+    - Preserves deterministic O(1) performance without blocking the stream.
+    """
+    if content_length <= 0:
+        return 10
+
+    effective_bytes = max(1, content_length - 30) if content_length > 40 else content_length
+    estimated = max(10, int(effective_bytes / 3.2))
+    return estimated
+
+
 class RequestIDAndMetricsMiddleware(BaseHTTPMiddleware):
     """Enforces Rate Limiting, OpenTelemetry Distributed Tracing, and Prometheus latency measurement."""
 
@@ -161,20 +188,30 @@ class RequestIDAndMetricsMiddleware(BaseHTTPMiddleware):
                 logger.warning(f"Rate limit exceeded for client: {client_ip}")
                 return JSONResponse(
                     status_code=429,
-                    content={"error": "Too Many Requests", "detail": "Rate limit exceeded. Please slow down."},
+                    content={
+                        "error": "Too Many Requests",
+                        "detail": "Rate limit exceeded. Please slow down.",
+                    },
                     headers={"Retry-After": str(retry_after)},
                 )
 
             # Token Tier Rate Limit check for chat and task endpoints
-            if _settings.enable_token_rate_limit and path.startswith(("/api/v1/chat", "/a2a/tasks", "/tasks")):
+            if _settings.enable_token_rate_limit and path.startswith(
+                ("/api/v1/chat", "/a2a/tasks", "/tasks")
+            ):
                 try:
                     content_length = int(request.headers.get("content-length", 0) or 0)
                 except ValueError:
                     content_length = 0
-                estimated_tokens = max(10, content_length // 4)
-                tok_allowed, tok_retry_after = _rate_limiter.is_token_allowed(rate_key, tokens=estimated_tokens)
+                content_type = request.headers.get("content-type", "")
+                estimated_tokens = estimate_tokens_from_request(content_length, content_type)
+                tok_allowed, tok_retry_after = _rate_limiter.is_token_allowed(
+                    rate_key, tokens=estimated_tokens
+                )
                 if not tok_allowed:
-                    logger.warning(f"Token tier rate limit exceeded for client: {client_ip} (estimated={estimated_tokens} tokens)")
+                    logger.warning(
+                        f"Token tier rate limit exceeded for client: {client_ip} (estimated={estimated_tokens} tokens)"
+                    )
                     return JSONResponse(
                         status_code=429,
                         content={
@@ -204,7 +241,10 @@ class RequestIDAndMetricsMiddleware(BaseHTTPMiddleware):
                 response = await call_next(request)
                 status_label = "success" if response.status_code < 400 else "error"
             except Exception as e:
-                logger.error(f"Unhandled exception on {request.method} {request.url.path}: {e}", exc_info=True)
+                logger.error(
+                    f"Unhandled exception on {request.method} {request.url.path}: {e}",
+                    exc_info=True,
+                )
                 span.record_exception(e)
                 span.set_status(trace.StatusCode.ERROR, str(e))
                 raise

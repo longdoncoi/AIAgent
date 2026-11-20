@@ -31,9 +31,13 @@ class TokenMetricsCallbackHandler(AsyncCallbackHandler):
             prompt_tokens = usage.get("prompt_tokens", 0)
             completion_tokens = usage.get("completion_tokens", 0)
             if prompt_tokens:
-                TOKENS_TOTAL.labels(model_alias=self.model_alias, token_type="prompt").inc(prompt_tokens)
+                TOKENS_TOTAL.labels(model_alias=self.model_alias, token_type="prompt").inc(
+                    prompt_tokens
+                )
             if completion_tokens:
-                TOKENS_TOTAL.labels(model_alias=self.model_alias, token_type="completion").inc(completion_tokens)
+                TOKENS_TOTAL.labels(model_alias=self.model_alias, token_type="completion").inc(
+                    completion_tokens
+                )
 
 
 class ModelCircuitBreaker:
@@ -85,6 +89,17 @@ class ModelCircuitBreaker:
 _circuit_breaker = ModelCircuitBreaker()
 
 
+def reload_gateway_config() -> None:
+    """Dynamically resets circuit breaker and model gateway state on config reload."""
+    global _circuit_breaker
+    with _circuit_breaker._lock:
+        _circuit_breaker.failures.clear()
+        _circuit_breaker.last_failure_time.clear()
+        _circuit_breaker.state.clear()
+        _circuit_breaker.trip_count.clear()
+    logger.info("ModelCircuitBreaker state reset during gateway config reload.")
+
+
 def get_llm(
     alias: str = "reasoning-llm",
     temperature: float = 0.2,
@@ -114,7 +129,9 @@ def get_llm(
 
     # Check circuit breaker status
     if _circuit_breaker.should_fallback(alias):
-        logger.warning(f"Circuit breaker active for alias '{alias}'. Falling back to CPU / fast-llm endpoint.")
+        logger.warning(
+            f"Circuit breaker active for alias '{alias}'. Falling back to CPU / fast-llm endpoint."
+        )
         alias = "fast-llm"
         model_name = model_name_map.get(alias, alias)
         base_url = settings.llama_chat_base_url
@@ -124,6 +141,7 @@ def get_llm(
     # Fast check if gateway endpoint is reachable
     import socket
     from urllib.parse import urlparse
+
     parsed = urlparse(base_url)
     target_host = parsed.hostname or "localhost"
     target_port = parsed.port or 4000
@@ -136,7 +154,9 @@ def get_llm(
             return False
 
     is_online = _is_active()
-    effective_timeout = timeout if timeout is not None else (0.5 if (is_test or not is_online) else 60.0)
+    effective_timeout = (
+        timeout if timeout is not None else (0.5 if (is_test or not is_online) else 60.0)
+    )
     max_retries = 0 if (is_test or not is_online) else 2
 
     # Include KV-cache and token tracking callbacks
@@ -147,7 +167,9 @@ def get_llm(
     if "extra_headers" in kwargs:
         default_headers.update(kwargs.pop("extra_headers"))
 
-    logger.debug(f"Resolved LLM alias '{alias}' -> model='{model_name}' at base_url='{base_url}' (online={is_online}, timeout={effective_timeout}s)")
+    logger.debug(
+        f"Resolved LLM alias '{alias}' -> model='{model_name}' at base_url='{base_url}' (online={is_online}, timeout={effective_timeout}s)"
+    )
 
     return ChatOpenAI(
         model=model_name,

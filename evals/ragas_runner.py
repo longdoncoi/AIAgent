@@ -43,24 +43,34 @@ logger = logging.getLogger(__name__)
 # ------------------------------------------------------------------------------
 class RagasFaithfulnessOutput(BaseModel):
     faithfulness: float = Field(ge=0.0, le=1.0, description="Ratio of claims supported by context")
-    unsupported_claims: list[str] = Field(default_factory=list, description="Extracted claims not found in context")
+    unsupported_claims: list[str] = Field(
+        default_factory=list, description="Extracted claims not found in context"
+    )
     reasoning: str = Field(description="Explanation of factual fidelity")
 
 
 class RagasAnswerRelevanceOutput(BaseModel):
-    answer_relevance: float = Field(ge=0.0, le=1.0, description="Relevance score between 0.0 and 1.0")
+    answer_relevance: float = Field(
+        ge=0.0, le=1.0, description="Relevance score between 0.0 and 1.0"
+    )
     reasoning: str = Field(description="Explanation of relevance to the original prompt")
 
 
 class RagasContextPrecisionOutput(BaseModel):
     context_precision: float = Field(ge=0.0, le=1.0, description="Relevance of retrieved chunks")
-    relevant_chunks: list[int] = Field(default_factory=list, description="0-indexed positions of relevant chunks")
+    relevant_chunks: list[int] = Field(
+        default_factory=list, description="0-indexed positions of relevant chunks"
+    )
     reasoning: str = Field(description="Explanation of ranking precision")
 
 
 class RagasContextRecallOutput(BaseModel):
-    context_recall: float = Field(ge=0.0, le=1.0, description="Ratio of ground-truth statements found in contexts")
-    missing_points: list[str] = Field(default_factory=list, description="Ground truth statements missing from contexts")
+    context_recall: float = Field(
+        ge=0.0, le=1.0, description="Ratio of ground-truth statements found in contexts"
+    )
+    missing_points: list[str] = Field(
+        default_factory=list, description="Ground truth statements missing from contexts"
+    )
     reasoning: str = Field(description="Explanation of recall coverage")
 
 
@@ -80,6 +90,7 @@ class RagasSampleResult(BaseModel):
 def _tokenize(text: str) -> list[str]:
     """Extracts alphanumeric tokens with punctuation stripped, filtering out single characters."""
     import re
+
     return [w.lower() for w in re.findall(r"\w+", text) if len(w) >= 2]
 
 
@@ -93,6 +104,7 @@ class RagasLocalEvaluator:
     def _is_llm_online(self) -> bool:
         """Fast check to verify if the LLM gateway is reachable."""
         import socket
+
         try:
             with socket.create_connection(("localhost", 4000), timeout=0.1):
                 return True
@@ -123,7 +135,10 @@ class RagasLocalEvaluator:
                 logger.debug(f"Faithfulness LLM evaluation timed out or failed: {e}")
 
         # Check for grounded refusal (system appropriately states lack of info without hallucinating)
-        is_refusal = any(term in answer.lower() for term in ["không có thông tin", "không tìm thấy", "no relevant", "chưa có quy định"])
+        is_refusal = any(
+            term in answer.lower()
+            for term in ["không có thông tin", "không tìm thấy", "no relevant", "chưa có quy định"]
+        )
         if is_refusal:
             return 1.0
 
@@ -164,7 +179,9 @@ class RagasLocalEvaluator:
         overlap = len(q_tokens.intersection(a_tokens)) / len(q_tokens)
         return round(min(1.0, max(0.5, overlap + 0.35)), 3)
 
-    async def evaluate_context_precision(self, question: str, contexts: list[str], ground_truth: str) -> float:
+    async def evaluate_context_precision(
+        self, question: str, contexts: list[str], ground_truth: str
+    ) -> float:
         """Computes RAGAS Context Precision: whether relevant context chunks are ranked higher."""
         if not contexts:
             return 0.0
@@ -188,7 +205,10 @@ class RagasLocalEvaluator:
                 logger.debug(f"Context precision LLM evaluation timed out or failed: {e}")
 
         # If ground truth indicates absence of information (negative test case / refusal)
-        is_refusal = any(term in ground_truth.lower() for term in ["không có thông tin", "không tìm thấy", "no relevant", "chưa có quy định"])
+        is_refusal = any(
+            term in ground_truth.lower()
+            for term in ["không có thông tin", "không tìm thấy", "no relevant", "chưa có quy định"]
+        )
         if is_refusal:
             return 1.0
 
@@ -208,7 +228,9 @@ class RagasLocalEvaluator:
             return 0.0
         return round(float(relevant_chunks / total_chunks), 3)
 
-    async def evaluate_context_recall(self, question: str, contexts: list[str], ground_truth: str) -> float:
+    async def evaluate_context_recall(
+        self, question: str, contexts: list[str], ground_truth: str
+    ) -> float:
         """Computes RAGAS Context Recall: whether contexts contain all information from ground truth."""
         if not ground_truth.strip() or not contexts:
             return 0.0
@@ -233,7 +255,10 @@ class RagasLocalEvaluator:
                 logger.debug(f"Context recall LLM evaluation timed out or failed: {e}")
 
         # If ground truth indicates absence of information (negative test case / refusal)
-        is_refusal = any(term in ground_truth.lower() for term in ["không có thông tin", "không tìm thấy", "no relevant", "chưa có quy định"])
+        is_refusal = any(
+            term in ground_truth.lower()
+            for term in ["không có thông tin", "không tìm thấy", "no relevant", "chưa có quy định"]
+        )
         if is_refusal:
             return 1.0
 
@@ -273,7 +298,13 @@ async def run_ragas_benchmark() -> bool:
     dataset_path = settings.project_root / "evals" / "datasets" / "rag_qa.jsonl"
     if not dataset_path.exists():
         from scripts.seed_eval import main as seed_main
+
         seed_main()
+
+    # Clear RAG cache to ensure evaluation runs against freshly retrieved context
+    from src.agentic.cache.rag_cache import get_rag_cache
+
+    get_rag_cache().clear()
 
     evaluator = RagasLocalEvaluator(model_alias=settings.eval_judge_model)
 
@@ -316,8 +347,12 @@ async def run_ragas_benchmark() -> bool:
         # 2. Evaluate all 4 RAGAS metrics
         faith = await evaluator.evaluate_faithfulness(question=q, contexts=contexts, answer=gt)
         relev = await evaluator.evaluate_answer_relevance(question=q, answer=gt)
-        prec = await evaluator.evaluate_context_precision(question=q, contexts=contexts, ground_truth=gt)
-        rec = await evaluator.evaluate_context_recall(question=q, contexts=contexts, ground_truth=gt)
+        prec = await evaluator.evaluate_context_precision(
+            question=q, contexts=contexts, ground_truth=gt
+        )
+        rec = await evaluator.evaluate_context_recall(
+            question=q, contexts=contexts, ground_truth=gt
+        )
 
         faith_list.append(faith)
         rel_list.append(relev)
@@ -352,7 +387,9 @@ async def run_ragas_benchmark() -> bool:
             log_feedback(run_id=tc_id, key="ragas_context_recall", score=rec)
 
         status_tag = "[PASS]" if sample_passed else "[WARN]"
-        print(f"  {tc_id}: {status_tag} Faith: {faith:.2f} | Relev: {relev:.2f} | Prec: {prec:.2f} | Recall: {rec:.2f}")
+        print(
+            f"  {tc_id}: {status_tag} Faith: {faith:.2f} | Relev: {relev:.2f} | Prec: {prec:.2f} | Recall: {rec:.2f}"
+        )
 
     avg_faith = sum(faith_list) / max(1, len(faith_list))
     avg_relev = sum(rel_list) / max(1, len(rel_list))
@@ -360,10 +397,18 @@ async def run_ragas_benchmark() -> bool:
     avg_rec = sum(rec_list) / max(1, len(rec_list))
 
     print("\n---------------- RAGAS SUMMARY METRICS ----------------")
-    print(f"  >> Average Faithfulness:      {avg_faith:.2f} (Gate Threshold: {thresholds['faithfulness']:.2f})")
-    print(f"  >> Average Answer Relevance:  {avg_relev:.2f} (Gate Threshold: {thresholds['answer_relevance']:.2f})")
-    print(f"  >> Average Context Precision: {avg_prec:.2f} (Gate Threshold: {thresholds['context_precision']:.2f})")
-    print(f"  >> Average Context Recall:    {avg_rec:.2f} (Gate Threshold: {thresholds['context_recall']:.2f})")
+    print(
+        f"  >> Average Faithfulness:      {avg_faith:.2f} (Gate Threshold: {thresholds['faithfulness']:.2f})"
+    )
+    print(
+        f"  >> Average Answer Relevance:  {avg_relev:.2f} (Gate Threshold: {thresholds['answer_relevance']:.2f})"
+    )
+    print(
+        f"  >> Average Context Precision: {avg_prec:.2f} (Gate Threshold: {thresholds['context_precision']:.2f})"
+    )
+    print(
+        f"  >> Average Context Recall:    {avg_rec:.2f} (Gate Threshold: {thresholds['context_recall']:.2f})"
+    )
     print("-------------------------------------------------------")
 
     passed_all = (

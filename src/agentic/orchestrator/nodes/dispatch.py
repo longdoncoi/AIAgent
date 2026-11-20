@@ -28,7 +28,8 @@ async def dispatch_node(state: AgentState) -> dict[str, Any]:
 
         # Find pending steps that are ready to run
         ready_steps = [
-            s for s in steps
+            s
+            for s in steps
             if s.status == "pending" and all(dep in completed_ids for dep in s.depends_on)
         ]
 
@@ -50,11 +51,7 @@ async def dispatch_node(state: AgentState) -> dict[str, Any]:
         async def _execute_step(step: Step) -> None:
             logger.info(f"Dispatching step '{step.id}' to agent '{step.agent}'...")
             step.status = "running"
-            prior_context = {
-                s.id: s.output
-                for s in steps
-                if s.output and s.id != step.id
-            }
+            prior_context = {s.id: s.output for s in steps if s.output and s.id != step.id}
             try:
                 tokens: list[str] = []
                 async for event in a2a_client.call_agent_stream(

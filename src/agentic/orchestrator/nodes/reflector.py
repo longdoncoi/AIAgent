@@ -26,6 +26,7 @@ class ReflectionEvaluation(BaseModel):
 async def reflector_node(state: AgentState) -> dict[str, Any]:
     """Evaluates outputs against the plan goal to determine if replanning/retrying is required."""
     import time
+
     start_t = time.time()
     try:
         # Context window trimming protection
@@ -70,7 +71,9 @@ async def reflector_node(state: AgentState) -> dict[str, Any]:
                         f"Feedback: {evaluation.feedback or 'Refine step execution to address goal.'}"
                     )
                 else:
-                    notes.append(f"PASSED (score={evaluation.confidence_score:.2f}): {evaluation.critique}")
+                    notes.append(
+                        f"PASSED (score={evaluation.confidence_score:.2f}): {evaluation.critique}"
+                    )
 
                 return {
                     "reflection_notes": notes,
@@ -81,7 +84,8 @@ async def reflector_node(state: AgentState) -> dict[str, Any]:
             logger.debug(f"Reflection LLM check skipped/failed ({e}). Assuming valid output.")
 
         return {
-            "reflection_notes": state.reflection_notes + ["Results verified through heuristic check."],
+            "reflection_notes": state.reflection_notes
+            + ["Results verified through heuristic check."],
             "reflection_count": state.reflection_count + 1,
             "messages": trimmed_msgs,
         }

@@ -25,11 +25,12 @@ async def search_web_core(query: str, max_results: int = 5) -> str:
                 if "result__snippet" in text:
                     # Simple heuristic snippet extraction
                     import re
+
                     snippets = re.findall(r'<a class="result__snippet[^>]*>(.*?)</a>', text)
                     if snippets:
                         results = []
                         for i, snip in enumerate(snippets[:max_results], 1):
-                            clean = re.sub(r'<[^>]+>', '', snip).strip()
+                            clean = re.sub(r"<[^>]+>", "", snip).strip()
                             results.append(f"{i}. {clean}")
                         return f"Search results for '{query}':\n" + "\n".join(results)
     except Exception:
@@ -65,6 +66,7 @@ def main() -> None:
         from typing import Any, cast
 
         import uvicorn
+
         app = getattr(mcp, "sse_app", None) or getattr(mcp, "streamable_http_app", None)
         if callable(app):
             uvicorn.run(app(), host="0.0.0.0", port=args.port)

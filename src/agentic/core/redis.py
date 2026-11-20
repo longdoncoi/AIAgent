@@ -25,6 +25,7 @@ def get_redis_connection_pool(redis_url: str | None = None, max_connections: int
             target_url = redis_url or settings.redis_url
             try:
                 import redis
+
                 _sync_pool = redis.ConnectionPool.from_url(
                     target_url,
                     max_connections=max_connections,
@@ -33,14 +34,18 @@ def get_redis_connection_pool(redis_url: str | None = None, max_connections: int
                     decode_responses=True,
                     health_check_interval=30,
                 )
-                logger.info(f"Initialized singleton sync Redis ConnectionPool (max_connections={max_connections}) at {target_url}")
+                logger.info(
+                    f"Initialized singleton sync Redis ConnectionPool (max_connections={max_connections}) at {target_url}"
+                )
             except Exception as e:
                 logger.debug(f"Could not initialize sync Redis ConnectionPool ({e})")
                 _sync_pool = None
     return _sync_pool
 
 
-def get_async_redis_connection_pool(redis_url: str | None = None, max_connections: int = 100) -> Any:
+def get_async_redis_connection_pool(
+    redis_url: str | None = None, max_connections: int = 100
+) -> Any:
     """Returns singleton asynchronous redis.asyncio.ConnectionPool instance."""
     global _async_pool
     if _async_pool is not None:
@@ -52,6 +57,7 @@ def get_async_redis_connection_pool(redis_url: str | None = None, max_connection
             target_url = redis_url or settings.redis_url
             try:
                 import redis.asyncio as aioredis
+
                 _async_pool = aioredis.ConnectionPool.from_url(
                     target_url,
                     max_connections=max_connections,
@@ -60,7 +66,9 @@ def get_async_redis_connection_pool(redis_url: str | None = None, max_connection
                     decode_responses=True,
                     health_check_interval=30,
                 )
-                logger.info(f"Initialized singleton async Redis ConnectionPool (max_connections={max_connections}) at {target_url}")
+                logger.info(
+                    f"Initialized singleton async Redis ConnectionPool (max_connections={max_connections}) at {target_url}"
+                )
             except Exception as e:
                 logger.debug(f"Could not initialize async Redis ConnectionPool ({e})")
                 _async_pool = None
@@ -73,6 +81,7 @@ def get_redis_client(redis_url: str | None = None) -> Any | None:
     if pool is not None:
         try:
             import redis
+
             return redis.Redis(connection_pool=pool)
         except Exception as e:
             logger.debug(f"Error creating Redis client from pool: {e}")
@@ -85,6 +94,7 @@ def get_async_redis_client(redis_url: str | None = None) -> Any | None:
     if pool is not None:
         try:
             import redis.asyncio as aioredis
+
             return aioredis.Redis(connection_pool=pool)
         except Exception as e:
             logger.debug(f"Error creating async Redis client from pool: {e}")
@@ -107,6 +117,7 @@ def close_redis_pools() -> None:
         if _async_pool is not None:
             try:
                 import asyncio
+
                 try:
                     loop = asyncio.get_running_loop()
                     loop.create_task(_async_pool.disconnect())

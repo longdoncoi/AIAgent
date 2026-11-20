@@ -37,7 +37,9 @@ class RedisSaver(MemorySaver):
         super().__init__()
         self.settings = get_settings()
         self.redis_url = redis_url or self.settings.redis_url
-        self.ttl = ttl_seconds if ttl_seconds is not None else self.settings.redis_checkpoint_ttl_seconds
+        self.ttl = (
+            ttl_seconds if ttl_seconds is not None else self.settings.redis_checkpoint_ttl_seconds
+        )
         self.key_prefix = key_prefix
         self._secret_key = (self.settings.s2s_internal_token or "agentic-secret").encode("utf-8")
         self._redis_client: Any = None
@@ -50,30 +52,40 @@ class RedisSaver(MemorySaver):
             return
         try:
             import redis
+
             client = redis.Redis.from_url(self.redis_url, socket_timeout=1.0)
             client.ping()
             self._redis_client = client
-            logger.info(f"Initialized sync RedisSaver backend at {self.redis_url} (TTL={self.ttl}s)")
+            logger.info(
+                f"Initialized sync RedisSaver backend at {self.redis_url} (TTL={self.ttl}s)"
+            )
         except Exception:
             try:
                 from src.agentic.core.redis import get_redis_client
+
                 pool_client = get_redis_client(self.redis_url)
                 if pool_client is not None:
                     pool_client.ping()
                     self._redis_client = pool_client
-                    logger.info(f"Initialized sync RedisSaver backend from connection pool at {self.redis_url}")
+                    logger.info(
+                        f"Initialized sync RedisSaver backend from connection pool at {self.redis_url}"
+                    )
             except Exception as e:
-                logger.debug(f"Redis backend not reachable for RedisSaver ({e}). Operating in memory mode.")
+                logger.debug(
+                    f"Redis backend not reachable for RedisSaver ({e}). Operating in memory mode."
+                )
                 self._redis_client = None
 
         if self._redis_client is not None:
             try:
                 import redis.asyncio as aioredis
+
                 self._async_redis_client = aioredis.from_url(self.redis_url, socket_timeout=1.0)
                 logger.info(f"Initialized async RedisSaver backend at {self.redis_url}")
             except Exception:
                 try:
                     from src.agentic.core.redis import get_async_redis_client
+
                     self._async_redis_client = get_async_redis_client(self.redis_url)
                 except Exception as e:
                     logger.debug(f"Async Redis backend not reachable for RedisSaver ({e}).")
@@ -98,8 +110,11 @@ class RedisSaver(MemorySaver):
         if use_json and isinstance(obj, (dict, list, str, int, float, bool)):
             try:
                 import json
+
                 raw_json = json.dumps(obj).encode("utf-8")
-                sig = hmac.new(self._secret_key, raw_json, hashlib.sha256).hexdigest().encode("ascii")
+                sig = (
+                    hmac.new(self._secret_key, raw_json, hashlib.sha256).hexdigest().encode("ascii")
+                )
                 return b"HMAC-JSON:" + sig + b":" + raw_json
             except (TypeError, ValueError):
                 pass
@@ -115,11 +130,16 @@ class RedisSaver(MemorySaver):
             if len(parts) == 3:
                 sig = parts[1]
                 raw = parts[2]
-                expected_sig = hmac.new(self._secret_key, raw, hashlib.sha256).hexdigest().encode("ascii")
+                expected_sig = (
+                    hmac.new(self._secret_key, raw, hashlib.sha256).hexdigest().encode("ascii")
+                )
                 if not hmac.compare_digest(sig, expected_sig):
-                    logger.error("Security Alert: Redis checkpoint HMAC-JSON signature mismatch! Tampered payload rejected.")
+                    logger.error(
+                        "Security Alert: Redis checkpoint HMAC-JSON signature mismatch! Tampered payload rejected."
+                    )
                     return None
                 import json
+
                 return json.loads(raw.decode("utf-8"))
 
         if payload.startswith(b"HMAC-SHA256:"):
@@ -127,9 +147,13 @@ class RedisSaver(MemorySaver):
             if len(parts) == 3:
                 sig = parts[1]
                 raw = parts[2]
-                expected_sig = hmac.new(self._secret_key, raw, hashlib.sha256).hexdigest().encode("ascii")
+                expected_sig = (
+                    hmac.new(self._secret_key, raw, hashlib.sha256).hexdigest().encode("ascii")
+                )
                 if not hmac.compare_digest(sig, expected_sig):
-                    logger.error("Security Alert: Redis checkpoint HMAC signature mismatch! Tampered payload rejected.")
+                    logger.error(
+                        "Security Alert: Redis checkpoint HMAC signature mismatch! Tampered payload rejected."
+                    )
                     return None
                 return pickle.loads(raw)
         # Fallback for un-signed payloads during zero-downtime rolling upgrades
@@ -154,6 +178,7 @@ class RedisSaver(MemorySaver):
                 thread_id = str(config["configurable"]["thread_id"])
                 checkpoint_ns = str(config["configurable"].get("checkpoint_ns", ""))
                 checkpoint_id = str(checkpoint["id"])
+                effective_ttl = int(config["configurable"].get("checkpoint_ttl") or self.ttl)
 
                 saved = self.storage[thread_id][checkpoint_ns].get(checkpoint_id)
                 if saved:
@@ -168,11 +193,11 @@ class RedisSaver(MemorySaver):
                         }
                     )
                     r_key = self._redis_key(thread_id, checkpoint_ns, checkpoint_id)
-                    self._redis_client.set(r_key, payload, ex=self.ttl)
+                    self._redis_client.set(r_key, payload, ex=effective_ttl)
 
                     idx_key = self._thread_index_key(thread_id, checkpoint_ns)
                     self._redis_client.sadd(idx_key, checkpoint_id)
-                    self._redis_client.expire(idx_key, self.ttl)
+                    self._redis_client.expire(idx_key, effective_ttl)
             except Exception as e:
                 logger.debug(f"Failed to persist checkpoint to Redis ({e})")
 
@@ -193,6 +218,7 @@ class RedisSaver(MemorySaver):
                 thread_id = str(config["configurable"]["thread_id"])
                 checkpoint_ns = str(config["configurable"].get("checkpoint_ns", ""))
                 checkpoint_id = str(checkpoint["id"])
+                effective_ttl = int(config["configurable"].get("checkpoint_ttl") or self.ttl)
 
                 saved = self.storage[thread_id][checkpoint_ns].get(checkpoint_id)
                 if saved:
@@ -207,15 +233,40 @@ class RedisSaver(MemorySaver):
                         }
                     )
                     r_key = self._redis_key(thread_id, checkpoint_ns, checkpoint_id)
-                    await self._async_redis_client.set(r_key, payload, ex=self.ttl)
+                    await self._async_redis_client.set(r_key, payload, ex=effective_ttl)
 
                     idx_key = self._thread_index_key(thread_id, checkpoint_ns)
                     await self._async_redis_client.sadd(idx_key, checkpoint_id)
-                    await self._async_redis_client.expire(idx_key, self.ttl)
+                    await self._async_redis_client.expire(idx_key, effective_ttl)
             except Exception as e:
                 logger.debug(f"Failed to persist async checkpoint to Redis ({e})")
 
         return res_config
+
+    def cleanup_inactive_threads(self, max_idle_seconds: int = 86400 * 30) -> int:
+        """Evicts expired or inactive thread checkpoints from Redis to optimize cluster memory."""
+        cleaned_threads = 0
+        if self._redis_client is not None:
+            try:
+                index_pattern = f"{self.key_prefix}:index:*"
+                keys = self._redis_client.keys(index_pattern)
+                for idx_key in keys:
+                    ttl_left = self._redis_client.ttl(idx_key)
+                    members = self._redis_client.smembers(idx_key)
+                    if not members or ttl_left == -2:
+                        self._redis_client.delete(idx_key)
+                        cleaned_threads += 1
+                    elif ttl_left == -1:
+                        self._redis_client.expire(idx_key, max_idle_seconds)
+            except Exception as e:
+                logger.warning(f"Error during RedisSaver cleanup_inactive_threads: {e}")
+
+        # Also purge any empty in-memory threads
+        for t_id in list(self.storage.keys()):
+            if not self.storage[t_id] or all(not v for v in self.storage[t_id].values()):
+                del self.storage[t_id]
+                cleaned_threads += 1
+        return cleaned_threads
 
     def get_tuple(self, config: RunnableConfig) -> CheckpointTuple | None:
         """Retrieves checkpoint tuple from memory, or pulls from Redis if missing locally."""
@@ -238,7 +289,9 @@ class RedisSaver(MemorySaver):
                     members = self._redis_client.smembers(idx_key)
                     if not members:
                         return None
-                    target_id = max(m.decode("utf-8") if isinstance(m, bytes) else str(m) for m in members)
+                    target_id = max(
+                        m.decode("utf-8") if isinstance(m, bytes) else str(m) for m in members
+                    )
 
                 r_key = self._redis_key(thread_id, checkpoint_ns, target_id)
                 raw_payload = self._redis_client.get(r_key)
@@ -282,7 +335,9 @@ class RedisSaver(MemorySaver):
                     members = await self._async_redis_client.smembers(idx_key)
                     if not members:
                         return None
-                    target_id = max(m.decode("utf-8") if isinstance(m, bytes) else str(m) for m in members)
+                    target_id = max(
+                        m.decode("utf-8") if isinstance(m, bytes) else str(m) for m in members
+                    )
 
                 r_key = self._redis_key(thread_id, checkpoint_ns, target_id)
                 raw_payload = await self._async_redis_client.get(r_key)

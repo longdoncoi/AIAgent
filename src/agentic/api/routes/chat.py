@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -14,6 +15,7 @@ from sse_starlette.sse import EventSourceResponse
 from src.agentic.api.deps import get_current_user, get_graph, get_guardrails_dep
 from src.agentic.core.errors import GuardrailViolation
 from src.agentic.core.schemas import ChatRequest, ChatResponse, StepResult
+from src.agentic.observability.metrics import TTFT_DURATION
 from src.agentic.safety.guardrails import GuardrailManager, StreamingOutputGuard
 
 logger = logging.getLogger(__name__)
@@ -78,8 +80,11 @@ async def chat_endpoint(
 
     return ChatResponse(
         thread_id=thread_id,
-        answer=final_state.get("final_answer") or (
-            "Execution paused waiting for Human-In-The-Loop approval." if requires_approval else "Completed."
+        answer=final_state.get("final_answer")
+        or (
+            "Execution paused waiting for Human-In-The-Loop approval."
+            if requires_approval
+            else "Completed."
         ),
         steps=step_results,
         requires_approval=requires_approval,
@@ -102,11 +107,13 @@ async def chat_stream_endpoint(
         clean_query = guardrails.sanitize_input(req.query)
     except GuardrailViolation as gv:
         gv_msg = str(gv)
+
         async def err_gen() -> AsyncIterator[dict]:
             yield {
                 "event": "error",
                 "data": json.dumps({"error": gv_msg, "type": "GuardrailViolation"}),
             }
+
         return EventSourceResponse(err_gen())
 
     config = {"configurable": {"thread_id": thread_id}}
@@ -118,17 +125,30 @@ async def chat_stream_endpoint(
 
     async def event_generator() -> AsyncIterator[dict]:
         stream_guard = StreamingOutputGuard(manager=guardrails)
+        stream_start_time = time.perf_counter()
+        first_token_emitted = False
         from opentelemetry import trace as otel_trace
+
         current_span = otel_trace.get_current_span()
         span_ctx = current_span.get_span_context() if current_span else None
-        active_trace_id = format(span_ctx.trace_id, "032x") if span_ctx and span_ctx.is_valid else uuid.uuid4().hex
-        active_span_id = format(span_ctx.span_id, "016x") if span_ctx and span_ctx.is_valid else uuid.uuid4().hex[:16]
+        active_trace_id = (
+            format(span_ctx.trace_id, "032x")
+            if span_ctx and span_ctx.is_valid
+            else uuid.uuid4().hex
+        )
+        active_span_id = (
+            format(span_ctx.span_id, "016x")
+            if span_ctx and span_ctx.is_valid
+            else uuid.uuid4().hex[:16]
+        )
 
         try:
             # Yield initial thread event
             yield {
                 "event": "start",
-                "data": json.dumps({"thread_id": thread_id, "query": clean_query, "trace_id": active_trace_id}),
+                "data": json.dumps(
+                    {"thread_id": thread_id, "query": clean_query, "trace_id": active_trace_id}
+                ),
             }
 
             async for event in graph.astream_events(initial_input, config=config, version="v2"):
@@ -141,20 +161,26 @@ async def chat_stream_endpoint(
                     if plan:
                         yield {
                             "event": "plan",
-                            "data": json.dumps({
-                                "plan": plan.model_dump() if hasattr(plan, "model_dump") else plan,
-                                "trace_id": active_trace_id,
-                            }),
+                            "data": json.dumps(
+                                {
+                                    "plan": plan.model_dump()
+                                    if hasattr(plan, "model_dump")
+                                    else plan,
+                                    "trace_id": active_trace_id,
+                                }
+                            ),
                         }
 
                 elif kind == "on_chain_end" and node_name == "dispatch":
                     output = event.get("data", {}).get("output", {})
                     yield {
                         "event": "step_complete",
-                        "data": json.dumps({
-                            "step_index": output.get("current_step_index"),
-                            "trace_id": active_trace_id,
-                        }),
+                        "data": json.dumps(
+                            {
+                                "step_index": output.get("current_step_index"),
+                                "trace_id": active_trace_id,
+                            }
+                        ),
                     }
 
                 elif kind == "on_chat_model_stream":
@@ -163,14 +189,21 @@ async def chat_stream_endpoint(
                         token_content = str(chunk.content)
                         clean_token = stream_guard.feed(token_content)
                         if clean_token:
+                            if not first_token_emitted:
+                                first_token_emitted = True
+                                TTFT_DURATION.labels(endpoint="chat_stream").observe(
+                                    time.perf_counter() - stream_start_time
+                                )
                             yield {
                                 "event": "token",
-                                "data": json.dumps({
-                                    "token": clean_token,
-                                    "node": node_name or "llm",
-                                    "trace_id": active_trace_id,
-                                    "span_id": active_span_id,
-                                }),
+                                "data": json.dumps(
+                                    {
+                                        "token": clean_token,
+                                        "node": node_name or "llm",
+                                        "trace_id": active_trace_id,
+                                        "span_id": active_span_id,
+                                    }
+                                ),
                             }
                         if stream_guard.safety_flags:
                             flag = stream_guard.safety_flags.pop(0)
@@ -182,26 +215,35 @@ async def chat_stream_endpoint(
                 elif kind == "on_chain_end" and node_name == "finalize":
                     flushed = stream_guard.flush()
                     if flushed:
+                        if not first_token_emitted:
+                            first_token_emitted = True
+                            TTFT_DURATION.labels(endpoint="chat_stream").observe(
+                                time.perf_counter() - stream_start_time
+                            )
                         yield {
                             "event": "token",
-                            "data": json.dumps({
-                                "token": flushed,
-                                "node": "llm",
-                                "trace_id": active_trace_id,
-                                "span_id": active_span_id,
-                            }),
+                            "data": json.dumps(
+                                {
+                                    "token": flushed,
+                                    "node": "llm",
+                                    "trace_id": active_trace_id,
+                                    "span_id": active_span_id,
+                                }
+                            ),
                         }
                     output = event.get("data", {}).get("output", {})
                     final_ans = output.get("final_answer")
                     if final_ans:
                         yield {
                             "event": "final",
-                            "data": json.dumps({
-                                "final_answer": final_ans,
-                                "thread_id": thread_id,
-                                "trace_id": active_trace_id,
-                                "span_id": active_span_id,
-                            }),
+                            "data": json.dumps(
+                                {
+                                    "final_answer": final_ans,
+                                    "thread_id": thread_id,
+                                    "trace_id": active_trace_id,
+                                    "span_id": active_span_id,
+                                }
+                            ),
                         }
 
             # Flush any remaining buffer if stream finished
@@ -209,27 +251,35 @@ async def chat_stream_endpoint(
             if final_flushed:
                 yield {
                     "event": "token",
-                    "data": json.dumps({
-                        "token": final_flushed,
-                        "node": "llm",
-                        "trace_id": active_trace_id,
-                        "span_id": active_span_id,
-                    }),
+                    "data": json.dumps(
+                        {
+                            "token": final_flushed,
+                            "node": "llm",
+                            "trace_id": active_trace_id,
+                            "span_id": active_span_id,
+                        }
+                    ),
                 }
 
             # Check if execution paused waiting for HITL approval
             state_snapshot = graph.get_state(config)
             if state_snapshot.next:
                 tasks = state_snapshot.tasks
-                interrupt_val = tasks[0].interrupts[0].value if tasks and tasks[0].interrupts else "High-risk action"
+                interrupt_val = (
+                    tasks[0].interrupts[0].value
+                    if tasks and tasks[0].interrupts
+                    else "High-risk action"
+                )
                 yield {
                     "event": "hitl_required",
-                    "data": json.dumps({
-                        "thread_id": thread_id,
-                        "interrupt": interrupt_val,
-                        "resume_url": f"/api/v1/approvals/{thread_id}/resume",
-                        "trace_id": active_trace_id,
-                    }),
+                    "data": json.dumps(
+                        {
+                            "thread_id": thread_id,
+                            "interrupt": interrupt_val,
+                            "resume_url": f"/api/v1/approvals/{thread_id}/resume",
+                            "trace_id": active_trace_id,
+                        }
+                    ),
                 }
 
         except (asyncio.CancelledError, GeneratorExit):

@@ -31,9 +31,15 @@ async def ingest_delta_document_activity(event_data: dict[str, Any]) -> dict[str
     action = str(event_data.get("action", "upsert"))
     content = str(event_data.get("content", ""))
 
-    # Invalidate cache so queries immediately get fresh ground truth
+    # Invalidate cache selectively to preserve unrelated document cache
     rag_cache = get_rag_cache()
-    rag_cache.clear()
+    file_path = str(event_data.get("file_path", f"delta_{doc_id}.md"))
+    invalidated_count = rag_cache.invalidate_document(doc_id)
+    if file_path:
+        invalidated_count += rag_cache.invalidate_by_source(file_path)
+    if invalidated_count == 0:
+        # Fallback to clear if doc_id was not explicitly in keys
+        rag_cache.clear()
 
     # If content is provided, save to raw folder
     if action == "upsert" and content:
@@ -77,7 +83,9 @@ class RealtimeKnowledgeCdcWorkflow:
 
 
 @activity.defn
-async def ingest_documents_activity(data_dir: str | None = None, index_dir: str | None = None) -> dict[str, Any]:
+async def ingest_documents_activity(
+    data_dir: str | None = None, index_dir: str | None = None
+) -> dict[str, Any]:
     """Activity performing parsing, hierarchical chunking, and index persistence."""
     settings = get_settings()
     raw_path = Path(data_dir) if data_dir else (settings.project_root / "data" / "raw")
@@ -96,7 +104,9 @@ class RagIngestionWorkflow:
     """Durable Temporal workflow managing asynchronous ingestion with automated retries."""
 
     @workflow.run
-    async def run(self, data_dir: str | None = None, index_dir: str | None = None) -> dict[str, Any]:
+    async def run(
+        self, data_dir: str | None = None, index_dir: str | None = None
+    ) -> dict[str, Any]:
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=5),
             backoff_coefficient=2.0,

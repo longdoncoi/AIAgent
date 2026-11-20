@@ -51,8 +51,7 @@ class MultiRetrievalFusion:
                     node_map[node_id] = item.node
 
         fused_items: list[NodeWithScore] = [
-            NodeWithScore(node=node_map[nid], score=score)
-            for nid, score in fused_scores.items()
+            NodeWithScore(node=node_map[nid], score=score) for nid, score in fused_scores.items()
         ]
         fused_items.sort(key=lambda x: x.score or 0.0, reverse=True)
         return fused_items[:top_k]

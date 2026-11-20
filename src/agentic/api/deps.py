@@ -41,7 +41,11 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
                 detail="Authentication credentials were not provided.",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        return {"user_id": "anonymous_user", "role": "admin" if settings.environment == "test" else "guest", "token": ""}
+        return {
+            "user_id": "anonymous_user",
+            "role": "admin" if settings.environment == "test" else "guest",
+            "token": "",
+        }
 
     if not authorization.startswith("Bearer "):
         raise HTTPException(
@@ -79,6 +83,7 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
 
 def require_role(allowed_roles: list[str]) -> Callable:
     """Dependency factory checking user RBAC role."""
+
     async def _role_checker(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
         user_role = str(user.get("role", "guest")).lower()
         allowed_normalized = [r.lower() for r in allowed_roles]

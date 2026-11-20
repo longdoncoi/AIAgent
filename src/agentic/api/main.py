@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.agentic.api.middleware import RequestIDAndMetricsMiddleware
+from src.agentic.api.routes.admin import router as admin_router
 from src.agentic.api.routes.approvals import router as approvals_router
 from src.agentic.api.routes.chat import router as chat_router
 from src.agentic.api.routes.health import router as health_router
@@ -33,24 +34,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Shutting down Agentic Platform...")
     try:
         from src.agentic.orchestrator.nodes.finalize import wait_all_background_tasks
+
         await wait_all_background_tasks(timeout=5.0)
     except Exception as e:
         logger.warning(f"Error while waiting for background tasks: {e}")
 
     try:
         from src.agentic.a2a.client import get_a2a_client
+
         await get_a2a_client().aclose()
     except Exception as e:
         logger.warning(f"Error while closing A2A HTTP client: {e}")
 
     try:
         from src.agentic.memory.short_term import close_postgres_pool
+
         close_postgres_pool()
     except Exception as e:
         logger.warning(f"Error while closing PostgreSQL pool: {e}")
 
     try:
         from src.agentic.core.redis import close_redis_pools
+
         close_redis_pools()
     except Exception as e:
         logger.warning(f"Error while closing Redis pools: {e}")
@@ -86,6 +91,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(chat_router)
     app.include_router(approvals_router)
+    app.include_router(admin_router)
 
     return app
 

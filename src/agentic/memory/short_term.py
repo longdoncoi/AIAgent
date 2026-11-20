@@ -29,6 +29,7 @@ def get_postgres_pool() -> Any | None:
         if settings.use_postgres_checkpoint or settings.environment == "production":
             try:
                 from psycopg_pool import ConnectionPool as _RealConnectionPool
+
                 _pg_pool = _RealConnectionPool(
                     conninfo=settings.postgres_uri,
                     min_size=2,
@@ -38,7 +39,9 @@ def get_postgres_pool() -> Any | None:
                     open=False,
                 )
                 _pg_pool.open()
-                logger.info("Initialized psycopg ConnectionPool (min_size=2, max_size=20, prepare_threshold=None).")
+                logger.info(
+                    "Initialized psycopg ConnectionPool (min_size=2, max_size=20, prepare_threshold=None)."
+                )
             except Exception as e:
                 logger.warning(f"Could not initialize ConnectionPool ({e}).")
     return _pg_pool
@@ -84,6 +87,7 @@ def get_checkpointer() -> BaseCheckpointSaver:
         try:
             get_postgres_pool()
             from langgraph.checkpoint.postgres import PostgresSaver  # type: ignore
+
             # PostgresSaver.from_conn_string is a context manager, enter it to obtain active saver
             cm = PostgresSaver.from_conn_string(settings.postgres_uri)
             saver: BaseCheckpointSaver = cm.__enter__()
@@ -105,6 +109,7 @@ def get_checkpointer() -> BaseCheckpointSaver:
     if settings.use_redis_checkpoint:
         try:
             from src.agentic.memory.redis_saver import RedisSaver
+
             redis_saver = RedisSaver(redis_url=settings.redis_url)
             _global_checkpointer = redis_saver
             logger.info("Initialized distributed RedisSaver checkpointer.")
@@ -114,7 +119,9 @@ def get_checkpointer() -> BaseCheckpointSaver:
                 raise RuntimeError(
                     f"Fatal Production Configuration Error: Failed to connect to Redis checkpointer ({e})."
                 ) from e
-            logger.warning(f"Could not connect to Redis checkpointer ({e}). Falling back to MemorySaver.")
+            logger.warning(
+                f"Could not connect to Redis checkpointer ({e}). Falling back to MemorySaver."
+            )
 
     if settings.environment == "production":
         raise RuntimeError(

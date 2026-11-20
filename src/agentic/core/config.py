@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     # Storage & Checkpointing
     postgres_uri: str = "postgresql://postgres:postgres@localhost:5432/agentic_db"
     use_postgres_checkpoint: bool = False  # Set true if postgres is active; fallback to MemorySaver
-    use_redis_checkpoint: bool = False     # Set true if Redis checkpointer is active
+    use_redis_checkpoint: bool = False  # Set true if Redis checkpointer is active
     redis_checkpoint_ttl_seconds: int = 86400 * 7  # 7 days
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
@@ -83,6 +83,10 @@ class Settings(BaseSettings):
     require_authentication: bool = False
     enable_docker_sandbox: bool = True
     s2s_internal_token: str = "agentic-internal-s2s-token-2026"
+    enable_mtls: bool = False
+    mtls_cert_path: str | None = None
+    mtls_key_path: str | None = None
+    mtls_ca_cert_path: str | None = None
     rate_limit_per_minute: int = 120
     token_rate_limit_per_minute: int = 100_000
     enable_token_rate_limit: bool = True
@@ -117,7 +121,9 @@ class Settings(BaseSettings):
     # Safety & Guardrails
     enable_guardrails: bool = True
     pii_redaction_enabled: bool = True
-    stream_hold_chars: int = 48  # Sliding window chars to prevent sliced PII/secrets across SSE chunks
+    stream_hold_chars: int = (
+        48  # Sliding window chars to prevent sliced PII/secrets across SSE chunks
+    )
     max_execution_timeout_seconds: int = 60
 
     # DeepEval & Advanced Quality Benchmarking

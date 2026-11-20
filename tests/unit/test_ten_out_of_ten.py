@@ -35,6 +35,7 @@ def test_cache_stampede_singleflight_protection() -> None:
     def slow_expensive_retriever() -> str:
         nonlocal compute_count
         import time
+
         time.sleep(0.1)
         compute_count += 1
         return "expensive_semantic_result"

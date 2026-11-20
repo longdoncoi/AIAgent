@@ -36,10 +36,21 @@ class A2AClient:
         self._http_client: httpx.AsyncClient | None = None
 
     def _get_http_client(self, timeout: float = 60.0) -> httpx.AsyncClient:
-        """Returns or creates the pooled, persistent HTTP client."""
+        """Returns or creates the pooled, persistent HTTP client with optional mTLS support."""
         if self._http_client is None or self._http_client.is_closed:
-            limits = httpx.Limits(max_keepalive_connections=50, max_connections=200, keepalive_expiry=30.0)
-            self._http_client = httpx.AsyncClient(limits=limits, timeout=timeout)
+            limits = httpx.Limits(
+                max_keepalive_connections=50, max_connections=200, keepalive_expiry=30.0
+            )
+            kwargs: dict[str, Any] = {"limits": limits, "timeout": timeout}
+            if (
+                self.settings.enable_mtls
+                and self.settings.mtls_cert_path
+                and self.settings.mtls_key_path
+            ):
+                kwargs["cert"] = (self.settings.mtls_cert_path, self.settings.mtls_key_path)
+                if self.settings.mtls_ca_cert_path:
+                    kwargs["verify"] = self.settings.mtls_ca_cert_path
+            self._http_client = httpx.AsyncClient(**kwargs)
         return self._http_client
 
     async def aclose(self) -> None:
@@ -54,12 +65,15 @@ class A2AClient:
         if norm_name not in self._local_executors:
             if norm_name == "chat":
                 from src.agentic.agents.chat.graph import get_chat_graph
+
                 self._local_executors[norm_name] = get_chat_graph()
             elif norm_name == "rag":
                 from src.agentic.agents.rag.graph import get_rag_graph
+
                 self._local_executors[norm_name] = get_rag_graph()
             elif norm_name == "coding":
                 from src.agentic.agents.coding.graph import get_coding_graph
+
                 self._local_executors[norm_name] = get_coding_graph()
         return self._local_executors.get(norm_name)
 
@@ -93,19 +107,29 @@ class A2AClient:
         if endpoint:
             try:
                 client = self._get_http_client(timeout=timeout)
-                resp = await client.post(endpoint, json=req.model_dump(), headers=headers, timeout=timeout)
+                resp = await client.post(
+                    endpoint, json=req.model_dump(), headers=headers, timeout=timeout
+                )
                 if resp.status_code == 200:
-                    A2A_REQUESTS_TOTAL.labels(caller="supervisor", target_agent=target_agent, status="success").inc()
+                    A2A_REQUESTS_TOTAL.labels(
+                        caller="supervisor", target_agent=target_agent, status="success"
+                    ).inc()
                     return A2ATaskResponse(**resp.json())
                 else:
-                    logger.warning(f"A2A call to {endpoint} returned status {resp.status_code}. Attempting local fallback.")
+                    logger.warning(
+                        f"A2A call to {endpoint} returned status {resp.status_code}. Attempting local fallback."
+                    )
             except Exception as e:
-                logger.info(f"A2A server {endpoint} not reachable ({e}). Falling back to in-process execution.")
+                logger.info(
+                    f"A2A server {endpoint} not reachable ({e}). Falling back to in-process execution."
+                )
 
         # Local fallback execution
         local_graph = self._get_local_graph(target_agent)
         if not local_graph:
-            A2A_REQUESTS_TOTAL.labels(caller="supervisor", target_agent=target_agent, status="error").inc()
+            A2A_REQUESTS_TOTAL.labels(
+                caller="supervisor", target_agent=target_agent, status="error"
+            ).inc()
             raise A2ACommunicationError(
                 target_agent=target_agent,
                 message=f"Sub-agent '{target_agent}' is not registered and local fallback failed.",
@@ -113,16 +137,21 @@ class A2AClient:
 
         card = get_agent_card(target_agent)
         if not card:
-            A2A_REQUESTS_TOTAL.labels(caller="supervisor", target_agent=target_agent, status="error").inc()
+            A2A_REQUESTS_TOTAL.labels(
+                caller="supervisor", target_agent=target_agent, status="error"
+            ).inc()
             raise A2ACommunicationError(
                 target_agent=target_agent,
                 message=f"AgentCard for '{target_agent}' not found.",
             )
         from src.agentic.a2a.executor import A2AAgentExecutor
+
         executor = A2AAgentExecutor(card=card, graph=local_graph)
         res = await executor.execute(req)
         status = "success" if res.status == "completed" else "error"
-        A2A_REQUESTS_TOTAL.labels(caller="supervisor", target_agent=target_agent, status=status).inc()
+        A2A_REQUESTS_TOTAL.labels(
+            caller="supervisor", target_agent=target_agent, status=status
+        ).inc()
         return res
 
     async def call_agent_stream(
@@ -154,9 +183,13 @@ class A2AClient:
         if endpoint:
             try:
                 client = self._get_http_client(timeout=timeout)
-                async with client.stream("POST", endpoint, json=req.model_dump(), headers=headers, timeout=timeout) as resp:
+                async with client.stream(
+                    "POST", endpoint, json=req.model_dump(), headers=headers, timeout=timeout
+                ) as resp:
                     if resp.status_code == 200:
-                        A2A_REQUESTS_TOTAL.labels(caller="supervisor", target_agent=target_agent, status="success").inc()
+                        A2A_REQUESTS_TOTAL.labels(
+                            caller="supervisor", target_agent=target_agent, status="success"
+                        ).inc()
                         async for line in resp.aiter_lines():
                             if line.startswith("data:"):
                                 data_str = line[5:].strip()
@@ -167,7 +200,9 @@ class A2AClient:
                                         pass
                         return
             except Exception as e:
-                logger.info(f"A2A streaming endpoint {endpoint} not reachable ({e}). Falling back to local streaming execution.")
+                logger.info(
+                    f"A2A streaming endpoint {endpoint} not reachable ({e}). Falling back to local streaming execution."
+                )
 
         local_graph = self._get_local_graph(target_agent)
         card = get_agent_card(target_agent)
@@ -178,6 +213,7 @@ class A2AClient:
             )
 
         from src.agentic.a2a.executor import A2AAgentExecutor
+
         executor = A2AAgentExecutor(card=card, graph=local_graph)
         async for ev in executor.execute_stream(req):
             yield ev

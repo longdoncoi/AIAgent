@@ -20,7 +20,8 @@ async def hitl_node(state: AgentState) -> dict[str, Any]:
 
     completed_ids = {s.id for s in state.plan.steps if s.status == "completed"}
     ready_steps = [
-        s for s in state.plan.steps
+        s
+        for s in state.plan.steps
         if s.status == "pending" and all(dep in completed_ids for dep in s.depends_on)
     ]
 
@@ -49,7 +50,9 @@ async def hitl_node(state: AgentState) -> dict[str, Any]:
         }
 
     # Trigger LangGraph HITL interrupt
-    logger.info(f"Triggering HITL interrupt for high-risk step: {high_risk_step.id} ('{high_risk_step.description}')")
+    logger.info(
+        f"Triggering HITL interrupt for high-risk step: {high_risk_step.id} ('{high_risk_step.description}')"
+    )
     approval_data = interrupt(
         {
             "step_id": high_risk_step.id,

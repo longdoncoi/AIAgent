@@ -24,11 +24,51 @@ def _heuristic_planner(query: str) -> Plan:
     steps: list[Step] = []
 
     # Check for RAG / policy keywords
-    is_rag = any(k in query_lower for k in ["policy", "quy định", "chính sách", "tài liệu", "rule", "internal", "documentation"])
+    is_rag = any(
+        k in query_lower
+        for k in [
+            "policy",
+            "quy định",
+            "chính sách",
+            "tài liệu",
+            "rule",
+            "internal",
+            "documentation",
+        ]
+    )
     # Check for active coding action keywords
-    is_coding_action = any(k in query_lower for k in ["viết", "sửa", "chạy", "tạo", "write", "run", "debug", "refactor", "execute", "build"])
+    is_coding_action = any(
+        k in query_lower
+        for k in [
+            "viết",
+            "sửa",
+            "chạy",
+            "tạo",
+            "write",
+            "run",
+            "debug",
+            "refactor",
+            "execute",
+            "build",
+        ]
+    )
     # Check for coding keywords
-    is_coding = any(k in query_lower for k in ["code", "codebase", "symbol", "python", "script", "test", "repo", "file", "bug", "directory", "folder"])
+    is_coding = any(
+        k in query_lower
+        for k in [
+            "code",
+            "codebase",
+            "symbol",
+            "python",
+            "script",
+            "test",
+            "repo",
+            "file",
+            "bug",
+            "directory",
+            "folder",
+        ]
+    )
 
     if is_rag and not is_coding_action:
         steps.append(
@@ -42,7 +82,10 @@ def _heuristic_planner(query: str) -> Plan:
         )
     elif is_coding or is_coding_action:
         # Determine risk
-        is_write = any(k in query_lower for k in ["write", "create", "delete", "remove", "overwrite", "ghi", "xóa"])
+        is_write = any(
+            k in query_lower
+            for k in ["write", "create", "delete", "remove", "overwrite", "ghi", "xóa"]
+        )
         risk: Literal["low", "medium", "high"] = "high" if is_write else "low"
         steps.append(
             Step(
@@ -103,11 +146,15 @@ async def planner_node(state: AgentState) -> dict[str, Any]:
             llm = get_llm(alias="reasoning-llm", temperature=0.1)
             structured_llm = llm.with_structured_output(Plan)
             raw_messages = [
-                HumanMessage(content=f"User Goal: {user_query}\nCreate a structured execution plan.")
+                HumanMessage(
+                    content=f"User Goal: {user_query}\nCreate a structured execution plan."
+                )
             ]
             if state.reflection_notes:
                 raw_messages.append(
-                    HumanMessage(content=f"Previous reflection feedback: {state.reflection_notes[-1]}. Please revise the plan.")
+                    HumanMessage(
+                        content=f"Previous reflection feedback: {state.reflection_notes[-1]}. Please revise the plan."
+                    )
                 )
 
             messages = optimize_messages_for_kv_cache(raw_messages, system_prompt=system_prompt)
@@ -117,7 +164,10 @@ async def planner_node(state: AgentState) -> dict[str, Any]:
                 # Validate risk levels against policy
                 policy_mgr = get_policy_manager()
                 for s in plan.steps:
-                    if any(w in s.input_query.lower() for w in ["write", "delete", "commit", "bash", "shell"]):
+                    if any(
+                        w in s.input_query.lower()
+                        for w in ["write", "delete", "commit", "bash", "shell"]
+                    ):
                         s.risk_level = "high"
                     elif policy_mgr.is_approval_required(s.agent):
                         s.risk_level = "high"

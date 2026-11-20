@@ -28,6 +28,7 @@ async def run_benchmark() -> bool:
 
     if not golden_path.exists() or not rag_path.exists():
         from scripts.seed_eval import main as seed_main
+
         seed_main()
 
     print("==================================================")
@@ -69,7 +70,9 @@ async def run_benchmark() -> bool:
             tool_scores.append(t_score)
 
             status = "PASS" if r_score == 1.0 and t_score == 1.0 else "WARN"
-            print(f"  {tc_id}: [{status}] Agent: expected '{expected_agent}', got '{assigned_agent}' | Tools valid: {t_score == 1.0}")
+            print(
+                f"  {tc_id}: [{status}] Agent: expected '{expected_agent}', got '{assigned_agent}' | Tools valid: {t_score == 1.0}"
+            )
 
     avg_routing = sum(routing_scores) / max(1, len(routing_scores))
     avg_tool = sum(tool_scores) / max(1, len(tool_scores))
@@ -91,12 +94,18 @@ async def run_benchmark() -> bool:
 
             # Retrieve through RAG tool
             retrieved_context = search_policy(q)
-            g_score = await evaluate_groundedness(question=q, generated_answer=retrieved_context, ground_truth=gt)
-            f_score = evaluate_faithfulness(generated_answer=gt, retrieved_context=retrieved_context)
+            g_score = await evaluate_groundedness(
+                question=q, generated_answer=retrieved_context, ground_truth=gt
+            )
+            f_score = evaluate_faithfulness(
+                generated_answer=gt, retrieved_context=retrieved_context
+            )
             groundedness_scores.append(g_score)
             faithfulness_scores.append(f_score)
             status = "PASS" if g_score >= 0.40 and f_score >= 0.50 else "WARN"
-            print(f"  {tc_id}: [{status}] Groundedness: {g_score:.2f} | Faithfulness: {f_score:.2f}")
+            print(
+                f"  {tc_id}: [{status}] Groundedness: {g_score:.2f} | Faithfulness: {f_score:.2f}"
+            )
 
     avg_groundedness = sum(groundedness_scores) / max(1, len(groundedness_scores))
     avg_faithfulness = sum(faithfulness_scores) / max(1, len(faithfulness_scores))
@@ -122,7 +131,9 @@ async def run_benchmark() -> bool:
         return True
     else:
         print(">> BENCHMARK EVALUATION FAILED GATING THRESHOLDS.")
-        print(f"   Required: Routing >= {ROUTING_THRESHOLD}, Tool >= {TOOL_THRESHOLD}, Groundedness >= {GROUNDEDNESS_THRESHOLD}, Faithfulness >= {FAITHFULNESS_THRESHOLD}")
+        print(
+            f"   Required: Routing >= {ROUTING_THRESHOLD}, Tool >= {TOOL_THRESHOLD}, Groundedness >= {GROUNDEDNESS_THRESHOLD}, Faithfulness >= {FAITHFULNESS_THRESHOLD}"
+        )
         print("==================================================")
         return False
 

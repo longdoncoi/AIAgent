@@ -26,16 +26,27 @@ class PolicyManager:
                 "agent_allowlist": {
                     "chat_agent": ["web_search"],
                     "rag_agent": ["search_policy"],
-                    "coding_agent": ["repo_list_files", "repo_read_file", "repo_search_symbol", "code_exec_python"],
+                    "coding_agent": [
+                        "repo_list_files",
+                        "repo_read_file",
+                        "repo_search_symbol",
+                        "code_exec_python",
+                    ],
                 },
-                "guardrails": {"max_output_tokens": 4096, "block_prompt_injection": True, "mask_pii": True},
+                "guardrails": {
+                    "max_output_tokens": 4096,
+                    "block_prompt_injection": True,
+                    "mask_pii": True,
+                },
             }
         try:
             with open(self.policy_path, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f)
                 return data or {}
         except Exception as e:
-            raise ConfigurationError(f"Failed to parse policy file at {self.policy_path}: {e}") from e
+            raise ConfigurationError(
+                f"Failed to parse policy file at {self.policy_path}: {e}"
+            ) from e
 
     def get_tool_risk(self, tool_name: str) -> str:
         """Returns risk level: low, medium, or high."""
@@ -58,8 +69,17 @@ class PolicyManager:
         allowlists = self.policy_data.get("agent_allowlist", {})
         if agent_name in allowlists:
             return list(allowlists[agent_name])
-        norm_key = f"{agent_name}_agent" if not agent_name.endswith("_agent") else agent_name.replace("_agent", "")
+        norm_key = (
+            f"{agent_name}_agent"
+            if not agent_name.endswith("_agent")
+            else agent_name.replace("_agent", "")
+        )
         return list(allowlists.get(norm_key, []))
+
+    def reload(self) -> dict[str, Any]:
+        """Dynamically reloads policies from disk without restarting the process."""
+        self.policy_data = self._load_policy()
+        return self.policy_data
 
     def get_guardrails_config(self) -> dict[str, Any]:
         """Returns the guardrails configuration section."""
@@ -70,3 +90,9 @@ class PolicyManager:
 def get_policy_manager() -> PolicyManager:
     """Singleton getter for PolicyManager."""
     return PolicyManager()
+
+
+def reload_policy_manager() -> PolicyManager:
+    """Clears lru_cache and forces re-instantiation and reloading of PolicyManager."""
+    get_policy_manager.cache_clear()
+    return get_policy_manager()

@@ -91,4 +91,3 @@ def test_singleton_redis_connection_pools():
 
             close_redis_pools()
             mock_pool.disconnect.assert_called_once()
-

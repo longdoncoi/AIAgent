@@ -10,15 +10,28 @@ try:
 except ImportError:
     from mcp.server.fastmcp import FastMCP  # type: ignore
 
-mcp = FastMCP("repo_server", instructions="Provides tools to inspect, read, search, and edit files in the repository.")
+mcp = FastMCP(
+    "repo_server",
+    instructions="Provides tools to inspect, read, search, and edit files in the repository.",
+)
 
-IGNORED_DIRS = {".git", ".venv", "__pycache__", ".pytest_cache", "node_modules", ".ruff_cache", "dist", "build"}
+IGNORED_DIRS = {
+    ".git",
+    ".venv",
+    "__pycache__",
+    ".pytest_cache",
+    "node_modules",
+    ".ruff_cache",
+    "dist",
+    "build",
+}
 
 
 def _get_workspace_root() -> Path:
     """Retrieves the canonical root directory of the workspace."""
     try:
         from src.agentic.core.config import get_settings
+
         return get_settings().project_root.resolve()
     except Exception:
         return Path.cwd().resolve()
@@ -87,7 +100,7 @@ def read_file_core(file_path: str, start_line: int = 1, end_line: int = 200) -> 
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
             total_lines = len(lines)
-            selected = lines[max(0, start_line - 1): min(total_lines, end_line)]
+            selected = lines[max(0, start_line - 1) : min(total_lines, end_line)]
             numbered = [f"{start_line + i:4d} | {line.rstrip()}" for i, line in enumerate(selected)]
             header = f"File: {path.name} (Lines {start_line}-{min(total_lines, end_line)} of {total_lines})\n"
             return header + "\n".join(numbered)
@@ -177,6 +190,7 @@ def main() -> None:
         from typing import Any, cast
 
         import uvicorn
+
         app = getattr(mcp, "sse_app", None) or getattr(mcp, "streamable_http_app", None)
         if callable(app):
             uvicorn.run(app(), host="0.0.0.0", port=args.port)

@@ -24,6 +24,13 @@
 - [x] Cập nhật đồng bộ các liên kết trong `AGENTS.md`, `ARCHITECTURE.md`, `Makefile` và `.workflows/README.md`.
 - [x] Xóa an toàn và dọn dẹp thư mục cũ `AGENTS/`.
 - [x] Tinh chỉnh chuẩn hóa 10/10: Cập nhật `.gitignore` (chặn `.ruff_cache/`, `.mypy_cache/`, `.deepeval/`) và tạo tệp chỉ mục [.context/README.md](file:///f:/PROJECTS/AIAgent/.context/README.md).
+- [x] **Triển khai toàn diện 5 khuyến nghị nâng cấp Production Hardening**:
+  1. *Dynamic Hot-Reload*: Cho phép nạp nóng chính sách `policy.yaml`, reset circuit breaker của LLM Gateway và xóa transient cache thông qua API Admin `/api/v1/admin/reload-configs` mà không cần khởi động lại container.
+  2. *Prometheus Sub-Second Buckets & TTFT*: Tinh chỉnh histogram `REQUEST_DURATION` xuống đến `0.01s` và bổ sung metric `TTFT_DURATION` (Time-to-First-Token) đo lường chính xác độ trễ streaming token đầu tiên trong `chat_stream_endpoint`.
+  3. *Flexible Checkpoint Eviction & Per-Thread TTL*: Hỗ trợ TTL tùy biến theo từng lu hội thoại (`checkpoint_ttl`) trong `RedisSaver`, kèm phương thức dọn dẹp các checkpoint luồng không hoạt động `cleanup_inactive_threads()` và API `/api/v1/admin/cleanup-checkpoints`.
+  4. *Selective Semantic Cache Invalidation*: Cập nhật `RAGCache` với cơ chế huỷ cache chọn lọc theo nguồn và tài liệu (`invalidate_by_source`, `invalidate_document`) trên cả L1 memory và L2 Redis, tích hợp vào quy trình CDC delta ingestion.
+  5. *Mutual TLS (mTLS) cho A2A Communications*: Bổ sung cấu hình chứng chỉ client mTLS trong `Settings` và tích hợp `A2AClient` hỗ trợ mã hóa 2 chiều cấp Pod.
+- [x] Bổ sung bộ kiểm thử `tests/unit/test_next_gen_recommendations.py` (10/10 passed), đạt 257/257 bài test pass toàn dự án với độ bao phủ kiểm thử duy trì ở mức đỉnh cao **99.5%**, 0 lỗi Ruff, 0 lỗi Mypy.
 
 ---
 

@@ -28,6 +28,7 @@ def test_circuit_breaker_failover_routing():
 
     # Temporarily patch global circuit breaker to verify get_llm routing
     import src.agentic.llm.gateway as gw
+
     orig_cb = gw._circuit_breaker
     try:
         gw._circuit_breaker = cb
