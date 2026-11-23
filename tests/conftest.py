@@ -43,3 +43,13 @@ async def async_client():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+
+
+@pytest.fixture(autouse=True)
+def reset_settings_cache():
+    """Ensure global Settings cache is refreshed between tests to prevent test pollution."""
+    yield
+    from src.agentic.core.config import get_settings
+
+    get_settings.cache_clear()
+

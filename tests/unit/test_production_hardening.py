@@ -230,10 +230,14 @@ async def test_a2a_client_retry_and_backpressure() -> None:
     from src.agentic.a2a.client import A2AClient
 
     client = A2AClient()
-    client.settings.allow_local_agent_fallback = False
-    client.settings.a2a_max_retries = 2
-    client.settings.a2a_retry_backoff_base_seconds = 0.001
-    client.settings.a2a_retry_backoff_max_seconds = 0.005
+    client.settings = client.settings.model_copy(
+        update={
+            "allow_local_agent_fallback": False,
+            "a2a_max_retries": 2,
+            "a2a_retry_backoff_base_seconds": 0.001,
+            "a2a_retry_backoff_max_seconds": 0.005,
+        }
+    )
 
     # 1. Simulate 503 transient error followed by 200 OK
     resp_503 = MagicMock()

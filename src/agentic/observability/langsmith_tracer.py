@@ -23,10 +23,17 @@ def setup_langsmith(settings: Settings | None = None) -> None:
     if settings is None:
         settings = get_settings()
 
-    tracing_enabled = settings.langchain_tracing_v2 or os.getenv(
-        "LANGCHAIN_TRACING_V2", ""
-    ).lower() in ("true", "1")
-    api_key = settings.langchain_api_key or os.getenv("LANGCHAIN_API_KEY")
+    env_tracing = os.getenv("LANGCHAIN_TRACING_V2")
+    if env_tracing is not None:
+        tracing_enabled = env_tracing.strip().lower() in ("true", "1")
+    else:
+        tracing_enabled = bool(settings.langchain_tracing_v2)
+
+    env_api_key = os.getenv("LANGCHAIN_API_KEY")
+    if env_api_key is not None:
+        api_key = env_api_key.strip()
+    else:
+        api_key = settings.langchain_api_key or ""
 
     if tracing_enabled and api_key:
         os.environ["LANGCHAIN_TRACING_V2"] = "true"
@@ -47,11 +54,18 @@ def setup_langsmith(settings: Settings | None = None) -> None:
 
 def is_langsmith_enabled() -> bool:
     """Returns True if LangSmith tracing is active with valid API key configuration."""
-    api_key = os.getenv("LANGCHAIN_API_KEY") or get_settings().langchain_api_key
-    tracing_v2 = (
-        os.getenv("LANGCHAIN_TRACING_V2", "").lower() in ("true", "1")
-        or get_settings().langchain_tracing_v2
-    )
+    env_tracing = os.getenv("LANGCHAIN_TRACING_V2")
+    if env_tracing is not None:
+        tracing_v2 = env_tracing.strip().lower() in ("true", "1")
+    else:
+        tracing_v2 = bool(get_settings().langchain_tracing_v2)
+
+    env_api_key = os.getenv("LANGCHAIN_API_KEY")
+    if env_api_key is not None:
+        api_key = env_api_key.strip()
+    else:
+        api_key = get_settings().langchain_api_key or ""
+
     return bool(tracing_v2 and api_key)
 
 
