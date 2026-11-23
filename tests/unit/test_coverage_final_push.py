@@ -417,18 +417,23 @@ def test_tools_servers_deep_branches(tmp_path: Path):
         res_sym = repo_server.search_symbol_core("pytest", directory="tests")
         assert isinstance(res_sym, str)
 
-    # 4. code_exec_server k8s sandbox stderr & raise fallback (lines 125, 147)
-    mock_k8s_proc = MagicMock()
-    mock_k8s_proc.communicate = AsyncMock(return_value=(b"K8s stdout", b"K8s warning stderr"))
-    mock_k8s_proc.returncode = 0
-    with patch("asyncio.create_subprocess_exec", return_value=mock_k8s_proc):
+    # 4. code_exec_server k8s sandbox output & raise fallback
+    with patch(
+        "src.agentic.tools.servers.code_exec_server._run_k8s_pod",
+        new_callable=AsyncMock,
+        return_value=("K8s combined pod output", 0),
+    ):
         out_k8s = asyncio.run(code_exec_server._execute_in_k8s_sandbox("print(1)", is_python=True))
-        assert "STDERR:" in out_k8s
-        assert "K8s warning stderr" in out_k8s
+        assert "STDOUT:" in out_k8s
+        assert "K8s combined pod output" in out_k8s
 
     # Line 147: k8s fail and docker not available -> raises
     with (
-        patch("asyncio.create_subprocess_exec", side_effect=RuntimeError("K8s pod fail")),
+        patch(
+            "src.agentic.tools.servers.code_exec_server._run_k8s_pod",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("K8s pod fail"),
+        ),
         patch(
             "src.agentic.tools.servers.code_exec_server._is_docker_available", return_value=False
         ),

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agentic-platform
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agentic-sandbox
+  labels:
+    sandbox: untrusted

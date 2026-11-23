@@ -27,3 +27,25 @@
 - **Nguyên nhân**: BM25 và Cross-Encoder chạy đồng bộ trên main thread, chiếm dụng Python GIL và làm nghẽn asyncio event loop.
 - **Giải pháp**:
   - Chuyển toàn bộ lời gọi CPU-bound sang worker thread pool bằng `asyncio.to_thread()`.
+# Hardening review — 2026-11-23
+
+## LangGraph async API với PostgresSaver sync
+
+- Triệu chứng: `ainvoke`/`astream_events` gọi `aget_tuple` chưa được triển khai.
+- Nguyên nhân: graph async được compile bằng `PostgresSaver` đồng bộ.
+- Khắc phục: khởi tạo `AsyncPostgresSaver` trong FastAPI lifespan, giữ async context đến shutdown, và dùng `aget_state` ở API.
+
+## Approval không bảo vệ biên tool
+
+- Triệu chứng: planner/HITL có thể duyệt step nhưng MCP tool vẫn bị gọi trực tiếp hoặc một approval mở khóa nhiều step.
+- Khắc phục: lưu `approved_step_ids`, truyền capability qua A2A metadata/ContextVar và kiểm tra allowlist + approval tại mọi MCP invocation.
+
+## Thread ID do client cung cấp
+
+- Triệu chứng: hai principal có thể dùng cùng `thread_id` để đọc/ghi chung checkpoint.
+- Khắc phục: atomic ownership registry và HMAC-scoped internal checkpoint ID; approval resolve owner từ registry và xác thực đúng pending step.
+
+## CDC path traversal và stale index
+
+- Triệu chứng: `file_path` có thể thoát `data/raw`; `_load_storage()` không index nội dung mới.
+- Khắc phục: `resolve/relative_to`, hỗ trợ delete, rebuild persisted index trong worker thread rồi reset retriever singleton.

@@ -1,5 +1,6 @@
 """RAG Query and Semantic Retrieval Cache with Multi-Tier (L1 In-Memory + L2 Distributed Redis) Architecture."""
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -78,7 +79,10 @@ class RAGCache:
 
     def _hash_key(self, query: str, top_k: int, **kwargs: Any) -> str:
         norm = self._normalize_query(query)
-        extra = f":k={top_k}:" + ":".join(f"{k}={v}" for k, v in sorted(kwargs.items()))
+        meaningful = {key: value for key, value in kwargs.items() if value not in (None, "")}
+        extra = f":k={top_k}:" + ":".join(
+            f"{key}={value}" for key, value in sorted(meaningful.items())
+        )
         return hashlib.sha256((norm + extra).encode("utf-8")).hexdigest()
 
     def get(self, query: str, top_k: int = 5, **kwargs: Any) -> str | None:
@@ -126,7 +130,7 @@ class RAGCache:
                     logger.debug(
                         f"RAG Cache L2 (Redis) HIT for query='{query[:40]}...' (key={key[:8]})"
                     )
-                    return result_val
+                    return str(result_val)
             except Exception as ex:
                 logger.debug(f"Redis L2 read exception in RAGCache: {ex}")
 
@@ -142,12 +146,13 @@ class RAGCache:
         top_k: int = 5,
         ttl: int | None = None,
         metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
     ) -> None:
         """Stores retrieval result in both L1 memory and L2 distributed Redis."""
         if not self.settings.enable_rag_cache:
             return
 
-        key = self._hash_key(query, top_k)
+        key = self._hash_key(query, top_k, **kwargs)
         effective_ttl = ttl if ttl is not None else self.settings.rag_cache_ttl_seconds
         expire_at = time.time() + effective_ttl
 
@@ -262,8 +267,6 @@ class RAGCache:
                 if inspect.iscoroutinefunction(self._embed_fn):
                     vec = await self._embed_fn(text)
                 else:
-                    import asyncio
-
                     vec = await asyncio.to_thread(self._embed_fn, text)
                 if isinstance(vec, (list, tuple)) and len(vec) > 0:
                     return list(vec)
@@ -306,6 +309,8 @@ class RAGCache:
             for entry in self._semantic_entries:
                 if entry.get("top_k", top_k) != top_k:
                     continue
+                if entry.get("scope", "") != str(kwargs.get("scope", "")):
+                    continue
                 entry_domain = entry.get("domain", "general")
                 if entry_domain != domain and entry_domain != "general" and domain != "general":
                     continue
@@ -335,9 +340,10 @@ class RAGCache:
         query_vector: list[float] | None = None,
         ttl: int | None = None,
         metadata: dict[str, Any] | None = None,
+        scope: str = "",
     ) -> None:
         """Stores query result in both exact match cache and semantic entry list."""
-        self.set(query, result, top_k=top_k, ttl=ttl, metadata=metadata)
+        self.set(query, result, top_k=top_k, ttl=ttl, metadata=metadata, scope=scope)
         if not self.settings.enable_semantic_cache:
             return
 
@@ -353,6 +359,7 @@ class RAGCache:
             "top_k": top_k,
             "expire_at": expire_at,
             "metadata": metadata or {},
+            "scope": scope,
         }
 
         with self._lock:
@@ -395,18 +402,26 @@ class RAGCache:
         timeout: float = 5.0,
         domain: str = "general",
         query_vector: list[float] | None = None,
+        scope: str = "",
     ) -> str:
         """Stampede-guarded async retrieval with adaptive semantic caching."""
         target_vec = query_vector
         if target_vec is None:
             target_vec = await self.aget_embedding(query)
 
-        cached = self.get_semantic(query, domain=domain, top_k=top_k, query_vector=target_vec)
+        cached = await asyncio.to_thread(
+            self.get_semantic,
+            query,
+            domain,
+            top_k,
+            target_vec,
+            scope=scope,
+        )
         if cached is not None:
             return cached
 
-        key = self._hash_key(query, top_k)
-        has_lock = self.acquire_lock(key, timeout=timeout)
+        key = self._hash_key(query, top_k, scope=scope)
+        has_lock = await asyncio.to_thread(self.acquire_lock, key, timeout)
 
         if has_lock:
             try:
@@ -415,26 +430,32 @@ class RAGCache:
                 if inspect.iscoroutinefunction(compute_fn):
                     computed = await compute_fn()
                 else:
-                    computed = compute_fn()
-                self.set_semantic(
+                    computed = await asyncio.to_thread(compute_fn)
+                await asyncio.to_thread(
+                    self.set_semantic,
                     query,
                     str(computed),
-                    domain=domain,
-                    top_k=top_k,
-                    query_vector=target_vec,
-                    ttl=ttl,
+                    domain,
+                    top_k,
+                    target_vec,
+                    ttl,
+                    None,
+                    scope,
                 )
                 return str(computed)
             finally:
-                self.release_lock(key)
+                await asyncio.to_thread(self.release_lock, key)
         else:
-            import asyncio
-
             start_wait = time.time()
             while time.time() - start_wait < timeout:
                 await asyncio.sleep(0.05)
-                cached = self.get_semantic(
-                    query, domain=domain, top_k=top_k, query_vector=target_vec
+                cached = await asyncio.to_thread(
+                    self.get_semantic,
+                    query,
+                    domain,
+                    top_k,
+                    target_vec,
+                    scope=scope,
                 )
                 if cached is not None:
                     return cached
@@ -442,7 +463,7 @@ class RAGCache:
 
             if inspect.iscoroutinefunction(compute_fn):
                 return str(await compute_fn())
-            return str(compute_fn())
+            return str(await asyncio.to_thread(compute_fn))
 
     def get_or_compute(
         self,
@@ -453,24 +474,33 @@ class RAGCache:
         timeout: float = 5.0,
         domain: str = "general",
         query_vector: list[float] | None = None,
+        scope: str = "",
     ) -> str:
         """Synchronous stampede-guarded retrieval with adaptive semantic caching."""
         target_vec = query_vector
         if target_vec is None:
             target_vec = self.get_embedding(query)
 
-        cached = self.get_semantic(query, domain=domain, top_k=top_k, query_vector=target_vec)
+        cached = self.get_semantic(
+            query, domain=domain, top_k=top_k, query_vector=target_vec, scope=scope
+        )
         if cached is not None:
             return cached
 
-        key = self._hash_key(query, top_k)
+        key = self._hash_key(query, top_k, scope=scope)
         has_lock = self.acquire_lock(key, timeout=timeout)
 
         if has_lock:
             try:
                 computed = str(compute_fn())
                 self.set_semantic(
-                    query, computed, domain=domain, top_k=top_k, query_vector=target_vec, ttl=ttl
+                    query,
+                    computed,
+                    domain=domain,
+                    top_k=top_k,
+                    query_vector=target_vec,
+                    ttl=ttl,
+                    scope=scope,
                 )
                 return computed
             finally:
@@ -480,7 +510,11 @@ class RAGCache:
             while time.time() - start_wait < timeout:
                 time.sleep(0.05)
                 cached = self.get_semantic(
-                    query, domain=domain, top_k=top_k, query_vector=target_vec
+                    query,
+                    domain=domain,
+                    top_k=top_k,
+                    query_vector=target_vec,
+                    scope=scope,
                 )
                 if cached is not None:
                     return cached

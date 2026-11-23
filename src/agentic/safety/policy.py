@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 import yaml
@@ -16,6 +17,8 @@ class PolicyManager:
     def __init__(self, policy_path: Path | None = None) -> None:
         self.settings = get_settings()
         self.policy_path = policy_path or self.settings.policies_path
+        self._lock = RLock()
+        self._mtime_ns = 0
         self.policy_data: dict[str, Any] = self._load_policy()
 
     def _load_policy(self) -> dict[str, Any]:
@@ -42,6 +45,7 @@ class PolicyManager:
         try:
             with open(self.policy_path, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f)
+                self._mtime_ns = self.policy_path.stat().st_mtime_ns
                 return data or {}
         except Exception as e:
             raise ConfigurationError(
@@ -50,12 +54,14 @@ class PolicyManager:
 
     def get_tool_risk(self, tool_name: str) -> str:
         """Returns risk level: low, medium, or high."""
+        self._reload_if_changed()
         tools_cfg = self.policy_data.get("tools", {})
         tool_cfg = tools_cfg.get(tool_name, {})
-        return tool_cfg.get("risk_level", "low")
+        return str(tool_cfg.get("risk_level", "low"))
 
     def is_approval_required(self, tool_name: str) -> bool:
         """Checks if a tool explicitly requires HITL approval."""
+        self._reload_if_changed()
         tools_cfg = self.policy_data.get("tools", {})
         tool_cfg = tools_cfg.get(tool_name, {})
         return bool(tool_cfg.get("require_approval", False))
@@ -64,8 +70,13 @@ class PolicyManager:
         """Checks if an agent is authorized to use a given tool."""
         return tool_name in self.get_agent_tools(agent_name)
 
+    def agent_requires_approval(self, agent_name: str) -> bool:
+        """Conservatively flag agents that can invoke any approval-gated tool."""
+        return any(self.is_approval_required(name) for name in self.get_agent_tools(agent_name))
+
     def get_agent_tools(self, agent_name: str) -> list[str]:
         """Returns the list of allowed tool names for a specific sub-agent (supports 'rag' and 'rag_agent')."""
+        self._reload_if_changed()
         allowlists = self.policy_data.get("agent_allowlist", {})
         if agent_name in allowlists:
             return list(allowlists[agent_name])
@@ -78,12 +89,23 @@ class PolicyManager:
 
     def reload(self) -> dict[str, Any]:
         """Dynamically reloads policies from disk without restarting the process."""
-        self.policy_data = self._load_policy()
+        with self._lock:
+            self.policy_data = self._load_policy()
         return self.policy_data
+
+    def _reload_if_changed(self) -> None:
+        """Make revocations effective in every process sharing the policy mount."""
+        try:
+            current = self.policy_path.stat().st_mtime_ns
+        except OSError:
+            return
+        if current != self._mtime_ns:
+            self.reload()
 
     def get_guardrails_config(self) -> dict[str, Any]:
         """Returns the guardrails configuration section."""
-        return self.policy_data.get("guardrails", {})
+        value = self.policy_data.get("guardrails", {})
+        return dict(value) if isinstance(value, dict) else {}
 
 
 @lru_cache
@@ -93,6 +115,7 @@ def get_policy_manager() -> PolicyManager:
 
 
 def reload_policy_manager() -> PolicyManager:
-    """Clears lru_cache and forces re-instantiation and reloading of PolicyManager."""
-    get_policy_manager.cache_clear()
-    return get_policy_manager()
+    """Reload the cached object so existing authorization wrappers see revocations."""
+    manager = get_policy_manager()
+    manager.reload()
+    return manager

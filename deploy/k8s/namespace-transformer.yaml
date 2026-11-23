@@ -1,0 +1,6 @@
+apiVersion: builtin
+kind: NamespaceTransformer
+metadata:
+  name: agentic-platform-default-namespace
+namespace: agentic-platform
+unsetOnly: true

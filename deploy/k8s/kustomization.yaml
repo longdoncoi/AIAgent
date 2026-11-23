@@ -5,6 +5,10 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
+  - namespace.yaml
+  - service-accounts.yaml
+  - sandbox-network-policy.yaml
+  - sandbox-rbac.yaml
   - deployment.yaml
   - configmap-secrets.yaml
   - external-secret.yaml
@@ -16,3 +20,6 @@ resources:
 commonLabels:
   app.kubernetes.io/part-of: agentic-platform
   app.kubernetes.io/managed-by: argocd
+
+transformers:
+  - namespace-transformer.yaml

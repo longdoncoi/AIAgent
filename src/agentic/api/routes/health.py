@@ -1,5 +1,6 @@
 """Health, deep readiness, and Prometheus metrics endpoints."""
 
+import asyncio
 import socket
 from urllib.parse import urlparse
 
@@ -13,12 +14,16 @@ router = APIRouter(tags=["Health & Monitoring"])
 
 
 def _check_tcp_port(host: str, port: int, timeout: float = 0.5) -> bool:
-    """Fast TCP socket probe for backing infrastructure services."""
+    """Synchronous compatibility probe; readiness offloads it to a worker."""
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
     except Exception:
         return False
+
+
+async def _acheck_tcp_port(host: str, port: int, timeout: float = 0.5) -> bool:
+    return await asyncio.to_thread(_check_tcp_port, host, port, timeout)
 
 
 @router.get("/healthz")
@@ -39,9 +44,12 @@ async def readyz() -> Response:
         try:
             import psycopg
 
-            with psycopg.connect(settings.postgres_uri, connect_timeout=1) as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT 1;")
+            def probe_postgres() -> None:
+                with psycopg.connect(settings.postgres_uri, connect_timeout=1) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT 1;")
+
+            await asyncio.to_thread(probe_postgres)
             checks["database"] = "ok (postgres)"
         except Exception as e:
             checks["database"] = f"down ({e.__class__.__name__})"
@@ -58,7 +66,10 @@ async def readyz() -> Response:
             parsed = urlparse(settings.redis_url)
             r_host = parsed.hostname or "localhost"
             r_port = parsed.port or 6379
-            checks["redis"] = "ok" if _check_tcp_port(r_host, r_port, timeout=0.3) else "down"
+            redis_ok = await _acheck_tcp_port(r_host, r_port, timeout=0.3)
+            checks["redis"] = "ok" if redis_ok else "down"
+            if not redis_ok and settings.environment == "production":
+                is_healthy = False
         except Exception:
             checks["redis"] = "error"
 
@@ -66,16 +77,18 @@ async def readyz() -> Response:
     parsed_llm = urlparse(settings.litellm_base_url)
     llm_host = parsed_llm.hostname or "localhost"
     llm_port = parsed_llm.port or 4000
-    checks["model_gateway"] = (
-        "ok" if _check_tcp_port(llm_host, llm_port, timeout=0.3) else "offline_or_fallback"
-    )
+    llm_ok = await _acheck_tcp_port(llm_host, llm_port, timeout=0.3)
+    checks["model_gateway"] = "ok" if llm_ok else "offline"
+    if not llm_ok and settings.require_model_gateway_ready:
+        is_healthy = False
 
     # 4. Vector Store (Qdrant)
-    checks["vector_store"] = (
-        "ok"
-        if _check_tcp_port(settings.qdrant_host, settings.qdrant_port, timeout=0.3)
-        else "offline_or_local"
+    qdrant_ok = await _acheck_tcp_port(
+        settings.qdrant_host, settings.qdrant_port, timeout=0.3
     )
+    checks["vector_store"] = "ok" if qdrant_ok else "offline_or_local"
+    if settings.enable_qdrant and not qdrant_ok:
+        is_healthy = False
 
     overall_status = "ready" if is_healthy else "unhealthy"
     status_code = status.HTTP_200_OK if is_healthy else status.HTTP_503_SERVICE_UNAVAILABLE

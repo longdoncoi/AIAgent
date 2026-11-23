@@ -83,6 +83,7 @@ class A2AClient:
         step_id: str,
         instruction: str,
         context: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
         timeout: float = 60.0,
     ) -> A2ATaskResponse:
         """Calls a sub-agent over A2A HTTP, falling back to local graph execution if server is offline."""
@@ -94,6 +95,7 @@ class A2AClient:
             caller="supervisor",
             target_agent=target_agent,
             payload=A2ATaskPayload(instruction=instruction, context=context or {}),
+            metadata=metadata or {},
         )
 
         headers: dict[str, str] = {
@@ -115,14 +117,21 @@ class A2AClient:
                         caller="supervisor", target_agent=target_agent, status="success"
                     ).inc()
                     return A2ATaskResponse(**resp.json())
-                else:
-                    logger.warning(
-                        f"A2A call to {endpoint} returned status {resp.status_code}. Attempting local fallback."
+                if not self.settings.allow_local_agent_fallback:
+                    raise A2ACommunicationError(
+                        target_agent=target_agent,
+                        message=f"A2A endpoint rejected the request with HTTP {resp.status_code}.",
                     )
-            except Exception as e:
-                logger.info(
-                    f"A2A server {endpoint} not reachable ({e}). Falling back to in-process execution."
-                )
+                logger.warning("A2A HTTP error; using development-only local fallback.")
+            except A2ACommunicationError:
+                raise
+            except httpx.TransportError as exc:
+                if not self.settings.allow_local_agent_fallback:
+                    raise A2ACommunicationError(
+                        target_agent=target_agent,
+                        message="A2A transport is unavailable.",
+                    ) from exc
+                logger.info("A2A transport unavailable; using development fallback.")
 
         # Local fallback execution
         local_graph = self._get_local_graph(target_agent)
@@ -160,6 +169,7 @@ class A2AClient:
         step_id: str,
         instruction: str,
         context: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
         timeout: float = 60.0,
     ) -> AsyncIterator[dict[str, Any]]:
         """Streams sub-agent tokens and lifecycle events over A2A SSE with local fallback."""
@@ -171,6 +181,7 @@ class A2AClient:
             caller="supervisor",
             target_agent=target_agent,
             payload=A2ATaskPayload(instruction=instruction, context=context or {}),
+            metadata=metadata or {},
         )
 
         headers: dict[str, str] = {
@@ -199,10 +210,23 @@ class A2AClient:
                                     except Exception:
                                         pass
                         return
-            except Exception as e:
-                logger.info(
-                    f"A2A streaming endpoint {endpoint} not reachable ({e}). Falling back to local streaming execution."
-                )
+                    if not self.settings.allow_local_agent_fallback:
+                        raise A2ACommunicationError(
+                            target_agent=target_agent,
+                            message=f"A2A streaming endpoint returned HTTP {resp.status_code}.",
+                        )
+                    logger.warning(
+                        "A2A stream HTTP error; using development-only local fallback."
+                    )
+            except A2ACommunicationError:
+                raise
+            except httpx.TransportError as exc:
+                if not self.settings.allow_local_agent_fallback:
+                    raise A2ACommunicationError(
+                        target_agent=target_agent,
+                        message="A2A streaming transport is unavailable.",
+                    ) from exc
+                logger.info("A2A streaming transport unavailable; using development fallback.")
 
         local_graph = self._get_local_graph(target_agent)
         card = get_agent_card(target_agent)

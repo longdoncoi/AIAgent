@@ -589,19 +589,20 @@ async def test_code_exec_server_docker_branches():
 @pytest.mark.asyncio
 async def test_code_exec_server_k8s_branches():
     # 1. K8s execution success
-    mock_proc = AsyncMock()
-    mock_proc.communicate.return_value = (b"K8s pod output logged\n", b"")
-    mock_proc.returncode = 0
-
-    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc):
+    with patch(
+        "src.agentic.tools.servers.code_exec_server._run_k8s_pod",
+        new_callable=AsyncMock,
+        return_value=("K8s pod output logged\n", 0),
+    ):
         res = await _execute_in_k8s_sandbox("print('k8s')", is_python=True, timeout=5)
         assert "K8s pod output logged" in res
         assert "KUBERNETES GVISOR SANDBOX ACTIVE" in res
 
     # 2. K8s pod timeout
-    with (
-        patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc),
-        patch("asyncio.wait_for", side_effect=asyncio.TimeoutError),
+    with patch(
+        "src.agentic.tools.servers.code_exec_server._run_k8s_pod",
+        new_callable=AsyncMock,
+        side_effect=asyncio.TimeoutError,
     ):
         res_k8s_to = await _execute_in_k8s_sandbox("sleep 10", is_python=False, timeout=1)
         assert "Kubernetes sandbox execution timed out" in res_k8s_to

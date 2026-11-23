@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Hierarchical Multi-Agent Platform with LangGraph, vLLM, llama.cpp, LlamaIndex, FastMCP, and A2A Protocol"
 authors = [{ name = "Agentic Team", email = "dev@agentic-platform.local" }]
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     # API & Web
     "fastapi>=0.115.0",
@@ -63,15 +63,15 @@ packages = ["src/agentic"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
 ignore = ["E501"]
 
 [tool.mypy]
-python_version = "3.11"
-strict = false
+python_version = "3.12"
+strict = true
 ignore_missing_imports = true
 explicit_package_bases = true
 mypy_path = "."

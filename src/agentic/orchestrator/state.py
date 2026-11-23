@@ -4,7 +4,7 @@ from typing import Annotated, Any, Literal
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Step(BaseModel):
@@ -30,6 +30,40 @@ class Plan(BaseModel):
     goal: str = Field(..., description="High-level goal derived from user query")
     steps: list[Step] = Field(default_factory=list, description="Ordered or DAG steps")
 
+    @model_validator(mode="after")
+    def validate_dag(self) -> "Plan":
+        """Reject ambiguous IDs, unknown dependencies, self edges, and cycles."""
+        ids = [step.id for step in self.steps]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Plan step IDs must be unique.")
+        known = set(ids)
+        graph: dict[str, list[str]] = {}
+        for step in self.steps:
+            unknown = set(step.depends_on) - known
+            if unknown:
+                raise ValueError(f"Step '{step.id}' has unknown dependencies: {sorted(unknown)}")
+            if step.id in step.depends_on:
+                raise ValueError(f"Step '{step.id}' cannot depend on itself.")
+            graph[step.id] = step.depends_on
+
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(node: str) -> None:
+            if node in visiting:
+                raise ValueError("Plan dependency graph contains a cycle.")
+            if node in visited:
+                return
+            visiting.add(node)
+            for dependency in graph[node]:
+                visit(dependency)
+            visiting.remove(node)
+            visited.add(node)
+
+        for step_id in ids:
+            visit(step_id)
+        return self
+
 
 class AgentState(BaseModel):
     """Global execution state for the LangGraph Supervisor Orchestrator."""
@@ -42,6 +76,7 @@ class AgentState(BaseModel):
     requires_approval: bool = False
     pending_approval_step_id: str | None = None
     approval_granted: bool | None = None
+    approved_step_ids: list[str] = Field(default_factory=list)
     final_answer: str | None = None
     thread_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)

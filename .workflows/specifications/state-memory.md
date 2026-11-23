@@ -58,3 +58,9 @@
 - **Kiểm định quản lý trạng thái, bộ nhớ & dữ liệu**: [REVIEW_STATE, MEMORY & PERSISTENCE.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_STATE,%20MEMORY%20&%20PERSISTENCE.md)
 - **Kiểm định quản trị dữ liệu & phân quyền tri thức**: [REVIEW_DATA GOVERNANCE & RAG RBAC.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_DATA%20GOVERNANCE%20&%20RAG%20RBAC.md)
 - **Kiểm định tuân thủ pháp lý & quyền được lãng quên (Right to be Forgotten)**: [REVIEW_COMPLIANCE, PRIVACY & AI ETHICS.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_COMPLIANCE,%20PRIVACY%20&%20AI%20ETHICS.md)
+# Bổ sung hardening persistence và tenant isolation
+
+- Supervisor async sử dụng `AsyncPostgresSaver`; lifecycle connection được quản lý bởi FastAPI lifespan.
+- Public `thread_id` được claim nguyên tử theo principal và chuyển thành HMAC-scoped checkpoint key trước khi truy cập state.
+- Redis checkpoint chỉ deserialize payload có HMAC hợp lệ; legacy unsigned migration mặc định tắt và bị cấm ở production.
+- HITL resume phải khớp đồng thời public thread, owner đã đăng ký và `step_id` của interrupt hiện tại.

@@ -8,7 +8,7 @@ on:
     branches: [ main ]
 
 permissions:
-  contents: read
+  contents: write
   packages: write
   security-events: write
 
@@ -31,7 +31,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install Dev Dependencies
         run: |
@@ -44,9 +44,14 @@ jobs:
       - name: Type Check (mypy)
         run: mypy src/
 
-      - name: Security Vulnerability Scan (pip-audit)
+      - name: Production Dependency Vulnerability Scan (pip-audit)
         run: |
-          pip-audit --desc on --ignore-vuln CVE-SAMPLE || true
+          # Audit the frozen production graph. Development-only evaluation
+          # dependencies (for example RAGAS) are not shipped in runtime images.
+          uv export --frozen --no-dev --no-hashes --no-emit-project \
+            --output-file "$RUNNER_TEMP/production-requirements.txt"
+          pip-audit --desc on \
+            --requirement "$RUNNER_TEMP/production-requirements.txt"
 
   # ----------------------------------------------------------------------------
   # 2. Test & Evaluation Quality Gate
@@ -67,7 +72,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install Dev Dependencies
         run: |
@@ -76,8 +81,8 @@ jobs:
       - name: Setup NLTK Data & Permissions
         run: |
           mkdir -p "$HOME/nltk_data"
-          python -m nltk.downloader stopwords punkt punkt_tab -d "$HOME/nltk_data" || true
-          chmod -R go-w $(python -c "import site; print(site.getsitepackages()[0])") 2>/dev/null || true
+          python -m nltk.downloader stopwords punkt punkt_tab -d "$HOME/nltk_data"
+          chmod -R go-w $(python -c "import site; print(site.getsitepackages()[0])")
 
       - name: Ingest Knowledge Base
         run: python scripts/ingest.py
@@ -102,6 +107,7 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         component:
           - name: api
@@ -132,7 +138,7 @@ jobs:
         with:
           image-ref: '${{ matrix.component.name }}:local-test'
           format: 'table'
-          exit-code: '0'
+          exit-code: '1'
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
@@ -204,8 +210,10 @@ jobs:
 
       - name: Validate Kubernetes Manifests & GitOps Definitions
         run: |
-          echo "Validating Kubernetes & ArgoCD manifests syntax..."
-          find deploy/k8s/ -name "*.yaml" -exec echo "Validating {}" \;
+          curl -fsSL -o kubeconform.tar.gz https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar -xzf kubeconform.tar.gz kubeconform
+          kubectl kustomize deploy/k8s > /tmp/agentic-manifests.yaml
+          ./kubeconform -strict -summary -ignore-missing-schemas /tmp/agentic-manifests.yaml
 
       - name: GitOps Image Tag Auto-Update & ArgoCD Sync
         if: startsWith(github.ref, 'refs/tags/v')
@@ -215,5 +223,8 @@ jobs:
           sed -i "s|image: ghcr.io/agentic-platform/api:latest|image: ghcr.io/${REPO_LOWER}/api:${{ github.sha }}|g" deploy/k8s/deployment.yaml
           sed -i "s|image: ghcr.io/agentic-platform/agent:latest|image: ghcr.io/${REPO_LOWER}/agent:${{ github.sha }}|g" deploy/k8s/deployment.yaml
           sed -i "s|image: ghcr.io/agentic-platform/mcp:latest|image: ghcr.io/${REPO_LOWER}/mcp:${{ github.sha }}|g" deploy/k8s/deployment.yaml
-          echo "GitOps ArgoCD Application 'agentic-platform-prod' triggered for automated sync."
-          echo "New images published to GHCR with digest and tag: ${{ github.sha }}"
+          git config user.name "agentic-release-bot"
+          git config user.email "agentic-release-bot@users.noreply.github.com"
+          git add deploy/k8s/deployment.yaml
+          git commit -m "chore(deploy): pin release images to ${{ github.sha }} [skip ci]"
+          git push origin HEAD:main

@@ -3,7 +3,7 @@
 import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from llama_index.core import StorageContext, load_index_from_storage
 from llama_index.core.schema import NodeWithScore, TextNode
@@ -136,14 +136,14 @@ class HybridRetriever:
                 )
                 return retriever.retrieve(query)
             retriever = self._index.as_retriever(similarity_top_k=top_k)
-            return retriever.retrieve(query)
+            return cast(list[NodeWithScore], retriever.retrieve(query))
         except Exception as e:
             logger.debug(
                 f"AutoMergingRetriever not applicable ({e}). Using standard vector retriever."
             )
             try:
                 retriever = self._index.as_retriever(similarity_top_k=top_k)
-                return retriever.retrieve(query)
+                return cast(list[NodeWithScore], retriever.retrieve(query))
             except Exception:
                 return []
 
@@ -174,7 +174,9 @@ class HybridRetriever:
         fused_items.sort(key=lambda x: x.score or 0.0, reverse=True)
         return fused_items
 
-    def retrieve(self, query: str, top_k: int = 5) -> list[NodeWithScore]:
+    def retrieve(
+        self, query: str, top_k: int = 5, filters: dict[str, Any] | None = None
+    ) -> list[NodeWithScore]:
         """Main hybrid retrieval method combining Vector, Lexical BM25, and Knowledge Graph with RRF."""
         keyword_results = self._keyword_search(query, top_k=top_k * 2)
         dense_results = self._dense_search(query, top_k=top_k * 2)
@@ -200,7 +202,24 @@ class HybridRetriever:
             channels["kg"] = kg_results
 
         fusion = get_fusion_engine()
-        return fusion.fuse(channels, top_k=top_k)
+        fused = fusion.fuse(channels, top_k=top_k * 2 if filters else top_k)
+        if filters:
+            def permitted(item: NodeWithScore) -> bool:
+                metadata = getattr(item.node, "metadata", {}) or {}
+                for key, expected in filters.items():
+                    actual = metadata.get(key)
+                    if key == "tenant_id" and actual is None:
+                        # Legacy/shared documents remain visible; tenant-tagged documents do not leak.
+                        continue
+                    if isinstance(expected, (list, tuple, set)):
+                        if actual not in expected:
+                            return False
+                    elif actual != expected:
+                        return False
+                return True
+
+            fused = [item for item in fused if permitted(item)]
+        return fused[:top_k]
 
 
 _retriever_instance: HybridRetriever | None = None
@@ -212,6 +231,12 @@ def get_hybrid_retriever() -> HybridRetriever:
     if _retriever_instance is None:
         _retriever_instance = HybridRetriever()
     return _retriever_instance
+
+
+def reset_hybrid_retriever() -> None:
+    """Discard stale in-memory index state after an atomic ingestion rebuild."""
+    global _retriever_instance
+    _retriever_instance = None
 
 
 def get_qdrant_vector_store(

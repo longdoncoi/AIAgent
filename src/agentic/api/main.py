@@ -25,8 +25,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     logger.info(f"Starting Agentic Platform on environment='{settings.environment}'...")
 
-    # Pre-compile the supervisor graph
-    app.state.graph = get_supervisor_graph()
+    from src.agentic.memory.short_term import initialize_checkpointer
+
+    checkpointer = await initialize_checkpointer()
+    app.state.graph = get_supervisor_graph(checkpointer=checkpointer)
     logger.info("Supervisor LangGraph initialized and cached in app.state.")
 
     yield
@@ -47,11 +49,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.warning(f"Error while closing A2A HTTP client: {e}")
 
     try:
-        from src.agentic.memory.short_term import close_postgres_pool
+        from src.agentic.memory.short_term import close_checkpointer
 
-        close_postgres_pool()
+        await close_checkpointer()
     except Exception as e:
         logger.warning(f"Error while closing PostgreSQL pool: {e}")
+
+    try:
+        from src.agentic.memory.thread_registry import get_thread_registry
+
+        await get_thread_registry().aclose()
+    except Exception as e:
+        logger.warning(f"Error while closing thread registry: {e}")
 
     try:
         from src.agentic.core.redis import close_redis_pools

@@ -71,6 +71,7 @@ services:
     environment:
       MCP_SERVER_MODULE: "src.agentic.tools.servers.code_exec_server"
       MCP_PORT: 9001
+      REQUIRE_AUTHENTICATION: "false"
     ports:
       - "9001:9001"
 
@@ -82,6 +83,7 @@ services:
     environment:
       MCP_SERVER_MODULE: "src.agentic.tools.servers.repo_server"
       MCP_PORT: 9002
+      REQUIRE_AUTHENTICATION: "false"
     ports:
       - "9002:9002"
 
@@ -93,6 +95,7 @@ services:
     environment:
       MCP_SERVER_MODULE: "src.agentic.tools.servers.web_search_server"
       MCP_PORT: 9003
+      REQUIRE_AUTHENTICATION: "false"
     ports:
       - "9003:9003"
 
@@ -105,6 +108,10 @@ services:
     environment:
       AGENT_MODULE: "src.agentic.agents.chat.server"
       AGENT_PORT: 9100
+      LITELLM_BASE_URL: http://litellm:4000/v1
+      MCP_WEB_SEARCH_URL: http://mcp-web-search:9003/sse
+      USE_REMOTE_MCP: "true"
+      ALLOW_LOCAL_AGENT_FALLBACK: "false"
     ports:
       - "9100:9100"
 
@@ -116,6 +123,9 @@ services:
     environment:
       AGENT_MODULE: "src.agentic.agents.rag.server"
       AGENT_PORT: 9101
+      LITELLM_BASE_URL: http://litellm:4000/v1
+      USE_REMOTE_MCP: "true"
+      ALLOW_LOCAL_AGENT_FALLBACK: "false"
     ports:
       - "9101:9101"
 
@@ -127,6 +137,11 @@ services:
     environment:
       AGENT_MODULE: "src.agentic.agents.coding.server"
       AGENT_PORT: 9102
+      LITELLM_BASE_URL: http://litellm:4000/v1
+      MCP_CODE_EXEC_URL: http://mcp-code-exec:9001/sse
+      MCP_REPO_URL: http://mcp-repo:9002/sse
+      USE_REMOTE_MCP: "true"
+      ALLOW_LOCAL_AGENT_FALLBACK: "false"
     ports:
       - "9102:9102"
 
@@ -148,6 +163,12 @@ services:
       - A2A_CHAT_AGENT_URL=http://agent-chat:9100/a2a
       - A2A_RAG_AGENT_URL=http://agent-rag:9101/a2a
       - A2A_CODING_AGENT_URL=http://agent-coding:9102/a2a
+      - MCP_CODE_EXEC_URL=http://mcp-code-exec:9001/sse
+      - MCP_REPO_URL=http://mcp-repo:9002/sse
+      - MCP_WEB_SEARCH_URL=http://mcp-web-search:9003/sse
+      - USE_REMOTE_MCP=true
+      - ALLOW_LOCAL_AGENT_FALLBACK=false
+      - USE_POSTGRES_CHECKPOINT=true
     depends_on:
       postgres:
         condition: service_healthy

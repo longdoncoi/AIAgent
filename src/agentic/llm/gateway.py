@@ -26,6 +26,7 @@ class TokenMetricsCallbackHandler(AsyncCallbackHandler):
         self.model_alias = model_alias
 
     async def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
+        _circuit_breaker.record_success(self.model_alias)
         if response.llm_output and "token_usage" in response.llm_output:
             usage = response.llm_output["token_usage"]
             prompt_tokens = usage.get("prompt_tokens", 0)
@@ -38,6 +39,11 @@ class TokenMetricsCallbackHandler(AsyncCallbackHandler):
                 TOKENS_TOTAL.labels(model_alias=self.model_alias, token_type="completion").inc(
                     completion_tokens
                 )
+
+    async def on_llm_error(self, error: BaseException, **kwargs: Any) -> None:
+        """Trip the shared breaker from real provider failures."""
+        _circuit_breaker.record_failure(self.model_alias)
+        logger.warning("Model request failed for alias '%s': %s", self.model_alias, type(error).__name__)
 
 
 class ModelCircuitBreaker:

@@ -19,7 +19,7 @@ spec:
     path: deploy/k8s
   destination:
     server: 'https://kubernetes.default.svc'
-    namespace: default
+    namespace: agentic-platform
   syncPolicy:
     automated:
       prune: true

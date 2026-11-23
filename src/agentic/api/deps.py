@@ -74,14 +74,14 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
         if settings.require_authentication:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Invalid or expired token: {str(e)}",
+                detail="Invalid or expired token.",
                 headers={"WWW-Authenticate": "Bearer"},
             )
         logger.debug(f"JWT decode error ({e}). Falling back to authenticated_user role.")
         return {"user_id": "authenticated_user", "role": "user", "token": token}
 
 
-def require_role(allowed_roles: list[str]) -> Callable:
+def require_role(allowed_roles: list[str]) -> Callable[..., Any]:
     """Dependency factory checking user RBAC role."""
 
     async def _role_checker(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:

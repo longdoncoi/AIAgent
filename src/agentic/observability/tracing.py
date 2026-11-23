@@ -28,7 +28,7 @@ if not isinstance(trace.get_tracer_provider(), TracerProvider):
     elif settings.otel_exporter_otlp_endpoint:
         try:
             from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
-                OTLPSpanExporter,  # type: ignore
+                OTLPSpanExporter,
             )
 
             otlp_exporter = OTLPSpanExporter(
@@ -67,10 +67,10 @@ async def trace_span(
         yield span
 
 
-def traced_operation(span_name: str) -> Callable:
+def traced_operation(span_name: str) -> Callable[..., Any]:
     """Decorator to automatically wrap async functions with an OpenTelemetry span."""
 
-    def decorator(func: Callable) -> Callable:
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @functools.wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             tracer = get_tracer()

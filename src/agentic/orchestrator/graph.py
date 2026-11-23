@@ -29,11 +29,11 @@ def should_continue_steps(state: AgentState) -> Literal["hitl", "reflector"]:
 
 def should_replan_or_finalize(state: AgentState) -> Literal["planner", "finalize"]:
     """Determines whether to loop back to planner for self-correction or proceed to finalization."""
-    if state.reflection_count < 2:
-        for note in state.reflection_notes:
-            if "replan_required" in note.lower() or "retry" in note.lower():
-                logger.info("Reflector triggered self-correction loop back to Planner.")
-                return "planner"
+    if state.reflection_count < 2 and state.reflection_notes:
+        latest_note = state.reflection_notes[-1].lower()
+        if "replan_required" in latest_note or "retry" in latest_note:
+            logger.info("Reflector triggered self-correction loop back to Planner.")
+            return "planner"
     return "finalize"
 
 
@@ -81,9 +81,9 @@ def create_supervisor_graph(checkpointer: Any | None = None) -> Any:
 _supervisor_graph_instance: Any = None
 
 
-def get_supervisor_graph() -> Any:
+def get_supervisor_graph(checkpointer: Any | None = None) -> Any:
     """Returns singleton instance of the compiled Supervisor Graph."""
     global _supervisor_graph_instance
     if _supervisor_graph_instance is None:
-        _supervisor_graph_instance = create_supervisor_graph()
+        _supervisor_graph_instance = create_supervisor_graph(checkpointer=checkpointer)
     return _supervisor_graph_instance

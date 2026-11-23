@@ -1,17 +1,19 @@
 """FastAPI middlewares for distributed tracing, metrics, request-id, and rate limiting."""
 
+import asyncio
+import hashlib
 import logging
 import threading
 import time
 import uuid
 from collections import defaultdict
-from typing import Any, Callable
+from typing import Any
 
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from opentelemetry import trace
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 from src.agentic.core.config import get_settings
 from src.agentic.observability.metrics import REQUEST_DURATION
@@ -67,16 +69,37 @@ class SlidingWindowRateLimiter:
 
         if self._redis_client is not None:
             try:
-                pipe = self._redis_client.pipeline()
                 redis_key = f"rl:{client_key}"
+                script = """
+                redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[1])
+                local count = redis.call('ZCARD', KEYS[1])
+                if count >= tonumber(ARGV[2]) then return 0 end
+                redis.call('ZADD', KEYS[1], ARGV[3], ARGV[4])
+                redis.call('EXPIRE', KEYS[1], 65)
+                return 1
+                """
+                allowed = self._redis_client.eval(
+                    script,
+                    1,
+                    redis_key,
+                    window_start,
+                    self.limit,
+                    now,
+                    f"{now}:{uuid.uuid4().hex[:6]}",
+                )
+                if isinstance(allowed, int):
+                    return (bool(allowed), 0 if allowed else 60)
+                # Compatibility for Redis clients/mocks without EVAL support.
+                pipe = self._redis_client.pipeline()
                 pipe.zremrangebyscore(redis_key, 0, window_start)
                 pipe.zcard(redis_key)
-                pipe.zadd(redis_key, {f"{now}:{uuid.uuid4().hex[:6]}": now})
-                pipe.expire(redis_key, 65)
-                results = pipe.execute()
-                current_count = results[1]
+                current_count = pipe.execute()[1]
                 if current_count >= self.limit:
                     return False, 60
+                pipe = self._redis_client.pipeline()
+                pipe.zadd(redis_key, {f"{now}:{uuid.uuid4().hex[:6]}": now})
+                pipe.expire(redis_key, 65)
+                pipe.execute()
                 return True, 0
             except Exception as ex:
                 logger.debug(
@@ -175,15 +198,23 @@ def estimate_tokens_from_request(content_length: int, content_type: str = "") ->
 class RequestIDAndMetricsMiddleware(BaseHTTPMiddleware):
     """Enforces Rate Limiting, OpenTelemetry Distributed Tracing, and Prometheus latency measurement."""
 
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
         path = request.url.path
 
         # Rate limiting check (bypass health and metrics endpoints)
         if not path.startswith(("/health", "/ready", "/metrics")):
             client_ip = request.client.host if request.client else "unknown"
             auth_header = request.headers.get("Authorization", "")
-            rate_key = auth_header if auth_header else client_ip
-            allowed, retry_after = _rate_limiter.is_allowed(rate_key)
+            rate_key = (
+                "token:" + hashlib.sha256(auth_header.encode("utf-8")).hexdigest()
+                if auth_header
+                else f"ip:{client_ip}"
+            )
+            allowed, retry_after = await asyncio.to_thread(
+                _rate_limiter.is_allowed, rate_key
+            )
             if not allowed:
                 logger.warning(f"Rate limit exceeded for client: {client_ip}")
                 return JSONResponse(
@@ -205,8 +236,8 @@ class RequestIDAndMetricsMiddleware(BaseHTTPMiddleware):
                     content_length = 0
                 content_type = request.headers.get("content-type", "")
                 estimated_tokens = estimate_tokens_from_request(content_length, content_type)
-                tok_allowed, tok_retry_after = _rate_limiter.is_token_allowed(
-                    rate_key, tokens=estimated_tokens
+                tok_allowed, tok_retry_after = await asyncio.to_thread(
+                    _rate_limiter.is_token_allowed, rate_key, estimated_tokens
                 )
                 if not tok_allowed:
                     logger.warning(

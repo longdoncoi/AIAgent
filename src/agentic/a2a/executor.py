@@ -1,5 +1,6 @@
 """A2A AgentExecutor: Exposing LangGraph graphs over standardized A2A protocol."""
 
+import hmac
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -14,6 +15,11 @@ from sse_starlette.sse import EventSourceResponse
 
 from src.agentic.a2a.cards import AgentCard
 from src.agentic.core.config import get_settings
+from src.agentic.tools.execution_context import (
+    ToolExecutionContext,
+    reset_tool_execution_context,
+    set_tool_execution_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +55,16 @@ class A2AAgentExecutor:
 
     async def execute(self, request: A2ATaskRequest) -> A2ATaskResponse:
         """Executes a single step via the agent's internal LangGraph graph."""
+        context_token = set_tool_execution_context(
+            ToolExecutionContext(
+                agent_name=self.card.name,
+                step_id=request.task_id,
+                hitl_approved=bool(request.metadata.get("hitl_approved", False)),
+                owner_id=str(request.metadata.get("owner_id"))
+                if request.metadata.get("owner_id")
+                else None,
+            )
+        )
         try:
             instruction = request.payload.instruction
             context_str = ""
@@ -83,6 +99,8 @@ class A2AAgentExecutor:
                 output="",
                 error=str(e),
             )
+        finally:
+            reset_tool_execution_context(context_token)
 
     async def execute_stream(self, request: A2ATaskRequest) -> AsyncIterator[dict[str, Any]]:
         """Streams tokens and execution lifecycle events from the sub-agent graph."""
@@ -94,6 +112,16 @@ class A2AAgentExecutor:
         initial_state = {"messages": [HumanMessage(content=instruction + context_str)]}
 
         accumulated_output: list[str] = []
+        context_token = set_tool_execution_context(
+            ToolExecutionContext(
+                agent_name=self.card.name,
+                step_id=request.task_id,
+                hitl_approved=bool(request.metadata.get("hitl_approved", False)),
+                owner_id=str(request.metadata.get("owner_id"))
+                if request.metadata.get("owner_id")
+                else None,
+            )
+        )
         try:
             yield {
                 "event": "start",
@@ -138,6 +166,8 @@ class A2AAgentExecutor:
                 "agent": self.card.name,
                 "error": str(e),
             }
+        finally:
+            reset_tool_execution_context(context_token)
 
 
 def create_a2a_server(card: AgentCard, graph: Any) -> FastAPI:
@@ -162,7 +192,9 @@ def create_a2a_server(card: AgentCard, graph: Any) -> FastAPI:
     ) -> A2ATaskResponse:
         # S2S Authentication check
         if settings.require_authentication:
-            if not service_token or service_token != settings.s2s_internal_token:
+            if not service_token or not hmac.compare_digest(
+                service_token, settings.s2s_internal_token
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Unauthorized: Invalid internal service-to-service authentication token.",
@@ -194,7 +226,9 @@ def create_a2a_server(card: AgentCard, graph: Any) -> FastAPI:
     ) -> EventSourceResponse:
         """SSE streaming endpoint for fine-grained token streaming from sub-agents."""
         if settings.require_authentication:
-            if not service_token or service_token != settings.s2s_internal_token:
+            if not service_token or not hmac.compare_digest(
+                service_token, settings.s2s_internal_token
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Unauthorized: Invalid internal service-to-service authentication token.",

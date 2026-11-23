@@ -29,10 +29,6 @@ def _setup_nltk() -> None:
     except Exception as e:
         logger.debug(f"NLTK setup note: {e}")
 
-
-_setup_nltk()
-
-
 def load_documents_from_dir(dir_path: Path) -> list[Document]:
     """Loads all text and markdown documents from directory."""
     docs: list[Document] = []

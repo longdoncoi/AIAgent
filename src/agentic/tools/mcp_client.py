@@ -1,8 +1,12 @@
-"""MCP Client Manager converting FastMCP / local tool handlers into LangChain tools."""
+"""Policy-enforcing MCP client bindings for LangChain agents."""
 
+from __future__ import annotations
+
+import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from functools import lru_cache
-from typing import Any, Callable, Coroutine
+from typing import Any
 
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
@@ -12,6 +16,7 @@ from src.agentic.observability.metrics import TOOL_EXECUTION_TOTAL
 from src.agentic.observability.tracing import get_tracer
 from src.agentic.safety.guardrails import get_guardrails
 from src.agentic.safety.policy import get_policy_manager
+from src.agentic.tools.execution_context import get_tool_execution_context
 from src.agentic.tools.servers.code_exec_server import execute_bash_command, execute_python_code
 from src.agentic.tools.servers.repo_server import (
     list_files_core,
@@ -24,139 +29,179 @@ from src.agentic.tools.servers.web_search_server import search_web_core
 logger = logging.getLogger(__name__)
 
 
-# Schema definitions for LangChain StructuredTool bindings
 class WebSearchInput(BaseModel):
-    query: str = Field(description="Search keywords or query phrase")
-    max_results: int = Field(default=5, description="Number of results to return")
+    query: str
+    max_results: int = Field(default=5, ge=1, le=10)
 
 
 class RepoListFilesInput(BaseModel):
-    directory: str = Field(default=".", description="Target folder path")
-    max_depth: int = Field(default=3, description="Depth limit for directory traversal")
+    directory: str = "."
+    max_depth: int = Field(default=3, ge=1, le=8)
 
 
 class RepoReadFileInput(BaseModel):
-    file_path: str = Field(description="Relative path of the file to read")
-    start_line: int = Field(default=1, description="First line index (1-based)")
-    end_line: int = Field(default=200, description="Last line index")
+    file_path: str
+    start_line: int = Field(default=1, ge=1)
+    end_line: int = Field(default=200, ge=1, le=5000)
 
 
 class RepoSearchSymbolInput(BaseModel):
-    query: str = Field(description="Symbol name or regex pattern to search for")
-    directory: str = Field(default=".", description="Target directory")
+    query: str
+    directory: str = "."
 
 
 class RepoWriteFileInput(BaseModel):
-    file_path: str = Field(description="Path to target file")
-    content: str = Field(description="Full text content to write into file")
+    file_path: str
+    content: str
 
 
 class CodeExecPythonInput(BaseModel):
-    code: str = Field(description="Python source code to execute")
-    timeout: int = Field(default=30, description="Max execution time in seconds")
+    code: str
+    timeout: int = Field(default=30, ge=1, le=60)
 
 
 class CodeExecBashInput(BaseModel):
-    command: str = Field(description="Bash or shell command string")
-    timeout: int = Field(default=30, description="Max execution time in seconds")
+    command: str
+    timeout: int = Field(default=30, ge=1, le=60)
+
+
+AsyncTool = Callable[..., Awaitable[str]]
 
 
 class MCPClientManager:
-    """Manages MCP tool registry, policy filtering, and LangChain conversions."""
+    """Builds per-agent tools and enforces policy at the execution boundary."""
 
     def __init__(self) -> None:
         self.settings = get_settings()
         self.policy_mgr = get_policy_manager()
-        self._raw_registry: dict[str, BaseTool] = {}
-        self._init_tools()
+        self._schemas: dict[str, type[BaseModel]] = {
+            "web_search": WebSearchInput,
+            "repo_list_files": RepoListFilesInput,
+            "repo_read_file": RepoReadFileInput,
+            "repo_search_symbol": RepoSearchSymbolInput,
+            "repo_write_file": RepoWriteFileInput,
+            "code_exec_python": CodeExecPythonInput,
+            "code_exec_bash": CodeExecBashInput,
+        }
+        self._descriptions = {
+            "web_search": "Search the external web for current facts and documentation.",
+            "repo_list_files": "List files in the repository.",
+            "repo_read_file": "Read selected lines from a repository file.",
+            "repo_search_symbol": "Search repository text and symbols.",
+            "repo_write_file": "Create or overwrite a repository file; requires approval.",
+            "code_exec_python": "Execute Python in an isolated sandbox.",
+            "code_exec_bash": "Execute a shell command in an isolated sandbox; requires approval.",
+        }
+        self._local: dict[str, AsyncTool] = {
+            "web_search": search_web_core,
+            "repo_list_files": self._asyncify(list_files_core),
+            "repo_read_file": self._asyncify(read_file_core),
+            "repo_search_symbol": self._asyncify(search_symbol_core),
+            "repo_write_file": self._asyncify(write_file_core),
+            "code_exec_python": execute_python_code,
+            "code_exec_bash": execute_bash_command,
+        }
 
-    def _wrap_async_tool(
-        self, name: str, func: Callable[..., Coroutine[Any, Any, str]]
-    ) -> Callable:
-        """Wraps an async function with tracing and Prometheus metrics."""
+    @staticmethod
+    def _asyncify(func: Callable[..., str]) -> AsyncTool:
+        async def invoke(**kwargs: Any) -> str:
+            return await asyncio.to_thread(func, **kwargs)
 
-        async def wrapped(*args: Any, **kwargs: Any) -> str:
-            tracer = get_tracer()
-            with tracer.start_as_current_span(f"mcp.tool.{name}"):
-                try:
-                    # Tool guardrails validation
-                    get_guardrails().validate_tool_input(name, kwargs)
-                    result = await func(*args, **kwargs)
-                    TOOL_EXECUTION_TOTAL.labels(tool_name=name, status="success").inc()
-                    return result
-                except Exception as ex:
-                    TOOL_EXECUTION_TOTAL.labels(tool_name=name, status="error").inc()
-                    logger.error(f"Error executing tool {name}: {ex}")
-                    return f"Tool execution error: {str(ex)}"
+        return invoke
+
+    def _wrap_async_tool(self, name: str, func: AsyncTool) -> AsyncTool:
+        """Backward-compatible instrumentation helper; registry tools use `_invoke`."""
+        async def wrapped(**kwargs: Any) -> str:
+            try:
+                get_guardrails().validate_tool_input(name, kwargs)
+                result = await func(**kwargs)
+                TOOL_EXECUTION_TOTAL.labels(tool_name=name, status="success").inc()
+                return result
+            except Exception as exc:
+                TOOL_EXECUTION_TOTAL.labels(tool_name=name, status="error").inc()
+                logger.exception("Tool execution failed: %s", name)
+                return f"Tool execution error: {exc}"
 
         return wrapped
 
-    def _init_tools(self) -> None:
-        """Initializes LangChain StructuredTool instances from MCP tool definitions."""
-        self._raw_registry["web_search"] = StructuredTool(
-            name="web_search",
-            description="Search the external web for current facts, articles, and documentation.",
-            coroutine=self._wrap_async_tool("web_search", search_web_core),
-            args_schema=WebSearchInput,
-        )
+    def _server_url(self, tool_name: str) -> str:
+        if tool_name.startswith("repo_"):
+            return self.settings.mcp_repo_url
+        if tool_name.startswith("code_exec_"):
+            return self.settings.mcp_code_exec_url
+        return self.settings.mcp_web_search_url
 
-        self._raw_registry["repo_list_files"] = StructuredTool(
-            name="repo_list_files",
-            description="List the directory hierarchy and files in the repository up to a given depth.",
-            func=list_files_core,
-            args_schema=RepoListFilesInput,
-        )
+    async def _remote_call(self, tool_name: str, arguments: dict[str, Any]) -> str:
+        from mcp import ClientSession
+        from mcp.client.sse import sse_client
 
-        self._raw_registry["repo_read_file"] = StructuredTool(
-            name="repo_read_file",
-            description="Read specific lines from a file in the workspace.",
-            func=read_file_core,
-            args_schema=RepoReadFileInput,
-        )
+        headers = {"X-Internal-Service-Token": self.settings.s2s_internal_token}
+        async with sse_client(
+            self._server_url(tool_name), headers=headers, timeout=5.0, sse_read_timeout=65.0
+        ) as streams:
+            async with ClientSession(*streams) as session:
+                await session.initialize()
+                result = await session.call_tool(tool_name, arguments=arguments)
+        if getattr(result, "isError", False):
+            raise RuntimeError("Remote MCP tool reported an execution error.")
+        parts = [str(item.text) for item in getattr(result, "content", []) if hasattr(item, "text")]
+        return "\n".join(parts)
 
-        self._raw_registry["repo_search_symbol"] = StructuredTool(
-            name="repo_search_symbol",
-            description="Search for a symbol, function name, or text pattern across files in the codebase.",
-            func=search_symbol_core,
-            args_schema=RepoSearchSymbolInput,
-        )
+    async def _invoke(self, bound_agent: str, tool_name: str, **kwargs: Any) -> str:
+        context = get_tool_execution_context()
+        effective_agent = context.agent_name if context is not None else bound_agent
+        policy = get_policy_manager()
+        if not policy.is_tool_allowed(effective_agent, tool_name):
+            raise PermissionError(f"Tool '{tool_name}' is not allowed for this agent.")
+        if policy.is_approval_required(tool_name) and not (
+            context is not None and context.hitl_approved
+        ):
+            raise PermissionError(f"Tool '{tool_name}' requires step-scoped HITL approval.")
 
-        self._raw_registry["repo_write_file"] = StructuredTool(
-            name="repo_write_file",
-            description="Create or overwrite a file with new content. Note: High-risk action requiring HITL.",
-            func=write_file_core,
-            args_schema=RepoWriteFileInput,
-        )
+        tracer = get_tracer()
+        with tracer.start_as_current_span(f"mcp.tool.{tool_name}"):
+            try:
+                get_guardrails().validate_tool_input(tool_name, kwargs)
+                if self.settings.use_remote_mcp:
+                    result = await self._remote_call(tool_name, kwargs)
+                else:
+                    result = await self._local[tool_name](**kwargs)
+                TOOL_EXECUTION_TOTAL.labels(tool_name=tool_name, status="success").inc()
+                return result
+            except Exception:
+                TOOL_EXECUTION_TOTAL.labels(tool_name=tool_name, status="error").inc()
+                logger.exception("Tool execution failed: %s", tool_name)
+                raise
 
-        self._raw_registry["code_exec_python"] = StructuredTool(
-            name="code_exec_python",
-            description="Execute Python scripts in a sandboxed subprocess and return stdout/stderr.",
-            coroutine=self._wrap_async_tool("code_exec_python", execute_python_code),
-            args_schema=CodeExecPythonInput,
-        )
+    def _build_tool(self, agent_name: str, tool_name: str) -> BaseTool:
+        async def coroutine(**kwargs: Any) -> str:
+            return await self._invoke(agent_name, tool_name, **kwargs)
 
-        self._raw_registry["code_exec_bash"] = StructuredTool(
-            name="code_exec_bash",
-            description="Execute shell commands in a sandbox. Note: High-risk action requiring HITL.",
-            coroutine=self._wrap_async_tool("code_exec_bash", execute_bash_command),
-            args_schema=CodeExecBashInput,
+        return StructuredTool(
+            name=tool_name,
+            description=self._descriptions[tool_name],
+            coroutine=coroutine,
+            args_schema=self._schemas[tool_name],
         )
 
     def get_tool(self, tool_name: str) -> BaseTool | None:
-        """Retrieves a specific tool by name."""
-        return self._raw_registry.get(tool_name)
+        if tool_name not in self._schemas:
+            return None
+        return self._build_tool("coding_agent", tool_name)
 
     def get_tools_for_agent(self, agent_name: str) -> list[BaseTool]:
-        """Returns the list of tools permitted for an agent according to policy allowlist."""
-        allowed_names = self.policy_mgr.get_agent_tools(agent_name)
-        tools = []
-        for name in allowed_names:
-            if name in self._raw_registry:
-                tools.append(self._raw_registry[name])
-        return tools
+        return [
+            self._build_tool(agent_name, name)
+            for name in self.policy_mgr.get_agent_tools(agent_name)
+            if name in self._schemas
+        ]
 
 
 @lru_cache
 def get_mcp_client_manager() -> MCPClientManager:
-    """Singleton getter for MCPClientManager."""
     return MCPClientManager()
+
+
+def reload_mcp_client_manager() -> MCPClientManager:
+    get_mcp_client_manager.cache_clear()
+    return get_mcp_client_manager()

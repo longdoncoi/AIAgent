@@ -1,109 +1,141 @@
 """Short-term Memory: Checkpointer and Context Window Trimming."""
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from langchain_core.messages import BaseMessage, SystemMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
 
-if TYPE_CHECKING:
-    from psycopg_pool import ConnectionPool
-else:
-    ConnectionPool = Any
-
 from src.agentic.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-_global_checkpointer: BaseCheckpointSaver | None = None
+_global_checkpointer: BaseCheckpointSaver[Any] | None = None
 _pg_pool: Any | None = None
 _pg_saver_cm: Any | None = None
 
 
 def get_postgres_pool() -> Any | None:
-    """Returns singleton PostgreSQL ConnectionPool for high-throughput concurrency."""
+    """Return the synchronous pool used only by the legacy long-term SQL store."""
     global _pg_pool
-    if _pg_pool is None:
-        settings = get_settings()
-        if settings.use_postgres_checkpoint or settings.environment == "production":
-            try:
-                from psycopg_pool import ConnectionPool as _RealConnectionPool
+    if _pg_pool is not None:
+        return _pg_pool
+    settings = get_settings()
+    if not (settings.use_postgres_checkpoint or settings.environment == "production"):
+        return None
+    try:
+        from psycopg_pool import ConnectionPool
 
-                _pg_pool = _RealConnectionPool(
-                    conninfo=settings.postgres_uri,
-                    min_size=2,
-                    max_size=20,
-                    timeout=10.0,
-                    kwargs={"prepare_threshold": None},
-                    open=False,
-                )
-                _pg_pool.open()
-                logger.info(
-                    "Initialized psycopg ConnectionPool (min_size=2, max_size=20, prepare_threshold=None)."
-                )
-            except Exception as e:
-                logger.warning(f"Could not initialize ConnectionPool ({e}).")
+        _pg_pool = ConnectionPool(
+            conninfo=settings.postgres_uri,
+            min_size=2,
+            max_size=20,
+            timeout=10.0,
+            kwargs={"prepare_threshold": None},
+            open=False,
+        )
+        _pg_pool.open()
+    except Exception as exc:
+        logger.warning("Could not initialize PostgreSQL long-term pool: %s", exc)
+        _pg_pool = None
     return _pg_pool
 
 
 def close_postgres_pool() -> None:
-    """Gracefully closes PostgreSQL ConnectionPool and checkpointer context on process shutdown."""
-    global _pg_pool, _pg_saver_cm, _global_checkpointer
-    if _pg_saver_cm is not None:
+    """Compatibility shutdown hook for the synchronous long-term-memory pool."""
+    global _pg_pool, _global_checkpointer, _pg_saver_cm
+    if _pg_saver_cm is not None and hasattr(_pg_saver_cm, "__exit__"):
         try:
             _pg_saver_cm.__exit__(None, None, None)
-            logger.info("Exited PostgresSaver context cleanly.")
+        except Exception as exc:
+            logger.debug("Error closing legacy saver context: %s", exc)
+        _pg_saver_cm = None
+    if _pg_pool is not None:
+        try:
+            _pg_pool.close()
+        except Exception as exc:
+            logger.warning("Error closing PostgreSQL pool: %s", exc)
+        _pg_pool = None
+    _global_checkpointer = None
+
+
+async def close_checkpointer() -> None:
+    """Gracefully close the asynchronous checkpointer context."""
+    global _pg_saver_cm, _global_checkpointer
+    if _pg_saver_cm is not None:
+        try:
+            await _pg_saver_cm.__aexit__(None, None, None)
+            logger.info("Exited AsyncPostgresSaver context cleanly.")
         except Exception as e:
             logger.debug(f"Error closing PostgresSaver context: {e}")
         finally:
             _pg_saver_cm = None
 
-    if _pg_pool is not None:
-        try:
-            _pg_pool.close()
-            logger.info("Closed PostgreSQL ConnectionPool gracefully.")
-        except Exception as e:
-            logger.warning(f"Error while closing ConnectionPool: {e}")
-        finally:
-            _pg_pool = None
-
     _global_checkpointer = None
+    close_postgres_pool()
 
 
-def get_checkpointer() -> BaseCheckpointSaver:
+async def initialize_checkpointer() -> BaseCheckpointSaver[Any]:
+    """Initialize the configured saver without blocking the event loop."""
+    global _global_checkpointer, _pg_saver_cm
+    if _global_checkpointer is not None:
+        return _global_checkpointer
+
+    settings = get_settings()
+    if settings.use_postgres_checkpoint:
+        try:
+            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+            cm = AsyncPostgresSaver.from_conn_string(settings.postgres_uri)
+            saver = await cm.__aenter__()
+            await saver.setup()
+            _pg_saver_cm = cm
+            _global_checkpointer = saver
+            logger.info("Initialized AsyncPostgresSaver checkpointer.")
+            return saver
+        except Exception as exc:
+            if settings.environment == "production" and not settings.use_redis_checkpoint:
+                raise RuntimeError("PostgreSQL checkpointer initialization failed.") from exc
+            logger.warning("PostgreSQL checkpointer unavailable; trying configured fallback: %s", exc)
+
+    return get_checkpointer()
+
+
+def get_checkpointer() -> BaseCheckpointSaver[Any]:
     """Returns the active checkpointer:
     1. PostgresSaver if use_postgres_checkpoint is enabled and reachable.
     2. MemorySaver supporting async/await graph execution for tests and local nodes.
     """
-    global _global_checkpointer
+    global _global_checkpointer, _pg_saver_cm
     if _global_checkpointer is not None:
         return _global_checkpointer
 
     settings = get_settings()
 
-    # 1. Try PostgreSQL if enabled
+    # PostgreSQL requires async lifecycle initialization from the application lifespan.
     if settings.use_postgres_checkpoint:
-        try:
-            get_postgres_pool()
-            from langgraph.checkpoint.postgres import PostgresSaver  # type: ignore
+        if settings.environment == "production":
+            raise RuntimeError(
+                "Fatal Production Configuration Error: PostgreSQL checkpointer is not initialized; "
+                "call initialize_checkpointer() during lifespan startup."
+            )
+        if settings.environment == "test":
+            try:
+                from langgraph.checkpoint.postgres import PostgresSaver
 
-            # PostgresSaver.from_conn_string is a context manager, enter it to obtain active saver
-            cm = PostgresSaver.from_conn_string(settings.postgres_uri)
-            saver: BaseCheckpointSaver = cm.__enter__()
-            _pg_saver_cm = cm
-            if hasattr(saver, "setup"):
-                saver.setup()
-            _global_checkpointer = saver
-            logger.info("Initialized PostgresSaver checkpointer with connection pool support.")
-            return _global_checkpointer
-        except Exception as e:
-            if settings.environment == "production" and not settings.use_redis_checkpoint:
-                raise RuntimeError(
-                    f"Fatal Production Configuration Error: Failed to connect to Postgres checkpointer ({e}). "
-                    "In-memory fallback is strictly prohibited in production to prevent state loss across replicas."
-                ) from e
-            logger.warning(f"Could not connect to Postgres checkpointer ({e}). Falling back.")
+                cm = PostgresSaver.from_conn_string(settings.postgres_uri)
+                saver = cm.__enter__()
+                if hasattr(saver, "setup"):
+                    saver.setup()
+                _pg_saver_cm = cm
+                _global_checkpointer = saver
+                return saver
+            except Exception as exc:
+                logger.debug("Test-only sync PostgresSaver compatibility failed: %s", exc)
+        logger.warning("PostgreSQL saver is not initialized; using MemorySaver outside production.")
+        _global_checkpointer = MemorySaver()
+        return _global_checkpointer
 
     # 2. Try RedisSaver if enabled
     if settings.use_redis_checkpoint:

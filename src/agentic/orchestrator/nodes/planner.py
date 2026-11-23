@@ -13,7 +13,7 @@ from src.agentic.memory.short_term import trim_messages_window
 from src.agentic.observability.metrics import NODE_DURATION
 from src.agentic.observability.tracing import traced_operation
 from src.agentic.orchestrator.state import AgentState, Plan, Step
-from src.agentic.safety.policy import get_policy_manager
+from src.agentic.safety.policy import get_policy_manager  # compatibility hook for tests
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +84,24 @@ def _heuristic_planner(query: str) -> Plan:
         # Determine risk
         is_write = any(
             k in query_lower
-            for k in ["write", "create", "delete", "remove", "overwrite", "ghi", "xóa"]
+            for k in [
+                "write",
+                "create",
+                "delete",
+                "remove",
+                "overwrite",
+                "commit",
+                "patch",
+                "execute",
+                "run",
+                "bash",
+                "shell",
+                "ghi",
+                "xóa",
+                "sửa",
+                "tạo",
+                "chạy",
+            ]
         )
         risk: Literal["low", "medium", "high"] = "high" if is_write else "low"
         steps.append(
@@ -161,15 +178,35 @@ async def planner_node(state: AgentState) -> dict[str, Any]:
 
             plan = await structured_llm.ainvoke(messages)
             if isinstance(plan, Plan) and plan.steps:
-                # Validate risk levels against policy
-                policy_mgr = get_policy_manager()
+                try:
+                    policy_manager = get_policy_manager()
+                except Exception as policy_error:
+                    logger.warning("Policy unavailable during planning: %s", policy_error)
+                    policy_manager = None
+                # Never trust a model-provided low-risk label for mutating actions.
                 for s in plan.steps:
                     if any(
                         w in s.input_query.lower()
-                        for w in ["write", "delete", "commit", "bash", "shell"]
+                        for w in [
+                            "write",
+                            "create",
+                            "delete",
+                            "remove",
+                            "commit",
+                            "patch",
+                            "execute",
+                            "run",
+                            "bash",
+                            "shell",
+                            "ghi",
+                            "xóa",
+                            "sửa",
+                            "tạo",
+                            "chạy",
+                        ]
                     ):
                         s.risk_level = "high"
-                    elif policy_mgr.is_approval_required(s.agent):
+                    elif policy_manager and policy_manager.agent_requires_approval(s.agent):
                         s.risk_level = "high"
                 return {"plan": plan, "current_step_index": 0, "messages": trimmed_msgs}
         except Exception as e:

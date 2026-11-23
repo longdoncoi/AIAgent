@@ -1,5 +1,6 @@
 """Application configuration using Pydantic Settings."""
 
+import hashlib
 from functools import lru_cache
 from pathlib import Path
 
@@ -62,6 +63,8 @@ class Settings(BaseSettings):
     use_postgres_checkpoint: bool = False  # Set true if postgres is active; fallback to MemorySaver
     use_redis_checkpoint: bool = False  # Set true if Redis checkpointer is active
     redis_checkpoint_ttl_seconds: int = 86400 * 7  # 7 days
+    checkpoint_hmac_secret: str | None = None
+    allow_legacy_unsigned_checkpoints: bool = False
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
     qdrant_api_key: str | None = None
@@ -96,6 +99,9 @@ class Settings(BaseSettings):
     enable_redis_rate_limit: bool = False
     enable_redis_cache: bool = False
     enable_k8s_sandbox: bool = False
+    allow_host_code_execution: bool = False
+    allow_local_agent_fallback: bool = False
+    use_remote_mcp: bool = True
     k8s_sandbox_namespace: str = "agentic-sandbox"
     k8s_sandbox_runtime_class: str = "gvisor"
 
@@ -127,6 +133,7 @@ class Settings(BaseSettings):
         48  # Sliding window chars to prevent sliced PII/secrets across SSE chunks
     )
     max_execution_timeout_seconds: int = 60
+    require_model_gateway_ready: bool = False
 
     # DeepEval & Advanced Quality Benchmarking
     eval_judge_model: str = "reasoning-llm"
@@ -162,10 +169,27 @@ class Settings(BaseSettings):
     def prompts_dir(self) -> Path:
         return self.project_root / "configs" / "prompts"
 
+    @property
+    def checkpoint_signing_key(self) -> str:
+        """Return a domain-separated key without requiring another plaintext secret."""
+        if self.checkpoint_hmac_secret:
+            return self.checkpoint_hmac_secret
+        material = f"agentic-checkpoint\x00{self.jwt_secret_key}\x00{self.s2s_internal_token}"
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
     @model_validator(mode="after")
     def validate_production_inviolables(self) -> "Settings":
         """Enforces zero-trust production security invariants."""
+        if self.environment != "production":
+            if "allow_host_code_execution" not in self.model_fields_set:
+                self.allow_host_code_execution = True
+            if "allow_local_agent_fallback" not in self.model_fields_set:
+                self.allow_local_agent_fallback = True
+            if "use_remote_mcp" not in self.model_fields_set:
+                self.use_remote_mcp = False
         if self.environment == "production":
+            if "require_model_gateway_ready" not in self.model_fields_set:
+                self.require_model_gateway_ready = True
             insecure_keys = [
                 "agentic-secret-key-change-in-production-2026",
                 "secret",
@@ -193,6 +217,22 @@ class Settings(BaseSettings):
             if not self.use_postgres_checkpoint and not self.use_redis_checkpoint:
                 raise ValueError(
                     "Production Inviolable Violated: use_postgres_checkpoint must be True (or use_redis_checkpoint must be True) in production to prevent state loss across replicas."
+                )
+            if self.allow_legacy_unsigned_checkpoints:
+                raise ValueError(
+                    "Production Inviolable Violated: unsigned legacy checkpoints are forbidden."
+                )
+            if self.allow_host_code_execution:
+                raise ValueError(
+                    "Production Inviolable Violated: host code execution is forbidden."
+                )
+            if self.allow_local_agent_fallback:
+                raise ValueError(
+                    "Production Inviolable Violated: local A2A fallback must be disabled."
+                )
+            if not self.use_remote_mcp:
+                raise ValueError(
+                    "Production Inviolable Violated: MCP tools must use remote protocol servers."
                 )
             if "*" in self.allowed_origins:
                 raise ValueError(

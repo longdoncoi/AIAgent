@@ -21,7 +21,9 @@ spec:
     metadata:
       labels:
         app: agentic-api
+        tier: l1-interface
     spec:
+      serviceAccountName: agentic-api-sa
       containers:
         - name: api
           image: ghcr.io/agentic-platform/api:latest
@@ -109,7 +111,9 @@ spec:
     metadata:
       labels:
         app: agentic-chat-agent
+        tier: l3-agent
     spec:
+      serviceAccountName: agentic-chat-agent-sa
       containers:
         - name: chat-agent
           image: ghcr.io/agentic-platform/agent:latest
@@ -195,7 +199,9 @@ spec:
     metadata:
       labels:
         app: agentic-rag-agent
+        tier: l3-agent
     spec:
+      serviceAccountName: agentic-rag-agent-sa
       containers:
         - name: rag-agent
           image: ghcr.io/agentic-platform/agent:latest
@@ -281,7 +287,9 @@ spec:
     metadata:
       labels:
         app: agentic-coding-agent
+        tier: l3-agent
     spec:
+      serviceAccountName: agentic-coding-agent-sa
       containers:
         - name: coding-agent
           image: ghcr.io/agentic-platform/agent:latest
@@ -367,7 +375,9 @@ spec:
     metadata:
       labels:
         app: agentic-mcp-code-exec
+        tier: l4-tools
     spec:
+      serviceAccountName: agentic-mcp-code-exec-sa
       containers:
         - name: mcp-code-exec
           image: ghcr.io/agentic-platform/mcp:latest
@@ -376,6 +386,11 @@ spec:
               value: "src.agentic.tools.servers.code_exec_server"
             - name: MCP_PORT
               value: "9001"
+          envFrom:
+            - configMapRef:
+                name: agentic-config
+            - secretRef:
+                name: agentic-secrets
           ports:
             - containerPort: 9001
           resources:
@@ -397,3 +412,101 @@ spec:
   ports:
     - port: 9001
       targetPort: 9001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentic-mcp-repo
+  labels:
+    app: agentic-mcp-repo
+    tier: l4-tools
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: agentic-mcp-repo
+  template:
+    metadata:
+      labels:
+        app: agentic-mcp-repo
+        tier: l4-tools
+    spec:
+      serviceAccountName: agentic-mcp-sa
+      containers:
+        - name: mcp-repo
+          image: ghcr.io/agentic-platform/mcp:latest
+          env:
+            - name: MCP_SERVER_MODULE
+              value: "src.agentic.tools.servers.repo_server"
+            - name: MCP_PORT
+              value: "9002"
+          envFrom:
+            - configMapRef:
+                name: agentic-config
+            - secretRef:
+                name: agentic-secrets
+          ports:
+            - containerPort: 9002
+          resources:
+            requests: {cpu: "100m", memory: "256Mi"}
+            limits: {cpu: "500m", memory: "1Gi"}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentic-mcp-repo-svc
+spec:
+  selector:
+    app: agentic-mcp-repo
+  ports:
+    - port: 9002
+      targetPort: 9002
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentic-mcp-web-search
+  labels:
+    app: agentic-mcp-web-search
+    tier: l4-tools
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: agentic-mcp-web-search
+  template:
+    metadata:
+      labels:
+        app: agentic-mcp-web-search
+        tier: l4-tools
+    spec:
+      serviceAccountName: agentic-mcp-sa
+      containers:
+        - name: mcp-web-search
+          image: ghcr.io/agentic-platform/mcp:latest
+          env:
+            - name: MCP_SERVER_MODULE
+              value: "src.agentic.tools.servers.web_search_server"
+            - name: MCP_PORT
+              value: "9003"
+          envFrom:
+            - configMapRef:
+                name: agentic-config
+            - secretRef:
+                name: agentic-secrets
+          ports:
+            - containerPort: 9003
+          resources:
+            requests: {cpu: "100m", memory: "256Mi"}
+            limits: {cpu: "500m", memory: "1Gi"}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentic-mcp-web-search-svc
+spec:
+  selector:
+    app: agentic-mcp-web-search
+  ports:
+    - port: 9003
+      targetPort: 9003

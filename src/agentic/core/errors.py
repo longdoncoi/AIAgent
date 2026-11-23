@@ -1,10 +1,12 @@
 """Domain-specific error hierarchy for Agentic Platform."""
 
+from typing import Any
+
 
 class AgentError(Exception):
     """Base exception for all agentic platform errors."""
 
-    def __init__(self, message: str, details: dict | None = None) -> None:
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.message = message
         self.details = details or {}
@@ -13,7 +15,9 @@ class AgentError(Exception):
 class GuardrailViolation(AgentError):
     """Raised when an input or output violates guardrail policies."""
 
-    def __init__(self, message: str, rule: str, details: dict | None = None) -> None:
+    def __init__(
+        self, message: str, rule: str, details: dict[str, Any] | None = None
+    ) -> None:
         super().__init__(message, details)
         self.rule = rule
 
@@ -22,7 +26,11 @@ class HITLRequiredError(AgentError):
     """Raised when a task or action requires Human-In-The-Loop approval."""
 
     def __init__(
-        self, step_id: str, action: str, risk_level: str, details: dict | None = None
+        self,
+        step_id: str,
+        action: str,
+        risk_level: str,
+        details: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(
             f"Action '{action}' in step '{step_id}' requires HITL approval (risk: {risk_level})",
@@ -36,7 +44,9 @@ class HITLRequiredError(AgentError):
 class ToolExecutionError(AgentError):
     """Raised when an MCP tool fails during execution."""
 
-    def __init__(self, tool_name: str, message: str, details: dict | None = None) -> None:
+    def __init__(
+        self, tool_name: str, message: str, details: dict[str, Any] | None = None
+    ) -> None:
         super().__init__(f"Tool '{tool_name}' execution failed: {message}", details)
         self.tool_name = tool_name
 
@@ -57,7 +67,9 @@ class A2ACommunicationError(AgentError):
 class LLMGatewayError(AgentError):
     """Raised when calling LiteLLM, vLLM, or llama.cpp fails."""
 
-    def __init__(self, alias: str, message: str, details: dict | None = None) -> None:
+    def __init__(
+        self, alias: str, message: str, details: dict[str, Any] | None = None
+    ) -> None:
         super().__init__(f"LLM Gateway error for model '{alias}': {message}", details)
         self.alias = alias
 

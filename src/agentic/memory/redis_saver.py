@@ -41,7 +41,7 @@ class RedisSaver(MemorySaver):
             ttl_seconds if ttl_seconds is not None else self.settings.redis_checkpoint_ttl_seconds
         )
         self.key_prefix = key_prefix
-        self._secret_key = (self.settings.s2s_internal_token or "agentic-secret").encode("utf-8")
+        self._secret_key = self.settings.checkpoint_signing_key.encode("utf-8")
         self._redis_client: Any = None
         self._async_redis_client: Any = None
         self._init_redis()
@@ -156,12 +156,15 @@ class RedisSaver(MemorySaver):
                     )
                     return None
                 return pickle.loads(raw)
-        # Fallback for un-signed payloads during zero-downtime rolling upgrades
-        try:
-            return pickle.loads(payload)
-        except Exception as e:
-            logger.warning(f"Could not deserialize Redis payload: {e}")
-            return None
+        if self.settings.allow_legacy_unsigned_checkpoints:
+            logger.warning("Loading an unsigned legacy checkpoint; migrate it immediately.")
+            try:
+                return pickle.loads(payload)
+            except Exception as exc:
+                logger.warning("Could not deserialize legacy Redis payload: %s", exc)
+        else:
+            logger.error("Security Alert: rejected unsigned Redis checkpoint payload.")
+        return None
 
     def put(
         self,
@@ -265,6 +268,31 @@ class RedisSaver(MemorySaver):
         for t_id in list(self.storage.keys()):
             if not self.storage[t_id] or all(not v for v in self.storage[t_id].values()):
                 del self.storage[t_id]
+                cleaned_threads += 1
+        return cleaned_threads
+
+    async def acleanup_inactive_threads(self, max_idle_seconds: int = 86400 * 30) -> int:
+        """Asynchronously scan indexes; never issue a cluster-blocking Redis KEYS call."""
+        cleaned_threads = 0
+        if self._async_redis_client is not None:
+            try:
+                pattern = f"{self.key_prefix}:index:*"
+                async for idx_key in self._async_redis_client.scan_iter(match=pattern, count=200):
+                    ttl_left = await self._async_redis_client.ttl(idx_key)
+                    members = await self._async_redis_client.scard(idx_key)
+                    if not members or ttl_left == -2:
+                        await self._async_redis_client.delete(idx_key)
+                        cleaned_threads += 1
+                    elif ttl_left == -1:
+                        await self._async_redis_client.expire(idx_key, max_idle_seconds)
+            except Exception as exc:
+                logger.warning("Error during async Redis checkpoint cleanup: %s", exc)
+
+        for thread_id in list(self.storage.keys()):
+            if not self.storage[thread_id] or all(
+                not namespace for namespace in self.storage[thread_id].values()
+            ):
+                del self.storage[thread_id]
                 cleaned_threads += 1
         return cleaned_threads
 

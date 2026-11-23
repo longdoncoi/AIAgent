@@ -63,7 +63,7 @@ def get_langsmith_client() -> Any | None:
 
     if _langsmith_client is None:
         try:
-            from langsmith import Client  # type: ignore
+            from langsmith import Client
 
             settings = get_settings()
             _langsmith_client = Client(
@@ -89,7 +89,7 @@ def get_langsmith_callback(
         return None
 
     try:
-        from langchain_core.tracers.langchain import LangChainTracer  # type: ignore
+        from langchain_core.tracers.langchain import LangChainTracer
 
         settings = get_settings()
         effective_project = project_name or settings.langchain_project or "agentic-platform"
@@ -108,13 +108,13 @@ def traceable_operation(
     run_type: RunType | str = "chain",
     tags: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
-) -> Callable:
+) -> Callable[..., Any]:
     """Decorator to instrument async or sync functions with LangSmith traceable tracing.
 
     Gracefully falls back to normal execution if LangSmith is disabled or unconfigured.
     """
 
-    def decorator(func: Callable) -> Callable:
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         op_name = name or func.__name__
         op_tags = list(tags) if tags else ["agentic-platform"]
         op_metadata = dict(metadata) if metadata else {}

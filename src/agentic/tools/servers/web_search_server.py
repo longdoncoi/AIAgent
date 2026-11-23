@@ -69,9 +69,13 @@ def main() -> None:
 
         app = getattr(mcp, "sse_app", None) or getattr(mcp, "streamable_http_app", None)
         if callable(app):
-            uvicorn.run(app(), host="0.0.0.0", port=args.port)
+            from src.agentic.tools.servers.security import secure_mcp_app
+
+            uvicorn.run(secure_mcp_app(app()), host="0.0.0.0", port=args.port)
         else:
-            uvicorn.run(cast(Any, mcp), host="0.0.0.0", port=args.port)
+            from src.agentic.tools.servers.security import secure_mcp_app
+
+            uvicorn.run(secure_mcp_app(cast(Any, mcp)), host="0.0.0.0", port=args.port)
     else:
         mcp.run()
 

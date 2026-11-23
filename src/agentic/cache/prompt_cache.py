@@ -129,7 +129,7 @@ class PromptCache:
                     logger.debug(
                         f"Prompt Cache L2 (Redis) HIT for model='{model_alias}' (key={key[:8]})"
                     )
-                    return cached_data
+                    return str(cached_data)
             except Exception as ex:
                 logger.debug(f"Redis L2 read exception in PromptCache: {ex}")
 

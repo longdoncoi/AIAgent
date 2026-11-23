@@ -91,7 +91,7 @@ metadata:
 spec:
   selector:
     matchLabels:
-      tier: sandbox-gvisor
+      sandbox: untrusted
   action: DENY
   rules:
     - to:

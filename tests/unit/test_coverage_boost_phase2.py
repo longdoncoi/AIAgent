@@ -99,20 +99,22 @@ from src.agentic.workflows.worker import main as worker_main
 
 @pytest.mark.asyncio
 async def test_code_exec_sandboxes_deep_branches():
-    # 1. K8s sandbox timeout cleanup exception
-    with patch("asyncio.create_subprocess_exec") as mock_exec:
-        proc = AsyncMock()
-        proc.communicate.side_effect = asyncio.TimeoutError()
-        del_proc = AsyncMock()
-        del_proc.communicate.side_effect = Exception("kubectl delete failed")
-        mock_exec.side_effect = [proc, del_proc]
-
+    # 1. K8s sandbox timeout
+    with patch(
+        "src.agentic.tools.servers.code_exec_server._run_k8s_pod",
+        new_callable=AsyncMock,
+        side_effect=asyncio.TimeoutError,
+    ):
         res = await _execute_in_k8s_sandbox("print('timeout')", is_python=True, timeout=1)
         assert "timed out" in res
 
     # 2. K8s sandbox general error falling back to Docker
     with (
-        patch("asyncio.create_subprocess_exec", side_effect=Exception("K8s cluster unreachable")),
+        patch(
+            "src.agentic.tools.servers.code_exec_server._run_k8s_pod",
+            new_callable=AsyncMock,
+            side_effect=Exception("K8s cluster unreachable"),
+        ),
         patch("src.agentic.tools.servers.code_exec_server._is_docker_available", return_value=True),
         patch(
             "src.agentic.tools.servers.code_exec_server._execute_in_docker",

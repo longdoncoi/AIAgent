@@ -1,6 +1,7 @@
 """Chat API endpoints supporting standard JSON and SSE Streaming."""
 
 import asyncio
+import inspect
 import json
 import logging
 import time
@@ -15,6 +16,11 @@ from sse_starlette.sse import EventSourceResponse
 from src.agentic.api.deps import get_current_user, get_graph, get_guardrails_dep
 from src.agentic.core.errors import GuardrailViolation
 from src.agentic.core.schemas import ChatRequest, ChatResponse, StepResult
+from src.agentic.memory.thread_registry import (
+    ThreadOwnershipError,
+    ThreadRegistryUnavailable,
+    get_thread_registry,
+)
 from src.agentic.observability.metrics import TTFT_DURATION
 from src.agentic.safety.guardrails import GuardrailManager, StreamingOutputGuard
 
@@ -22,15 +28,30 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/chat", tags=["Chat"])
 
 
+async def _graph_state(graph: Any, config: dict[str, Any]) -> Any:
+    """Use async state I/O while supporting legacy graph test doubles."""
+    candidate = graph.aget_state(config)
+    if inspect.isawaitable(candidate):
+        return await candidate
+    return graph.get_state(config)
+
+
 @router.post("", response_model=ChatResponse)
 async def chat_endpoint(
     req: ChatRequest,
     graph: Any = Depends(get_graph),
     guardrails: GuardrailManager = Depends(get_guardrails_dep),
-    user: dict = Depends(get_current_user),
+    user: dict[str, Any] = Depends(get_current_user),
 ) -> ChatResponse:
     """Standard non-streaming chat endpoint."""
     thread_id = req.thread_id or str(uuid.uuid4())
+    owner_id = str(user.get("user_id") or "anonymous_user")
+    try:
+        checkpoint_thread_id = await get_thread_registry().claim(thread_id, owner_id)
+    except ThreadOwnershipError as exc:
+        raise HTTPException(status_code=403, detail="Thread is owned by another principal.") from exc
+    except ThreadRegistryUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Thread registry is unavailable.") from exc
 
     try:
         clean_query = guardrails.sanitize_input(req.query)
@@ -40,18 +61,18 @@ async def chat_endpoint(
             detail=f"{gv.message} (rule: {gv.rule})",
         )
 
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {"configurable": {"thread_id": checkpoint_thread_id}}
     initial_input = {
         "messages": [HumanMessage(content=clean_query)],
         "thread_id": thread_id,
-        "metadata": {**req.metadata, "user_id": user.get("user_id")},
+        "metadata": {**req.metadata, "user_id": owner_id, "public_thread_id": thread_id},
     }
 
     try:
         final_state = await graph.ainvoke(initial_input, config=config)
     except Exception as e:
         logger.error(f"Execution error on thread {thread_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Agent execution failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Agent execution failed.") from e
 
     step_results: list[StepResult] = []
     requires_approval = False
@@ -69,14 +90,19 @@ async def chat_endpoint(
             )
 
     # Check if graph paused on interrupt
-    state_snapshot = graph.get_state(config)
+    state_snapshot = await _graph_state(graph, config)
     if state_snapshot.next:
         # Graph was interrupted
         requires_approval = True
         if state_snapshot.tasks:
             interrupts = state_snapshot.tasks[0].interrupts
             if interrupts:
-                pending_step = str(interrupts[0].value)
+                interrupt_value = interrupts[0].value
+                pending_step = (
+                    str(interrupt_value.get("step_id"))
+                    if isinstance(interrupt_value, dict) and interrupt_value.get("step_id")
+                    else str(interrupt_value)
+                )
 
     return ChatResponse(
         thread_id=thread_id,
@@ -98,17 +124,28 @@ async def chat_stream_endpoint(
     req: ChatRequest,
     graph: Any = Depends(get_graph),
     guardrails: GuardrailManager = Depends(get_guardrails_dep),
-    user: dict = Depends(get_current_user),
+    user: dict[str, Any] = Depends(get_current_user),
 ) -> EventSourceResponse:
     """Server-Sent Events (SSE) streaming endpoint."""
     thread_id = req.thread_id or str(uuid.uuid4())
+    owner_id = str(user.get("user_id") or "anonymous_user")
+    try:
+        checkpoint_thread_id = await get_thread_registry().claim(thread_id, owner_id)
+    except ThreadOwnershipError:
+        checkpoint_thread_id = ""
+        ownership_error = "Thread is owned by another principal."
+    except ThreadRegistryUnavailable:
+        checkpoint_thread_id = ""
+        ownership_error = "Thread registry is unavailable."
+    else:
+        ownership_error = ""
 
     try:
         clean_query = guardrails.sanitize_input(req.query)
     except GuardrailViolation as gv:
         gv_msg = str(gv)
 
-        async def err_gen() -> AsyncIterator[dict]:
+        async def err_gen() -> AsyncIterator[dict[str, Any]]:
             yield {
                 "event": "error",
                 "data": json.dumps({"error": gv_msg, "type": "GuardrailViolation"}),
@@ -116,14 +153,14 @@ async def chat_stream_endpoint(
 
         return EventSourceResponse(err_gen())
 
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {"configurable": {"thread_id": checkpoint_thread_id}}
     initial_input = {
         "messages": [HumanMessage(content=clean_query)],
         "thread_id": thread_id,
-        "metadata": {**req.metadata, "user_id": user.get("user_id")},
+        "metadata": {**req.metadata, "user_id": owner_id, "public_thread_id": thread_id},
     }
 
-    async def event_generator() -> AsyncIterator[dict]:
+    async def event_generator() -> AsyncIterator[dict[str, Any]]:
         stream_guard = StreamingOutputGuard(manager=guardrails)
         stream_start_time = time.perf_counter()
         first_token_emitted = False
@@ -143,6 +180,12 @@ async def chat_stream_endpoint(
         )
 
         try:
+            if ownership_error:
+                yield {
+                    "event": "error",
+                    "data": json.dumps({"error": ownership_error, "trace_id": active_trace_id}),
+                }
+                return
             # Yield initial thread event
             yield {
                 "event": "start",
@@ -153,7 +196,7 @@ async def chat_stream_endpoint(
 
             async for event in graph.astream_events(initial_input, config=config, version="v2"):
                 kind = event.get("event")
-                node_name = event.get("metadata", {}).get("langgraph_node")
+                node_name = event.get("metadata", {}).get("langgraph_node") or event.get("name")
 
                 if kind == "on_chain_end" and node_name == "planner":
                     output = event.get("data", {}).get("output", {})
@@ -183,7 +226,7 @@ async def chat_stream_endpoint(
                         ),
                     }
 
-                elif kind == "on_chat_model_stream":
+                elif kind == "on_chat_model_stream" and node_name == "finalize":
                     chunk = event.get("data", {}).get("chunk")
                     if chunk and hasattr(chunk, "content") and chunk.content:
                         token_content = str(chunk.content)
@@ -211,6 +254,15 @@ async def chat_stream_endpoint(
                                 "event": "safety_flag",
                                 "data": json.dumps({**flag, "trace_id": active_trace_id}),
                             }
+
+                elif kind == "on_chat_model_stream":
+                    # Do not leak planner/sub-agent draft tokens; expose only lifecycle progress.
+                    yield {
+                        "event": "step_progress",
+                        "data": json.dumps(
+                            {"node": node_name or "agent", "trace_id": active_trace_id}
+                        ),
+                    }
 
                 elif kind == "on_chain_end" and node_name == "finalize":
                     flushed = stream_guard.flush()
@@ -262,7 +314,7 @@ async def chat_stream_endpoint(
                 }
 
             # Check if execution paused waiting for HITL approval
-            state_snapshot = graph.get_state(config)
+            state_snapshot = await _graph_state(graph, config)
             if state_snapshot.next:
                 tasks = state_snapshot.tasks
                 interrupt_val = (
@@ -289,7 +341,9 @@ async def chat_stream_endpoint(
             logger.error(f"SSE stream error: {e}", exc_info=True)
             yield {
                 "event": "error",
-                "data": json.dumps({"error": str(e), "trace_id": active_trace_id}),
+                "data": json.dumps(
+                    {"error": "Agent stream failed.", "trace_id": active_trace_id}
+                ),
             }
 
     return EventSourceResponse(event_generator())

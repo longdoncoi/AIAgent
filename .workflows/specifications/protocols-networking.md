@@ -27,6 +27,8 @@
 
 ## 2. Giao Thức MCP (Model Context Protocol)
 
+> Production bắt buộc dùng MCP SSE/HTTP tới các service độc lập. Local handler chỉ được bật ở development/test. Mọi request MCP mạng mang `X-Internal-Service-Token`; allowlist và capability HITL theo step được kiểm tra lại ngay tại invocation boundary.
+
 - Các tool servers được viết bằng `FastMCP`:
   - `code_exec_server.py` (Port 9001)
   - `repo_server.py` (Port 9002)

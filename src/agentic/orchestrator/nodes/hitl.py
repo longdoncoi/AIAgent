@@ -35,17 +35,27 @@ async def hitl_node(state: AgentState) -> dict[str, Any]:
     if not high_risk_step:
         return {"requires_approval": False}
 
-    # If approval was already provided in state
+    if high_risk_step.id in state.approved_step_ids:
+        return {"requires_approval": False, "pending_approval_step_id": None}
+
+    # Compatibility for explicitly constructed/restored states. Graph-managed approvals
+    # additionally persist the step ID, preventing this flag from authorizing later steps.
     if state.approval_granted is True:
-        HITL_APPROVALS_TOTAL.labels(decision="approved", risk_level="high").inc()
-        return {"requires_approval": False, "approval_granted": True}
-    elif state.approval_granted is False:
+        return {
+            "requires_approval": False,
+            "approval_granted": True,
+            "approved_step_ids": [*state.approved_step_ids, high_risk_step.id],
+            "pending_approval_step_id": None,
+        }
+    if state.approval_granted is False:
         HITL_APPROVALS_TOTAL.labels(decision="rejected", risk_level="high").inc()
         high_risk_step.status = "failed"
         high_risk_step.output = "Action rejected by Human-in-the-Loop supervisor."
         return {
+            "plan": state.plan,
             "requires_approval": False,
             "approval_granted": False,
+            "pending_approval_step_id": None,
             "current_step_index": state.current_step_index + 1,
         }
 
@@ -72,7 +82,12 @@ async def hitl_node(state: AgentState) -> dict[str, Any]:
 
     if approved:
         HITL_APPROVALS_TOTAL.labels(decision="approved", risk_level="high").inc()
-        return {"requires_approval": False, "approval_granted": True}
+        return {
+            "requires_approval": False,
+            "approval_granted": True,
+            "approved_step_ids": [*state.approved_step_ids, high_risk_step.id],
+            "pending_approval_step_id": None,
+        }
     else:
         HITL_APPROVALS_TOTAL.labels(decision="rejected", risk_level="high").inc()
         high_risk_step.status = "failed"
@@ -80,5 +95,6 @@ async def hitl_node(state: AgentState) -> dict[str, Any]:
         return {
             "requires_approval": False,
             "approval_granted": False,
+            "pending_approval_step_id": None,
             "current_step_index": state.current_step_index + 1,
         }

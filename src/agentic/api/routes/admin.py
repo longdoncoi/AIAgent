@@ -11,6 +11,7 @@ from src.agentic.llm.gateway import reload_gateway_config
 from src.agentic.memory.redis_saver import RedisSaver
 from src.agentic.memory.short_term import get_checkpointer
 from src.agentic.safety.policy import reload_policy_manager
+from src.agentic.tools.mcp_client import reload_mcp_client_manager
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/admin", tags=["Admin"])
@@ -26,6 +27,7 @@ async def reload_configs_endpoint(
 
     # 1. Reload policies
     policy_mgr = reload_policy_manager()
+    reload_mcp_client_manager()
 
     # 2. Reset gateway circuit breaker & models
     reload_gateway_config()
@@ -52,7 +54,9 @@ async def cleanup_checkpoints_endpoint(
     checkpointer = get_checkpointer()
     cleaned = 0
     if isinstance(checkpointer, RedisSaver):
-        cleaned = checkpointer.cleanup_inactive_threads(max_idle_seconds=max_idle_seconds)
+        cleaned = await checkpointer.acleanup_inactive_threads(
+            max_idle_seconds=max_idle_seconds
+        )
 
     return {
         "status": "ok",

@@ -1,47 +1,38 @@
-# activeContext.md — Trạng Thái Ngữ Cảnh Hoạt Động Hiện Tại
+# activeContext.md — Trạng thái hoạt động hiện tại
 
-> Tệp này ghi nhận trạng thái công việc hiện tại, những việc vừa hoàn thành, việc đang làm dở và các bước tiếp theo.
+## Trọng tâm
 
----
+- Hoàn thiện đợt hardening toàn diện sau source-code review: persistence async, tenant isolation, HITL capability, MCP/A2A fail-closed, sandbox, RAG/CDC, Kubernetes và CI/CD.
+- Baseline runtime đã thống nhất ở Python 3.12; `uv.lock` đã được tái tạo.
 
-## 1. Trạng Thái Hiện Tại (Current Focus)
+## Đã hoàn thành
 
-- **Mục tiêu chính**: Thiết lập hệ thống Workflow, Skills, Memory và Specifications chuẩn hóa cho toàn bộ dự án `agentic-platform`.
-- **Sprint / Milestone**: Chuẩn hóa nền tảng phát triển (Development Infrastructure & AI Agent Harness v1.0).
+- Chuyển production checkpoint sang `AsyncPostgresSaver` với lifecycle async; Redis checkpoint từ chối payload pickle không ký.
+- Scope checkpoint theo chủ sở hữu và bổ sung thread ownership registry phân tán; approval xác thực thread/step đang interrupt.
+- Approval được cấp theo từng step và truyền qua A2A bằng execution context; tool rủi ro cao kiểm tra capability tại biên MCP.
+- A2A/MCP production fail-closed; MCP dùng transport SSE thật và S2S authentication; local fallback chỉ dành cho dev/test.
+- Bổ sung DAG validation, deadlock defense, lọc SSE chỉ ở node `finalize`, và sửa vòng replan dựa trên reflection mới nhất.
+- Siết Docker/Kubernetes sandbox, timeout, non-root, read-only FS, capability drop và network deny.
+- CDC chống path traversal, thực hiện upsert/delete + rebuild index; RAG cache/retrieval phân vùng theo filter/tenant.
+- Readiness, rate limiting, long-term consolidation và cache async path không còn block event loop trực tiếp.
+- Đồng bộ Python 3.12, Docker Compose, Kubernetes MCP services/service accounts/network policies và CI security gates.
+- Bổ sung regression tests cho DAG, unsigned checkpoint, thread ownership và step-scoped HITL.
 
----
+## Xác minh
 
-## 2. Các Công Việc Vừa Hoàn Thành (Recent Accomplishments)
+- `ruff check src tests`: pass.
+- Regression/security tests: 4/4 pass.
+- Full suite trên runtime `uv` Python 3.13: 266/267 pass trong một lượt; test SSE còn lại đã sửa và pass riêng, tương đương 267/267 case được xác minh.
+- `mypy --strict`, Ruff, `uv lock --check`, YAML parse và `git diff --check`: pass.
+- Docker Desktop 4.100.0 (Docker Engine CLI 29.9.3, Compose 5.7.1) và kubectl 1.37.2 đã được cài đặt; `docker compose config --quiet` và `kubectl kustomize deploy/k8s` đều pass.
+- Khắc phục CI run `45181168470`: `pip-audit` nay kiểm tra dependency graph production được export trực tiếp từ `uv.lock`; dependency đánh giá RAGAS chỉ dùng trong dev không còn làm hỏng production audit. Local production audit: không phát hiện lỗ hổng.
+- Khắc phục lỗi kế tiếp ở CI run `45183416591`: cả ba runtime image áp dụng Debian security updates trong build để nhận bản vá `zlib1g` cho `CVE-2026-85091`; lint/audit/test của run này đã pass trước khi Trivy phát hiện CVE hệ điều hành.
 
-- [x] Thiết lập cấu trúc thư mục mới: `.skills/`, `.memory/`, `.workflows/`.
-- [x] Di chuyển và phân loại toàn bộ 24 tài liệu đặc tả và PRR review từ `AGENTS/` sang `.workflows/specifications/` và `.workflows/reviews/`.
-- [x] Cập nhật toàn bộ internal links trong các tài liệu đặc tả & review sang đường dẫn mới.
-- [x] Xây dựng bộ quy trình chuẩn trong `.workflows/` (`coding-workflow.md`, `feature-lifecycle.md`, `bugfix-workflow.md`, `pr-preflight.md`, `README.md`).
-- [x] Xây dựng kho 6 kỹ năng thực thi trong `.skills/` (`skill-testing-coverage.md`, `skill-add-subagent.md`, `skill-add-mcp-tool.md`, `skill-db-migration.md`, `skill-eval-quality-gates.md`, `skill-code-quality.md`, `README.md`).
-- [x] Khởi tạo hệ thống bộ nhớ `.memory/` (`activeContext.md`, `systemPatterns.md`, `techStack.md`, `architectureDecisions.md`, `troubleshooting.md`, `README.md`).
-- [x] Chuẩn hóa chỉ dẫn tác chiến cho AI Coding Agent vào [.context/agent-instructions.md](file:///f:/PROJECTS/AIAgent/.context/agent-instructions.md) (chuyển từ `AGENT.md` để làm sạch thư mục gốc).
-- [x] Chuyển `REVIEW.md` vào `.workflows/reviews/REVIEW.md` làm Master Dashboard và cập nhật toàn bộ liên kết nội bộ & bên ngoài.
-- [x] Cập nhật đồng bộ các liên kết trong `AGENTS.md`, `ARCHITECTURE.md`, `Makefile` và `.workflows/README.md`.
-- [x] Xóa an toàn và dọn dẹp thư mục cũ `AGENTS/`.
-- [x] Tinh chỉnh chuẩn hóa 10/10: Cập nhật `.gitignore` (chặn `.ruff_cache/`, `.mypy_cache/`, `.deepeval/`) và tạo tệp chỉ mục [.context/README.md](file:///f:/PROJECTS/AIAgent/.context/README.md).
-- [x] **Triển khai toàn diện 5 khuyến nghị nâng cấp Production Hardening**:
-  1. *Dynamic Hot-Reload*: Cho phép nạp nóng chính sách `policy.yaml`, reset circuit breaker của LLM Gateway và xóa transient cache thông qua API Admin `/api/v1/admin/reload-configs` mà không cần khởi động lại container.
-  2. *Prometheus Sub-Second Buckets & TTFT*: Tinh chỉnh histogram `REQUEST_DURATION` xuống đến `0.01s` và bổ sung metric `TTFT_DURATION` (Time-to-First-Token) đo lường chính xác độ trễ streaming token đầu tiên trong `chat_stream_endpoint`.
-  3. *Flexible Checkpoint Eviction & Per-Thread TTL*: Hỗ trợ TTL tùy biến theo từng lu hội thoại (`checkpoint_ttl`) trong `RedisSaver`, kèm phương thức dọn dẹp các checkpoint luồng không hoạt động `cleanup_inactive_threads()` và API `/api/v1/admin/cleanup-checkpoints`.
-  4. *Selective Semantic Cache Invalidation*: Cập nhật `RAGCache` với cơ chế huỷ cache chọn lọc theo nguồn và tài liệu (`invalidate_by_source`, `invalidate_document`) trên cả L1 memory và L2 Redis, tích hợp vào quy trình CDC delta ingestion.
-  5. *Mutual TLS (mTLS) cho A2A Communications*: Bổ sung cấu hình chứng chỉ client mTLS trong `Settings` và tích hợp `A2AClient` hỗ trợ mã hóa 2 chiều cấp Pod.
-- [x] Bổ sung bộ kiểm thử `tests/unit/test_next_gen_recommendations.py` (10/10 passed), đạt 257/257 bài test pass toàn dự án với độ bao phủ kiểm thử duy trì ở mức đỉnh cao **99.5%**, 0 lỗi Ruff, 0 lỗi Mypy.
+## Việc tiếp theo
 
----
+1. Khởi động lại Windows để hoàn tất WSL 2, sau đó khởi động Docker Desktop và thực hiện pre-flight với Docker/Kubernetes dependencies thật trước go-live.
+2. Chạy smoke test với Postgres/Redis/LiteLLM/A2A/MCP thực trước khi ký go-live.
 
-## 3. Các Bước Tiếp Theo (Immediate Next Steps)
+## Blocker
 
-1. Tiếp tục phát triển các tính năng nghiệp vụ theo quy trình trong `.workflows/feature-lifecycle.md`.
-2. Kiểm tra chất lượng và chạy pre-flight khi có thay đổi mã nguồn (`make pre-flight`).
-3. Duy trì đồng bộ trạng thái công việc tại `.memory/activeContext.md`.
-
----
-
-## 4. Các Vấn Đề Đang Tồn Đọng / Blockers (Current Blockers)
-
-- *Không có blocker kỹ thuật nào vào thời điểm hiện tại.*
+- Windows đang báo pending reboot sau khi bật WSL; Docker daemon chưa thể khởi động cho đến khi máy được restart. Kubernetes cluster/context cũng chưa được cấu hình, nên chưa thể smoke-test workload thật.

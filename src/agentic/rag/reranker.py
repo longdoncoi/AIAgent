@@ -24,7 +24,7 @@ class CrossEncoderReranker:
     def _init_model(self) -> None:
         """Attempts to load a neural CrossEncoder model if dependencies are satisfied."""
         try:
-            from sentence_transformers import CrossEncoder  # type: ignore
+            from sentence_transformers import CrossEncoder
 
             self._cross_encoder = CrossEncoder(self.model_name)
             logger.info(f"Loaded neural CrossEncoder model: {self.model_name}")

@@ -1,5 +1,6 @@
 """Consolidation node distilling conversation takeaways into long-term memory."""
 
+import asyncio
 import logging
 from typing import Any
 
@@ -15,7 +16,8 @@ async def consolidate_session_memory(
     try:
         store = get_long_term_store()
         summary = f"Goal: {goal}\nOutcome: {final_answer[:300]}..."
-        store.add_episodic(
+        await asyncio.to_thread(
+            store.add_episodic,
             task_id=thread_id,
             summary=summary,
             metadata=metadata or {},

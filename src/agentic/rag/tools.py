@@ -1,6 +1,7 @@
 """RAG tools for policy and documentation retrieval with semantic caching."""
 
 import asyncio
+import json
 from typing import Any
 
 from langchain_core.tools import StructuredTool
@@ -9,6 +10,7 @@ from pydantic import BaseModel, Field
 from src.agentic.cache.rag_cache import get_rag_cache
 from src.agentic.rag.reranker import CrossEncoderReranker
 from src.agentic.rag.retriever import get_hybrid_retriever
+from src.agentic.tools.execution_context import get_tool_execution_context
 
 
 class SearchPolicyInput(BaseModel):
@@ -23,12 +25,16 @@ class SearchPolicyInput(BaseModel):
 def search_policy(query: str, filters: dict[str, Any] | None = None) -> str:
     """Queries internal documentation using hybrid search, cross-encoder reranking, and cache with stampede protection."""
     cache = get_rag_cache()
+    effective_filters = dict(filters or {})
+    execution_context = get_tool_execution_context()
+    if execution_context and execution_context.owner_id:
+        effective_filters.setdefault("tenant_id", execution_context.owner_id)
 
     def _do_retrieve() -> str:
         retriever = get_hybrid_retriever()
         reranker = CrossEncoderReranker(top_n=3)
 
-        raw_nodes = retriever.retrieve(query, top_k=6)
+        raw_nodes = retriever.retrieve(query, top_k=6, filters=effective_filters)
         if not raw_nodes:
             return f"No relevant enterprise documentation found for query: '{query}'."
 
@@ -50,9 +56,14 @@ def search_policy(query: str, filters: dict[str, Any] | None = None) -> str:
         return "\n\n".join(results)
 
     domain = (
-        (filters.get("domain") or filters.get("category") or "general") if filters else "general"
+        (effective_filters.get("domain") or effective_filters.get("category") or "general")
+        if effective_filters
+        else "general"
     )
-    return cache.get_or_compute(query, _do_retrieve, top_k=3, domain=str(domain))
+    scope = json.dumps(effective_filters, sort_keys=True, ensure_ascii=False, default=str)
+    return cache.get_or_compute(
+        query, _do_retrieve, top_k=3, domain=str(domain), scope=scope
+    )
 
 
 async def asearch_policy(query: str, filters: dict[str, Any] | None = None) -> str:

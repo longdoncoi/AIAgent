@@ -149,10 +149,11 @@ async def test_docker_and_k8s_sandboxes_mock():
         assert "[DOCKER SANDBOX ISOLATION ACTIVE]" in docker_out
         assert "mock docker stdout" in docker_out
 
-    mock_k8s_proc = AsyncMock()
-    mock_k8s_proc.communicate.return_value = (b"mock k8s stdout", b"")
-    mock_k8s_proc.returncode = 0
-    with patch("asyncio.create_subprocess_exec", return_value=mock_k8s_proc):
+    with patch(
+        "src.agentic.tools.servers.code_exec_server._run_k8s_pod",
+        new_callable=AsyncMock,
+        return_value=("mock k8s stdout", 0),
+    ):
         k8s_out = await _execute_in_k8s_sandbox("print(1)", is_python=True, timeout=5)
         assert "[KUBERNETES GVISOR SANDBOX ACTIVE" in k8s_out
         assert "mock k8s stdout" in k8s_out
@@ -869,11 +870,10 @@ async def test_docker_and_k8s_sandbox_execution_branches():
         assert "timed out in container" in res_to
 
     # 3. Test _execute_in_k8s_sandbox success
-    mock_k8s_proc = MagicMock()
-    mock_k8s_proc.returncode = 0
-    mock_k8s_proc.communicate = AsyncMock(return_value=(b"k8s pod stdout", b""))
     with patch(
-        "asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_k8s_proc
+        "src.agentic.tools.servers.code_exec_server._run_k8s_pod",
+        new_callable=AsyncMock,
+        return_value=("k8s pod stdout", 0),
     ):
         res_k8s = await _execute_in_k8s_sandbox("echo 1", is_python=False, timeout=5)
         assert "KUBERNETES GVISOR SANDBOX ACTIVE" in res_k8s

@@ -31,14 +31,24 @@ async def dispatch_node(state: AgentState) -> dict[str, Any]:
             s
             for s in steps
             if s.status == "pending" and all(dep in completed_ids for dep in s.depends_on)
+            and (s.risk_level != "high" or s.id in state.approved_step_ids)
         ]
 
         # If no steps are ready because a prerequisite failed, mark blocked steps as failed
         if not ready_steps:
+            changed = False
             for s in steps:
                 if s.status == "pending" and any(dep in failed_ids for dep in s.depends_on):
                     s.status = "failed"
                     s.output = "Dependency step failed; aborted."
+                    changed = True
+            if not changed and not any(
+                s.status == "pending" and s.risk_level == "high" for s in steps
+            ):
+                for s in steps:
+                    if s.status == "pending":
+                        s.status = "failed"
+                        s.output = "Invalid dependency graph; no executable step remains."
             completed_count = sum(1 for s in steps if s.status in ["completed", "failed"])
             return {
                 "plan": plan,
@@ -58,7 +68,14 @@ async def dispatch_node(state: AgentState) -> dict[str, Any]:
                     target_agent=step.agent,
                     step_id=step.id,
                     instruction=step.input_query,
-                    context=prior_context,
+                    context={
+                        "prior_steps": prior_context,
+                        "request_metadata": state.metadata,
+                    },
+                    metadata={
+                        "hitl_approved": step.id in state.approved_step_ids,
+                        "owner_id": state.metadata.get("user_id"),
+                    },
                     timeout=60.0,
                 ):
                     ev_type = event.get("event")
