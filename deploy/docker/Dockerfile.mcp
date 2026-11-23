@@ -1,7 +1,7 @@
 # ---------------------------------------------------------
 # Stage 1: Build & Dependencies
 # ---------------------------------------------------------
-FROM python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c AS builder
+FROM python:3.12.13-slim-trixie@sha256:229a2c5bfa27522db7815ea81f9bed70af17ccb9de9fc7ad142b1877b5830d36 AS builder
 
 WORKDIR /app
 
@@ -16,9 +16,11 @@ RUN uv sync --frozen --no-dev --no-editable
 # ---------------------------------------------------------
 # Stage 2: Hardened Runtime
 # ---------------------------------------------------------
-FROM python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c AS runtime
+FROM python:3.12.13-slim-trixie@sha256:229a2c5bfa27522db7815ea81f9bed70af17ccb9de9fc7ad142b1877b5830d36 AS runtime
 
-RUN groupadd -g 10001 appgroup && \
+RUN apt-get update && apt-get upgrade -y --no-install-recommends && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd -g 10001 appgroup && \
     useradd -u 10001 -g appgroup -s /bin/bash -m appuser
 
 WORKDIR /app
