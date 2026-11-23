@@ -9,6 +9,8 @@ from src.agentic.a2a.client import get_a2a_client
 from src.agentic.observability.metrics import NODE_DURATION
 from src.agentic.observability.tracing import traced_operation
 from src.agentic.orchestrator.state import AgentState, Step
+from src.agentic.safety.capabilities import issue_tool_capability
+from src.agentic.safety.policy import get_policy_manager
 
 logger = logging.getLogger(__name__)
 
@@ -57,12 +59,33 @@ async def dispatch_node(state: AgentState) -> dict[str, Any]:
             }
 
         a2a_client = get_a2a_client()
+        policy = get_policy_manager()
 
         async def _execute_step(step: Step) -> None:
             logger.info(f"Dispatching step '{step.id}' to agent '{step.agent}'...")
             step.status = "running"
             prior_context = {s.id: s.output for s in steps if s.output and s.id != step.id}
             try:
+                approved = step.id in state.approved_step_ids
+                owner_id = str(state.metadata.get("user_id") or "")
+                agent_name = f"{step.agent}_agent"
+                approval_tools = [
+                    tool
+                    for tool in step.approval_tools
+                    if policy.is_tool_allowed(agent_name, tool)
+                    and policy.is_approval_required(tool)
+                ]
+                capability = None
+                if state.run_id and owner_id:
+                    capability = issue_tool_capability(
+                        run_id=state.run_id,
+                        step_id=step.id,
+                        owner_id=owner_id,
+                        agent_name=agent_name,
+                        allowed_tools=approval_tools if approved else [],
+                    )
+                elif approved:
+                    raise PermissionError("Approved step is missing run or owner binding.")
                 tokens: list[str] = []
                 async for event in a2a_client.call_agent_stream(
                     target_agent=step.agent,
@@ -73,8 +96,9 @@ async def dispatch_node(state: AgentState) -> dict[str, Any]:
                         "request_metadata": state.metadata,
                     },
                     metadata={
-                        "hitl_approved": step.id in state.approved_step_ids,
-                        "owner_id": state.metadata.get("user_id"),
+                        "owner_id": owner_id,
+                        "run_id": state.run_id,
+                        "approval_capability": capability,
                     },
                     timeout=60.0,
                 ):

@@ -28,6 +28,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/chat", tags=["Chat"])
 
 
+def _new_run_input(
+    *, query: str, thread_id: str, owner_id: str, metadata: dict[str, Any]
+) -> dict[str, Any]:
+    """Create an isolated run state while retaining only the public conversation history."""
+    return {
+        "messages": [HumanMessage(content=query)],
+        "run_id": str(uuid.uuid4()),
+        "thread_id": thread_id,
+        "metadata": {**metadata, "user_id": owner_id, "public_thread_id": thread_id},
+        "plan": None,
+        "current_step_index": 0,
+        "reflection_notes": [],
+        "reflection_count": 0,
+        "requires_approval": False,
+        "pending_approval_step_id": None,
+        "approval_granted": None,
+        "approved_step_ids": [],
+        "final_answer": None,
+    }
+
+
 async def _graph_state(graph: Any, config: dict[str, Any]) -> Any:
     """Use async state I/O while supporting legacy graph test doubles."""
     candidate = graph.aget_state(config)
@@ -62,11 +83,9 @@ async def chat_endpoint(
         )
 
     config = {"configurable": {"thread_id": checkpoint_thread_id}}
-    initial_input = {
-        "messages": [HumanMessage(content=clean_query)],
-        "thread_id": thread_id,
-        "metadata": {**req.metadata, "user_id": owner_id, "public_thread_id": thread_id},
-    }
+    initial_input = _new_run_input(
+        query=clean_query, thread_id=thread_id, owner_id=owner_id, metadata=req.metadata
+    )
 
     try:
         final_state = await graph.ainvoke(initial_input, config=config)
@@ -154,11 +173,9 @@ async def chat_stream_endpoint(
         return EventSourceResponse(err_gen())
 
     config = {"configurable": {"thread_id": checkpoint_thread_id}}
-    initial_input = {
-        "messages": [HumanMessage(content=clean_query)],
-        "thread_id": thread_id,
-        "metadata": {**req.metadata, "user_id": owner_id, "public_thread_id": thread_id},
-    }
+    initial_input = _new_run_input(
+        query=clean_query, thread_id=thread_id, owner_id=owner_id, metadata=req.metadata
+    )
 
     async def event_generator() -> AsyncIterator[dict[str, Any]]:
         stream_guard = StreamingOutputGuard(manager=guardrails)

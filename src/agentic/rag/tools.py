@@ -8,6 +8,7 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from src.agentic.cache.rag_cache import get_rag_cache
+from src.agentic.core.config import get_settings
 from src.agentic.rag.reranker import CrossEncoderReranker
 from src.agentic.rag.retriever import get_hybrid_retriever
 from src.agentic.tools.execution_context import get_tool_execution_context
@@ -26,9 +27,12 @@ def search_policy(query: str, filters: dict[str, Any] | None = None) -> str:
     """Queries internal documentation using hybrid search, cross-encoder reranking, and cache with stampede protection."""
     cache = get_rag_cache()
     effective_filters = dict(filters or {})
+    effective_filters.pop("tenant_id", None)
     execution_context = get_tool_execution_context()
     if execution_context and execution_context.owner_id:
-        effective_filters.setdefault("tenant_id", execution_context.owner_id)
+        effective_filters["tenant_id"] = execution_context.owner_id
+    elif get_settings().environment == "production":
+        raise PermissionError("Authenticated tenant context is required for policy retrieval.")
 
     def _do_retrieve() -> str:
         retriever = get_hybrid_retriever()

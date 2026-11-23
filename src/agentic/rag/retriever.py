@@ -9,7 +9,7 @@ from llama_index.core import StorageContext, load_index_from_storage
 from llama_index.core.schema import NodeWithScore, TextNode
 
 from src.agentic.core.config import get_settings
-from src.agentic.rag.ingestion import load_documents_from_dir
+from src.agentic.rag.ingestion import configure_embedding_model, load_documents_from_dir
 
 logger = logging.getLogger(__name__)
 
@@ -28,31 +28,11 @@ class HybridRetriever:
 
     def _load_storage(self) -> None:
         """Attempts to load persisted index from Qdrant vector store or disk."""
-        import socket
-
-        from llama_index.core import Settings as LlamaSettings
-
-        has_embed_server = False
         try:
-            with socket.create_connection(("localhost", 8081), timeout=0.2):
-                has_embed_server = True
-        except Exception:
-            pass
-
-        try:
-            if has_embed_server:
-                from llama_index.embeddings.openai import OpenAIEmbedding
-
-                LlamaSettings.embed_model = OpenAIEmbedding(
-                    api_base=self.settings.llama_embed_base_url,
-                    api_key="sk-dummy",
-                    model_name=self.settings.default_embedding_model,
-                )
-            else:
-                from llama_index.core.embeddings.mock_embed_model import MockEmbedding
-
-                LlamaSettings.embed_model = MockEmbedding(embed_dim=768)
+            configure_embedding_model()
         except Exception as e:
+            if self.settings.environment == "production":
+                raise RuntimeError("Production embedding configuration failed.") from e
             logger.debug(f"Could not configure embedding model: {e}")
 
         # 1. Try Qdrant if enabled
@@ -79,6 +59,8 @@ class HybridRetriever:
                 )
                 return
             except Exception as e:
+                if self.settings.environment == "production":
+                    raise RuntimeError("Production Qdrant index is unavailable.") from e
                 logger.warning(
                     f"Could not load index from Qdrant ({e}). Falling back to local storage."
                 )
@@ -96,7 +78,24 @@ class HybridRetriever:
             except Exception as e:
                 logger.warning(f"Could not load index from {self.index_dir}: {e}")
 
-    def _keyword_search(self, query: str, top_k: int = 5) -> list[NodeWithScore]:
+    @staticmethod
+    def _metadata_permitted(metadata: dict[str, Any], filters: dict[str, Any]) -> bool:
+        for key, expected in filters.items():
+            actual = metadata.get(key)
+            if key == "tenant_id" and actual is None:
+                if metadata.get("visibility") == "shared":
+                    continue
+                return False
+            if isinstance(expected, (list, tuple, set)):
+                if actual not in expected:
+                    return False
+            elif actual != expected:
+                return False
+        return True
+
+    def _keyword_search(
+        self, query: str, top_k: int = 5, filters: dict[str, Any] | None = None
+    ) -> list[NodeWithScore]:
         """Simple BM25 / lexical keyword matching fallback over local files or docstore."""
         terms = [t.lower() for t in query.split() if len(t) > 2]
         scored_nodes: list[NodeWithScore] = []
@@ -105,6 +104,8 @@ class HybridRetriever:
         if self._docstore:
             for node_id, node in self._docstore.docs.items():
                 if isinstance(node, TextNode):
+                    if filters and not self._metadata_permitted(node.metadata or {}, filters):
+                        continue
                     text_lower = node.text.lower()
                     score = sum(text_lower.count(term) for term in terms)
                     if score > 0:
@@ -113,6 +114,8 @@ class HybridRetriever:
             # Fallback to searching data/raw files directly
             docs = load_documents_from_dir(self.raw_dir)
             for doc in docs:
+                if filters and not self._metadata_permitted(doc.metadata or {}, filters):
+                    continue
                 text_lower = doc.text.lower()
                 score = sum(text_lower.count(term) for term in terms)
                 if score > 0:
@@ -122,28 +125,79 @@ class HybridRetriever:
         scored_nodes.sort(key=lambda x: x.score or 0.0, reverse=True)
         return scored_nodes[:top_k]
 
-    def _dense_search(self, query: str, top_k: int = 5) -> list[NodeWithScore]:
+    def _dense_search(
+        self, query: str, top_k: int = 5, filters: dict[str, Any] | None = None
+    ) -> list[NodeWithScore]:
         """Retrieves top_k nodes via AutoMergingRetriever over hierarchical leaf/parent nodes."""
         if not self._index:
             return []
         try:
+            retriever_kwargs: dict[str, Any] = {"similarity_top_k": top_k}
+            if filters:
+                from llama_index.core.vector_stores.types import (
+                    ExactMatchFilter,
+                    FilterCondition,
+                    MetadataFilters,
+                )
+
+                vector_filters: list[Any] = []
+                tenant_id = filters.get("tenant_id")
+                if tenant_id:
+                    vector_filters.append(
+                        MetadataFilters(
+                            filters=[
+                                ExactMatchFilter(key="tenant_id", value=tenant_id),
+                                ExactMatchFilter(key="visibility", value="shared"),
+                            ],
+                            condition=FilterCondition.OR,
+                        )
+                    )
+                for key, expected in filters.items():
+                    if key != "tenant_id" and not isinstance(expected, (list, tuple, set)):
+                        vector_filters.append(ExactMatchFilter(key=key, value=expected))
+                if vector_filters:
+                    retriever_kwargs["filters"] = MetadataFilters(
+                        filters=vector_filters, condition=FilterCondition.AND
+                    )
             if self._storage_context:
                 from llama_index.core.retrievers import AutoMergingRetriever
 
-                base_retriever = self._index.as_retriever(similarity_top_k=top_k)
+                base_retriever = self._index.as_retriever(**retriever_kwargs)
                 retriever = AutoMergingRetriever(
                     base_retriever, storage_context=self._storage_context, verbose=False
                 )
-                return retriever.retrieve(query)
-            retriever = self._index.as_retriever(similarity_top_k=top_k)
-            return cast(list[NodeWithScore], retriever.retrieve(query))
+                results = retriever.retrieve(query)
+                return [
+                    item
+                    for item in results
+                    if not filters
+                    or self._metadata_permitted(
+                        getattr(item.node, "metadata", {}) or {}, filters
+                    )
+                ][:top_k]
+            retriever = self._index.as_retriever(**retriever_kwargs)
+            results = cast(list[NodeWithScore], retriever.retrieve(query))
+            return [
+                item
+                for item in results
+                if not filters
+                or self._metadata_permitted(getattr(item.node, "metadata", {}) or {}, filters)
+            ][:top_k]
         except Exception as e:
             logger.debug(
                 f"AutoMergingRetriever not applicable ({e}). Using standard vector retriever."
             )
             try:
-                retriever = self._index.as_retriever(similarity_top_k=top_k)
-                return cast(list[NodeWithScore], retriever.retrieve(query))
+                retriever = self._index.as_retriever(**retriever_kwargs)
+                results = cast(list[NodeWithScore], retriever.retrieve(query))
+                return [
+                    item
+                    for item in results
+                    if not filters
+                    or self._metadata_permitted(
+                        getattr(item.node, "metadata", {}) or {}, filters
+                    )
+                ][:top_k]
             except Exception:
                 return []
 
@@ -178,12 +232,12 @@ class HybridRetriever:
         self, query: str, top_k: int = 5, filters: dict[str, Any] | None = None
     ) -> list[NodeWithScore]:
         """Main hybrid retrieval method combining Vector, Lexical BM25, and Knowledge Graph with RRF."""
-        keyword_results = self._keyword_search(query, top_k=top_k * 2)
-        dense_results = self._dense_search(query, top_k=top_k * 2)
+        keyword_results = self._keyword_search(query, top_k=top_k * 2, filters=filters)
+        dense_results = self._dense_search(query, top_k=top_k * 2, filters=filters)
 
         # Knowledge Graph Retrieval
         kg_results: list[NodeWithScore] = []
-        if self.settings.enable_knowledge_graph:
+        if self.settings.enable_knowledge_graph and not (filters and "tenant_id" in filters):
             try:
                 from src.agentic.rag.kg import get_knowledge_graph_store
 
@@ -204,21 +258,13 @@ class HybridRetriever:
         fusion = get_fusion_engine()
         fused = fusion.fuse(channels, top_k=top_k * 2 if filters else top_k)
         if filters:
-            def permitted(item: NodeWithScore) -> bool:
-                metadata = getattr(item.node, "metadata", {}) or {}
-                for key, expected in filters.items():
-                    actual = metadata.get(key)
-                    if key == "tenant_id" and actual is None:
-                        # Legacy/shared documents remain visible; tenant-tagged documents do not leak.
-                        continue
-                    if isinstance(expected, (list, tuple, set)):
-                        if actual not in expected:
-                            return False
-                    elif actual != expected:
-                        return False
-                return True
-
-            fused = [item for item in fused if permitted(item)]
+            fused = [
+                item
+                for item in fused
+                if self._metadata_permitted(
+                    getattr(item.node, "metadata", {}) or {}, filters
+                )
+            ]
         return fused[:top_k]
 
 
@@ -305,5 +351,7 @@ def get_qdrant_vector_store(
 
         return QdrantVectorStore(client=q_client, collection_name=target_collection)
     except Exception as e:
+        if settings.environment == "production":
+            raise RuntimeError("Production Qdrant vector store is unavailable.") from e
         logger.debug(f"QdrantVectorStore not available ({e}). Operating in local disk/memory mode.")
         return None

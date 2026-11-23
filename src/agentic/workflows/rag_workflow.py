@@ -1,6 +1,7 @@
 """Temporal Workflow and Activities for Durable, Asynchronous RAG Ingestion."""
 
 import asyncio
+import json
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -31,12 +32,19 @@ async def ingest_delta_document_activity(event_data: dict[str, Any]) -> dict[str
     doc_id = str(event_data.get("doc_id", "doc_delta"))
     action = str(event_data.get("action", "upsert"))
     content = str(event_data.get("content", ""))
+    metadata = event_data.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        raise ValueError("Delta metadata must be an object.")
+    tenant_id = str(metadata.get("tenant_id") or "")
+    if settings.environment == "production" and not tenant_id:
+        raise ValueError("Production delta ingestion requires metadata.tenant_id.")
 
     # Invalidate cache selectively to preserve unrelated document cache
     rag_cache = get_rag_cache()
     file_path = str(event_data.get("file_path", f"delta_{doc_id}.md"))
     raw_root = (settings.project_root / "data" / "raw").resolve()
     target = (raw_root / file_path).resolve()
+    sidecar = target.with_suffix(target.suffix + ".metadata.json")
     try:
         target.relative_to(raw_root)
     except ValueError as exc:
@@ -52,9 +60,22 @@ async def ingest_delta_document_activity(event_data: dict[str, Any]) -> dict[str
     if action == "upsert" and content:
         await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
         await asyncio.to_thread(target.write_text, content, encoding="utf-8")
+        trusted_metadata = {
+            **metadata,
+            "visibility": "tenant" if tenant_id else "shared",
+        }
+        if tenant_id:
+            trusted_metadata["tenant_id"] = tenant_id
+        await asyncio.to_thread(
+            sidecar.write_text,
+            json.dumps(trusted_metadata, ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
     elif action == "delete":
         if target.exists() and target.is_file():
             await asyncio.to_thread(target.unlink)
+        if sidecar.exists() and sidecar.is_file():
+            await asyncio.to_thread(sidecar.unlink)
     elif action != "upsert":
         raise ValueError("Delta action must be either 'upsert' or 'delete'.")
 

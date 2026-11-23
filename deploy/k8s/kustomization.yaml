@@ -17,9 +17,5 @@ resources:
   - pgbouncer.yaml
   - istio-security.yaml
 
-commonLabels:
-  app.kubernetes.io/part-of: agentic-platform
-  app.kubernetes.io/managed-by: argocd
-
 transformers:
   - namespace-transformer.yaml

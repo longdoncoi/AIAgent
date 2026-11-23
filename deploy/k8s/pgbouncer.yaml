@@ -18,14 +18,17 @@ spec:
     spec:
       containers:
         - name: pgbouncer
-          image: edoburu/pgbouncer:v1.22.0
+          image: edoburu/pgbouncer:v1.26.1-p0@sha256:488422e38cff912895d0d65d8963fcd306e6ac589a724398b6eb8e294e94d624
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 5432
               name: postgres
           env:
             - name: DB_HOST
-              value: "postgres-svc"
+              valueFrom:
+                secretKeyRef:
+                  name: agentic-secrets
+                  key: POSTGRES_HOST
             - name: DB_PORT
               value: "5432"
             - name: DB_USER
@@ -38,6 +41,11 @@ spec:
                 secretKeyRef:
                   name: agentic-secrets
                   key: POSTGRES_PASSWORD
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: agentic-secrets
+                  key: POSTGRES_DB
             - name: POOL_MODE
               value: "transaction"
             - name: MAX_PREPARED_STATEMENTS

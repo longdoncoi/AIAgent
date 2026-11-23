@@ -43,6 +43,13 @@ Input Stream ──► [Input Guardrail: PII, Jailbreak, Injection]
   - Hành vi: Ghi đè file dự án, gọi API bên thứ ba có phí, xoá dữ liệu, thực thi bash hệ thống.
   - Xử lý: **Bắt buộc kích hoạt HITL (Human-in-the-Loop)**. Trạng thái phiên làm việc dừng lại tại `interrupt()` và chỉ tiếp tục sau khi có tín hiệu phê duyệt hợp lệ qua endpoint `/approvals`.
 
+### 2.1. Bất biến capability và chống replay
+
+- Mỗi request chat tạo `run_id` mới và reset `plan`, reflection, pending approval, approved step IDs và final answer; lịch sử message vẫn được reducer bảo toàn.
+- Quyết định duyệt chỉ tạo capability HMAC ngắn hạn cho đúng run/step/owner/agent và đúng các tool high-risk của agent đó. Step ID trùng ở lượt chat sau không thể tái sử dụng approval cũ.
+- A2A và MCP đều fail-closed: boolean approval không có giá trị cấp quyền; capability sai chữ ký, hết hạn hoặc lệch bất kỳ binding nào bị từ chối.
+- Server MCP thực hiện authorization lần hai ngay trước khi chạy tool, vì client-side check không phải security boundary.
+
 ---
 
 ## 3. Tài Liệu Kiểm Định & Tham Chiếu Liên Quan

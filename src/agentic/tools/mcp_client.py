@@ -131,11 +131,21 @@ class MCPClientManager:
             return self.settings.mcp_code_exec_url
         return self.settings.mcp_web_search_url
 
-    async def _remote_call(self, tool_name: str, arguments: dict[str, Any]) -> str:
+    async def _remote_call(
+        self, tool_name: str, arguments: dict[str, Any], context: Any
+    ) -> str:
         from mcp import ClientSession
         from mcp.client.sse import sse_client
 
-        headers = {"X-Internal-Service-Token": self.settings.s2s_internal_token}
+        headers = {
+            "X-Internal-Service-Token": self.settings.s2s_internal_token,
+            "X-Agent-Name": context.agent_name,
+            "X-Step-Id": context.step_id,
+            "X-Owner-Id": context.owner_id or "",
+            "X-Run-Id": context.run_id or "",
+        }
+        if context.approval_capability:
+            headers["X-Approval-Capability"] = context.approval_capability
         async with sse_client(
             self._server_url(tool_name), headers=headers, timeout=5.0, sse_read_timeout=65.0
         ) as streams:
@@ -163,7 +173,9 @@ class MCPClientManager:
             try:
                 get_guardrails().validate_tool_input(tool_name, kwargs)
                 if self.settings.use_remote_mcp:
-                    result = await self._remote_call(tool_name, kwargs)
+                    if context is None:
+                        raise PermissionError("Remote MCP calls require an execution context.")
+                    result = await self._remote_call(tool_name, kwargs, context)
                 else:
                     result = await self._local[tool_name](**kwargs)
                 TOOL_EXECUTION_TOTAL.labels(tool_name=tool_name, status="success").inc()

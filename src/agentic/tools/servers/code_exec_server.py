@@ -438,6 +438,9 @@ async def code_exec_python(code: str, timeout: int = 30) -> str:
         code: The Python script string to execute.
         timeout: Maximum execution time in seconds.
     """
+    from src.agentic.tools.servers.security import authorize_tool_execution
+
+    authorize_tool_execution("code_exec_python")
     return await execute_python_code(code, timeout=timeout)
 
 
@@ -449,6 +452,9 @@ async def code_exec_bash(command: str, timeout: int = 30) -> str:
         command: The terminal command string.
         timeout: Maximum execution time in seconds.
     """
+    from src.agentic.tools.servers.security import authorize_tool_execution
+
+    authorize_tool_execution("code_exec_bash")
     return await execute_bash_command(command, timeout=timeout)
 
 

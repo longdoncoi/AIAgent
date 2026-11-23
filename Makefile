@@ -36,10 +36,10 @@ lint:
 	mypy src/
 
 audit:
-	pip-audit
+	uv run --python 3.12 python scripts/audit_dependencies.py
 
 test:
-	pytest tests/ -n auto -v --cov=src
+	pytest tests/ -v --cov=src
 
 eval:
 	python evals/run_eval.py
@@ -76,4 +76,3 @@ memory-status:
 
 pre-flight: lint test audit
 	@echo "All pre-flight quality gates passed successfully!"
-

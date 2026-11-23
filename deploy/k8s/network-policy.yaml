@@ -52,6 +52,8 @@ spec:
           port: 4000 # LiteLLM
         - protocol: TCP
           port: 4317 # OTel Collector
+        - protocol: TCP
+          port: 7233 # Temporal
         - protocol: UDP
           port: 53   # DNS
 ---
@@ -88,6 +90,10 @@ spec:
           port: 9003 # MCP Web Search
         - protocol: TCP
           port: 4317 # OTel Collector
+        - protocol: TCP
+          port: 6333 # Qdrant
+        - protocol: TCP
+          port: 8081 # Embedding service
         - protocol: UDP
           port: 53   # DNS
 ---

@@ -23,6 +23,32 @@ _planner_prompt_cache: dict[Path, tuple[int, str]] = {}
 _planner_prompt_cache_lock = threading.Lock()
 
 
+def _infer_approval_tools(query: str) -> list[str]:
+    """Map explicit mutating intent to the narrowest approval-gated tool scope."""
+    query_lower = query.lower()
+    tools: list[str] = []
+    if any(word in query_lower for word in ("run", "execute", "bash", "shell", "chạy")):
+        tools.append("code_exec_bash")
+    if any(
+        word in query_lower
+        for word in (
+            "write",
+            "create",
+            "delete",
+            "remove",
+            "overwrite",
+            "commit",
+            "patch",
+            "ghi",
+            "xóa",
+            "sửa",
+            "tạo",
+        )
+    ):
+        tools.append("repo_write_file")
+    return tools
+
+
 def load_cached_planner_prompt(prompt_path: Path) -> str:
     """Reads prompt template from markdown file with thread-safe mtime caching."""
     if not prompt_path.exists():
@@ -137,6 +163,7 @@ def _heuristic_planner(query: str) -> Plan:
                 agent="coding",
                 input_query=query,
                 risk_level=risk,
+                approval_tools=_infer_approval_tools(query) if risk == "high" else [],
             )
         )
     else:
@@ -205,6 +232,7 @@ async def planner_node(state: AgentState) -> dict[str, Any]:
                     policy_manager = None
                 # Never trust a model-provided low-risk label for mutating actions.
                 for s in plan.steps:
+                    s.approval_tools = _infer_approval_tools(s.input_query)
                     if any(
                         w in s.input_query.lower()
                         for w in [

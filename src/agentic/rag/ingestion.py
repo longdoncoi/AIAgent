@@ -1,7 +1,10 @@
 """Document ingestion with Hierarchical Chunking (Parent 1024 / Child 256)."""
 
+import json
 import logging
+import socket
 from pathlib import Path
+from urllib.parse import urlparse
 
 from llama_index.core import Document, StorageContext, VectorStoreIndex
 from llama_index.core.node_parser import HierarchicalNodeParser, get_leaf_nodes
@@ -10,6 +13,39 @@ from llama_index.core.storage.docstore import SimpleDocumentStore
 from src.agentic.core.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+def configure_embedding_model() -> None:
+    """Configure the real embedding service in production; mock only for local development."""
+    settings = get_settings()
+    parsed = urlparse(settings.llama_embed_base_url)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    available = settings.environment == "production"
+    if not available:
+        try:
+            with socket.create_connection((host, port), timeout=0.3):
+                available = True
+        except OSError:
+            available = False
+
+    from llama_index.core import Settings as LlamaSettings
+
+    if available:
+        from llama_index.embeddings.openai import OpenAIEmbedding
+
+        LlamaSettings.embed_model = OpenAIEmbedding(
+            api_base=settings.llama_embed_base_url,
+            api_key=settings.litellm_api_key,
+            model_name=settings.default_embedding_model,
+            timeout=10.0,
+            max_retries=2,
+        )
+        return
+    from llama_index.core.embeddings.mock_embed_model import MockEmbedding
+
+    logger.info("Configured MockEmbedding for non-production local development.")
+    LlamaSettings.embed_model = MockEmbedding(embed_dim=768)
 
 
 def _setup_nltk() -> None:
@@ -37,18 +73,27 @@ def load_documents_from_dir(dir_path: Path) -> list[Document]:
         return docs
 
     for file_path in dir_path.rglob("*"):
+        if file_path.name.endswith(".metadata.json"):
+            continue
         if file_path.suffix.lower() in [".txt", ".md", ".json"]:
             try:
                 with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                     text = f.read()
                     if text.strip():
+                        metadata = {
+                            "file_name": file_path.name,
+                            "file_path": str(file_path),
+                            "file_type": file_path.suffix,
+                            "visibility": "shared",
+                        }
+                        sidecar = file_path.with_suffix(file_path.suffix + ".metadata.json")
+                        if sidecar.exists():
+                            sidecar_data = json.loads(sidecar.read_text(encoding="utf-8"))
+                            if isinstance(sidecar_data, dict):
+                                metadata.update(sidecar_data)
                         doc = Document(
                             text=text,
-                            metadata={
-                                "file_name": file_path.name,
-                                "file_path": str(file_path),
-                                "file_type": file_path.suffix,
-                            },
+                            metadata=metadata,
                         )
                         docs.append(doc)
             except Exception as e:
@@ -81,7 +126,7 @@ def ingest_documents(
                 "Customer PII including email addresses, phone numbers, and API tokens must never be logged or sent "
                 "to external non-approved APIs. All outputs must be sanitized before presentation."
             ),
-            metadata={"file_name": "sample_security_policy.md"},
+            metadata={"file_name": "sample_security_policy.md", "visibility": "shared"},
         )
         documents = [sample_doc]
 
@@ -110,35 +155,7 @@ def ingest_documents(
     else:
         storage_context = StorageContext.from_defaults(docstore=docstore)
 
-    # Embedding model configuration
-    import socket
-
-    def _is_server_active(host: str = "localhost", port: int = 8081) -> bool:
-        try:
-            with socket.create_connection((host, port), timeout=0.3):
-                return True
-        except Exception:
-            return False
-
-    from llama_index.core import Settings as LlamaSettings
-
-    if _is_server_active("localhost", 8081):
-        from llama_index.embeddings.openai import OpenAIEmbedding
-
-        LlamaSettings.embed_model = OpenAIEmbedding(
-            api_base=settings.llama_embed_base_url,
-            api_key="sk-embed-dummy",
-            model_name=settings.default_embedding_model,
-            timeout=2.0,
-            max_retries=0,
-        )
-    else:
-        logger.info(
-            "Embedding server on port 8081 not active. Using MockEmbedding for local index."
-        )
-        from llama_index.core.embeddings.mock_embed_model import MockEmbedding
-
-        LlamaSettings.embed_model = MockEmbedding(embed_dim=768)
+    configure_embedding_model()
 
     # Build Vector Store Index over leaf nodes
     _ = VectorStoreIndex(

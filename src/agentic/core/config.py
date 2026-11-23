@@ -203,7 +203,10 @@ class Settings(BaseSettings):
                 "changeme",
                 "default",
             ]
-            if self.jwt_secret_key in insecure_keys:
+            jwt_lower = self.jwt_secret_key.lower()
+            if len(self.jwt_secret_key) < 20 or self.jwt_secret_key in insecure_keys or any(
+                marker in jwt_lower for marker in ("replace-with", "placeholder", "dummy")
+            ):
                 raise ValueError(
                     "Production Inviolable Violated: jwt_secret_key cannot be the default insecure placeholder in production."
                 )
@@ -213,7 +216,10 @@ class Settings(BaseSettings):
                 "changeme",
                 "default",
             ]
-            if self.s2s_internal_token in insecure_s2s:
+            s2s_lower = self.s2s_internal_token.lower()
+            if len(self.s2s_internal_token) < 20 or self.s2s_internal_token in insecure_s2s or any(
+                marker in s2s_lower for marker in ("replace-with", "placeholder", "dummy")
+            ):
                 raise ValueError(
                     "Production Inviolable Violated: s2s_internal_token cannot be the default insecure placeholder in production."
                 )

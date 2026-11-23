@@ -69,6 +69,7 @@ async def hitl_node(state: AgentState) -> dict[str, Any]:
             "description": high_risk_step.description,
             "input_query": high_risk_step.input_query,
             "risk_level": high_risk_step.risk_level,
+            "approval_tools": high_risk_step.approval_tools,
         }
     )
 

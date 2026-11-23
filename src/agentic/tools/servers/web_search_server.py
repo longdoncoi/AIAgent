@@ -53,6 +53,9 @@ async def web_search(query: str, max_results: int = 5) -> str:
         query: Search keywords or query phrase.
         max_results: Max number of results to retrieve.
     """
+    from src.agentic.tools.servers.security import authorize_tool_execution
+
+    authorize_tool_execution("web_search")
     return await search_web_core(query, max_results)
 
 

@@ -5,7 +5,6 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: agentic-platform-ingress
-  namespace: default
   labels:
     app: agentic-platform
     tier: l1-interface

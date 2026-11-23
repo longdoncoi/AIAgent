@@ -8,9 +8,7 @@ on:
     branches: [ main ]
 
 permissions:
-  contents: write
-  packages: write
-  security-events: write
+  contents: read
 
 jobs:
   # ----------------------------------------------------------------------------
@@ -21,37 +19,32 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install uv Package Manager
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
         with:
           enable-cache: true
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
       - name: Install Dev Dependencies
-        run: |
-          uv pip install --system -e ".[dev]"
-          uv pip install --system pip-audit
+        run: uv sync --frozen --dev --extra dev
 
       - name: Lint Code (ruff)
-        run: ruff check src/ tests/
+        run: uv run ruff check src/ tests/
 
       - name: Type Check (mypy)
-        run: mypy src/
+        run: uv run mypy src/
 
       - name: Production Dependency Vulnerability Scan (pip-audit)
-        run: |
-          # Audit the frozen production graph. Development-only evaluation
-          # dependencies (for example RAGAS) are not shipped in runtime images.
-          uv export --frozen --no-dev --no-hashes --no-emit-project \
-            --output-file "$RUNNER_TEMP/production-requirements.txt"
-          pip-audit --desc on \
-            --requirement "$RUNNER_TEMP/production-requirements.txt"
+        run: uv run python scripts/audit_dependencies.py
+
+      - name: Render Kubernetes Manifests
+        run: kubectl kustomize deploy/k8s > "$RUNNER_TEMP/agentic-manifests.yaml"
 
   # ----------------------------------------------------------------------------
   # 2. Test & Evaluation Quality Gate
@@ -62,41 +55,40 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install uv Package Manager
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
         with:
           enable-cache: true
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
       - name: Install Dev Dependencies
-        run: |
-          uv pip install --system -e ".[dev]"
+        run: uv sync --frozen --dev --extra dev
 
       - name: Setup NLTK Data & Permissions
         run: |
           mkdir -p "$HOME/nltk_data"
-          python -m nltk.downloader stopwords punkt punkt_tab -d "$HOME/nltk_data"
-          chmod -R go-w $(python -c "import site; print(site.getsitepackages()[0])")
+          uv run python -m nltk.downloader stopwords punkt punkt_tab -d "$HOME/nltk_data"
+          chmod -R go-w $(uv run python -c "import site; print(site.getsitepackages()[0])")
 
       - name: Ingest Knowledge Base
-        run: python scripts/ingest.py
+        run: uv run python scripts/ingest.py
 
       - name: Verify Database Migrations (Alembic)
-        run: python scripts/migrate_db.py
+        run: uv run python scripts/migrate_db.py
 
       - name: Run Unit & Integration Tests (pytest)
-        run: pytest tests/ -n auto -v --cov=src --cov-report=term-missing
+        run: uv run pytest tests/ -v --cov=src --cov-report=term-missing
         env:
           ENABLE_DOCKER_SANDBOX: "false"
 
       - name: Run Quality Gate Benchmark (Routing, Groundedness, Faithfulness)
-        run: python evals/run_eval.py
+        run: uv run python evals/run_eval.py
 
   # ----------------------------------------------------------------------------
   # 3. Container Build, Hardening & Security Scan
@@ -104,7 +96,6 @@ jobs:
   build-and-scan:
     name: Container Build & Trivy Vulnerability Scan
     needs: [test-and-eval]
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -118,13 +109,13 @@ jobs:
             dockerfile: deploy/docker/Dockerfile.mcp
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Build Local Container Image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
           file: ${{ matrix.component.dockerfile }}
@@ -134,7 +125,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Run Trivy Vulnerability Scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@38b337fff0a2f984d5be173c99e3f633438167ec
         with:
           image-ref: '${{ matrix.component.name }}:local-test'
           format: 'table'
@@ -151,15 +142,18 @@ jobs:
     needs: [build-and-scan]
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to GitHub Container Registry (GHCR)
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -171,7 +165,7 @@ jobs:
 
       - name: Extract Metadata (Tags, Labels)
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: |
             ghcr.io/${{ env.REPO_LOWER }}/api
@@ -179,7 +173,8 @@ jobs:
             ghcr.io/${{ env.REPO_LOWER }}/mcp
 
       - name: Build and Push API Image
-        uses: docker/build-push-action@v5
+        id: build-api
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
           file: deploy/docker/Dockerfile.api
@@ -189,7 +184,8 @@ jobs:
             ghcr.io/${{ env.REPO_LOWER }}/api:latest
 
       - name: Build and Push Agent Image
-        uses: docker/build-push-action@v5
+        id: build-agent
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
           file: deploy/docker/Dockerfile.agent
@@ -199,7 +195,8 @@ jobs:
             ghcr.io/${{ env.REPO_LOWER }}/agent:latest
 
       - name: Build and Push MCP Image
-        uses: docker/build-push-action@v5
+        id: build-mcp
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
           file: deploy/docker/Dockerfile.mcp
@@ -219,10 +216,10 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           echo "Release tag detected: ${{ github.ref_name }}."
-          echo "Updating deployment image references with immutable SHA: ${{ github.sha }}..."
-          sed -i "s|image: ghcr.io/agentic-platform/api:latest|image: ghcr.io/${REPO_LOWER}/api:${{ github.sha }}|g" deploy/k8s/deployment.yaml
-          sed -i "s|image: ghcr.io/agentic-platform/agent:latest|image: ghcr.io/${REPO_LOWER}/agent:${{ github.sha }}|g" deploy/k8s/deployment.yaml
-          sed -i "s|image: ghcr.io/agentic-platform/mcp:latest|image: ghcr.io/${REPO_LOWER}/mcp:${{ github.sha }}|g" deploy/k8s/deployment.yaml
+          echo "Updating deployment image references with immutable registry digests..."
+          sed -i -E "s|image: ghcr.io/.*/api(@sha256:[a-f0-9]{64}|:[^[:space:]]+)|image: ghcr.io/${REPO_LOWER}/api@${{ steps.build-api.outputs.digest }}|g" deploy/k8s/deployment.yaml
+          sed -i -E "s|image: ghcr.io/.*/agent(@sha256:[a-f0-9]{64}|:[^[:space:]]+)|image: ghcr.io/${REPO_LOWER}/agent@${{ steps.build-agent.outputs.digest }}|g" deploy/k8s/deployment.yaml
+          sed -i -E "s|image: ghcr.io/.*/mcp(@sha256:[a-f0-9]{64}|:[^[:space:]]+)|image: ghcr.io/${REPO_LOWER}/mcp@${{ steps.build-mcp.outputs.digest }}|g" deploy/k8s/deployment.yaml
           git config user.name "agentic-release-bot"
           git config user.email "agentic-release-bot@users.noreply.github.com"
           git add deploy/k8s/deployment.yaml

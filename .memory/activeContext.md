@@ -20,22 +20,33 @@
 - **Thực hiện khuyến nghị sau review mã nguồn toàn diện**:
   - Triệt tiêu 100% lỗi linter Ruff (`I001`, `F401`) trên toàn bộ kho mã nguồn bao gồm `migrations/`.
   - Giữ vững chất lượng tĩnh: `ruff check .` (0 lỗi), `mypy --strict src` (74/74 source files sạch lỗi).
-  - Tích hợp `pytest-xdist>=3.6.1` và cập nhật lockfile `uv.lock`, đồng bộ chạy song song qua `-n auto` trong `Makefile` và `.github/workflows/ci.yml`.
+  - Giữ `pytest-xdist` cho tùy chọn local nhưng chuyển CI/Makefile sang chạy tuần tự vì suite dùng singleton, cache và SQLite stateful không an toàn khi chia worker.
   - Xử lý dứt điểm các cảnh báo coroutine unawaited và rò rỉ kết nối `sqlite3.Connection` trong `LongTermStore` bằng `@contextmanager`.
   - Xác nhận toàn bộ 268/268 test cases đều passed với coverage 96% toàn hệ thống (100% trên orchestration, safety và tools).
 
 ## Xác minh
 
 - `ruff check .`: PASS (0 cảnh báo/lỗi trên toàn bộ dự án).
-- `mypy src/`: PASS (Success: no issues found in 74 source files).
-- `pytest -n auto`: 268/268 passed (100% pass) trong ~109s, độ phủ mã nguồn đạt 96%.
-- Docker Desktop 4.100.0 và WSL 2 đã được kiểm tra (WSL 2 active, sẵn sàng kích hoạt Docker daemon).
+- `mypy src/`: PASS (Success: no issues found in 75 source files).
+- Full pytest đã chạy hết 277 test với coverage 95%: 276 pass và 1 lỗi tương thích ngưỡng secret; sau khi sửa, nhóm regression liên quan pass 9/9 và nhóm capability/Qdrant pass 13/13.
+- Audit graph dependency production từ `uv.lock` trên Python 3.12: PASS, không có vulnerability đã biết.
+- Docker Desktop hoạt động; API, Agent và MCP image đã build thành công từ base/uv pin digest và `uv sync --frozen`.
+- `kubectl kustomize deploy/k8s`: PASS; sandbox selector render đúng namespace `agentic-sandbox`.
 
 ## Việc tiếp theo
 
-1. Khởi động lại Windows để hoàn tất WSL 2, sau đó khởi động Docker Desktop và thực hiện pre-flight với Docker/Kubernetes dependencies thật trước go-live.
-2. Chạy smoke test với Postgres/Redis/LiteLLM/A2A/MCP thực trước khi ký go-live.
+1. Push nhánh hardening, mở PR và chờ toàn bộ GitHub Actions (lint/type/audit/test/eval/container build/Trivy) xanh.
+2. Chạy smoke test với Postgres/Redis/Qdrant/LiteLLM/A2A/MCP thật trong cluster staging trước khi ký go-live.
 
 ## Blocker
 
-- Windows đang báo pending reboot sau khi bật WSL; Docker daemon chưa thể khởi động cho đến khi máy được restart. Kubernetes cluster/context cũng chưa được cấu hình, nên chưa thể smoke-test workload thật.
+- Chưa có Kubernetes staging context và các dependency managed thật để chạy end-to-end smoke test; GitHub CI/Trivy là gate còn lại trong phạm vi repository.
+
+## Hardening production 2026-11-24
+
+- Reset toàn bộ run-scoped state mỗi lượt chat; capability HMAC ngắn hạn khóa theo run/step/owner/agent/tool và được kiểm tra lại ở A2A lẫn MCP server.
+- Execution identity được ký cho cả step thường; metadata owner không còn được tin nếu thiếu capability hợp lệ.
+- Tenant RAG được ép từ execution context, metadata CDC được lưu sidecar, shared document phải khai báo rõ, filter được áp trước lexical/vector fusion và KG tenant-unsafe bị loại.
+- Production embedding/Qdrant fail-closed; long-term PostgreSQL không còn fallback SQLite và khởi tạo store không block event loop.
+- Secret tĩnh đã bị xóa; ExternalSecret là owner duy nhất và cung cấp đầy đủ DB/Redis/Qdrant/LiteLLM/embedding settings; Ingress/PgBouncer/NetworkPolicy/Istio policy đã đồng bộ.
+- Docker context loại dữ liệu memory/raw/index; image/toolchain/action pin immutable, dependency install/audit đều dùng lockfile Python 3.12.

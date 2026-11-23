@@ -19,7 +19,11 @@
       "instruction": "Chạy unit test module auth và báo cáo lỗi",
       "context": { "repo_path": "/workspace" }
     },
-    "metadata": { "trace_id": "otel_4567", "timeout_ms": 30000 }
+    "metadata": {
+      "run_id": "run_uuid_5678",
+      "owner_id": "tenant_abc",
+      "approval_capability": "base64url_payload.hmac_signature"
+    }
   }
   ```
 
@@ -27,7 +31,12 @@
 
 ## 2. Giao Thức MCP (Model Context Protocol)
 
-> Production bắt buộc dùng MCP SSE/HTTP tới các service độc lập. Local handler chỉ được bật ở development/test. Mọi request MCP mạng mang `X-Internal-Service-Token`; allowlist và capability HITL theo step được kiểm tra lại ngay tại invocation boundary.
+> Production bắt buộc dùng MCP SSE/HTTP tới các service độc lập. Local handler chỉ được bật ở development/test. Mọi request MCP mạng mang `X-Internal-Service-Token` cùng execution identity headers; allowlist và capability HITL theo step được kiểm tra lại ngay tại invocation boundary.
+
+- Supervisor phát capability HMAC có TTL tối đa 5 phút, khóa đồng thời theo `run_id`, `step_id`, `owner_id`, `agent_name` và danh sách tool được duyệt. Step thường vẫn nhận execution identity đã ký nhưng danh sách tool đặc quyền rỗng.
+- A2A executor bỏ qua hoàn toàn cờ boolean `hitl_approved` từ request; owner/tenant chỉ được đưa vào execution context khi capability hợp lệ.
+- MCP client truyền `X-Agent-Name`, `X-Step-Id`, `X-Owner-Id`, `X-Run-Id` và `X-Approval-Capability`. MCP middleware xác minh chữ ký/binding; từng wrapper tool tiếp tục kiểm tra agent allowlist và tool-specific approval.
+- Istio AuthorizationPolicy giới hạn theo service account: CodingAgent chỉ tới code/repo MCP, ChatAgent chỉ tới web-search MCP; RAGAgent không được gọi MCP service ngoài allowlist.
 
 - Các tool servers được viết bằng `FastMCP`:
   - `code_exec_server.py` (Port 9001)

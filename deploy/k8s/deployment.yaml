@@ -26,7 +26,7 @@ spec:
       serviceAccountName: agentic-api-sa
       containers:
         - name: api
-          image: ghcr.io/agentic-platform/api:latest
+          image: ghcr.io/longdoncoi/aiagent/api@sha256:b990e582e0ce236b3a3e1bff7e59cc4f63200aea89d270fce3730ef0a6b467ac
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000
@@ -116,7 +116,7 @@ spec:
       serviceAccountName: agentic-chat-agent-sa
       containers:
         - name: chat-agent
-          image: ghcr.io/agentic-platform/agent:latest
+          image: ghcr.io/longdoncoi/aiagent/agent@sha256:7c2a868c54ad58468f1ca17c285d5577f0d4b2accdb463bf4e6db24289268d1b
           env:
             - name: AGENT_MODULE
               value: "src.agentic.agents.chat.server"
@@ -204,7 +204,7 @@ spec:
       serviceAccountName: agentic-rag-agent-sa
       containers:
         - name: rag-agent
-          image: ghcr.io/agentic-platform/agent:latest
+          image: ghcr.io/longdoncoi/aiagent/agent@sha256:7c2a868c54ad58468f1ca17c285d5577f0d4b2accdb463bf4e6db24289268d1b
           env:
             - name: AGENT_MODULE
               value: "src.agentic.agents.rag.server"
@@ -292,7 +292,7 @@ spec:
       serviceAccountName: agentic-coding-agent-sa
       containers:
         - name: coding-agent
-          image: ghcr.io/agentic-platform/agent:latest
+          image: ghcr.io/longdoncoi/aiagent/agent@sha256:7c2a868c54ad58468f1ca17c285d5577f0d4b2accdb463bf4e6db24289268d1b
           env:
             - name: AGENT_MODULE
               value: "src.agentic.agents.coding.server"
@@ -380,7 +380,7 @@ spec:
       serviceAccountName: agentic-mcp-code-exec-sa
       containers:
         - name: mcp-code-exec
-          image: ghcr.io/agentic-platform/mcp:latest
+          image: ghcr.io/longdoncoi/aiagent/mcp@sha256:91b4c6de9dbfe0c14e9dc96105728526b96eddbf20c7b36db0921d8136a417cf
           env:
             - name: MCP_SERVER_MODULE
               value: "src.agentic.tools.servers.code_exec_server"
@@ -434,7 +434,7 @@ spec:
       serviceAccountName: agentic-mcp-sa
       containers:
         - name: mcp-repo
-          image: ghcr.io/agentic-platform/mcp:latest
+          image: ghcr.io/longdoncoi/aiagent/mcp@sha256:91b4c6de9dbfe0c14e9dc96105728526b96eddbf20c7b36db0921d8136a417cf
           env:
             - name: MCP_SERVER_MODULE
               value: "src.agentic.tools.servers.repo_server"
@@ -483,7 +483,7 @@ spec:
       serviceAccountName: agentic-mcp-sa
       containers:
         - name: mcp-web-search
-          image: ghcr.io/agentic-platform/mcp:latest
+          image: ghcr.io/longdoncoi/aiagent/mcp@sha256:91b4c6de9dbfe0c14e9dc96105728526b96eddbf20c7b36db0921d8136a417cf
           env:
             - name: MCP_SERVER_MODULE
               value: "src.agentic.tools.servers.web_search_server"

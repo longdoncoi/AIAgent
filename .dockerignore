@@ -18,6 +18,12 @@ build/
 venv/
 data/index/
 data/raw/
+data/memory/
+.memory/
+.workflows/
+tests/
+evals/
+.context/
 *.log
 .DS_Store
 Thumbs.db

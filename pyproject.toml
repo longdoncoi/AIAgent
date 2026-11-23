@@ -51,6 +51,7 @@ dev = [
     "pytest-xdist>=3.6.1",
     "ruff>=0.6.9",
     "mypy>=1.11.2",
+    "pip-audit>=2.7.3",
     "ragas>=0.2.0",
     "datasets>=2.19.0",
 ]

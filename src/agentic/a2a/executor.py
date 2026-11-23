@@ -15,6 +15,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from src.agentic.a2a.cards import AgentCard
 from src.agentic.core.config import get_settings
+from src.agentic.safety.capabilities import verify_tool_capability
 from src.agentic.tools.execution_context import (
     ToolExecutionContext,
     reset_tool_execution_context,
@@ -53,17 +54,32 @@ class A2AAgentExecutor:
         self.card = card
         self.graph = graph
 
+    def _execution_context(self, request: A2ATaskRequest) -> ToolExecutionContext:
+        owner_id = str(request.metadata.get("owner_id") or "")
+        run_id = str(request.metadata.get("run_id") or "")
+        capability = request.metadata.get("approval_capability")
+        capability_token = str(capability) if capability else None
+        claims = verify_tool_capability(
+            capability_token,
+            run_id=run_id,
+            step_id=request.task_id,
+            owner_id=owner_id,
+            agent_name=self.card.name,
+        )
+        return ToolExecutionContext(
+            agent_name=self.card.name,
+            step_id=request.task_id,
+            hitl_approved=bool(claims and claims.allowed_tools),
+            owner_id=claims.owner_id if claims else None,
+            run_id=claims.run_id if claims else None,
+            approval_capability=capability_token if claims else None,
+            allowed_tools=claims.allowed_tools if claims else (),
+        )
+
     async def execute(self, request: A2ATaskRequest) -> A2ATaskResponse:
         """Executes a single step via the agent's internal LangGraph graph."""
         context_token = set_tool_execution_context(
-            ToolExecutionContext(
-                agent_name=self.card.name,
-                step_id=request.task_id,
-                hitl_approved=bool(request.metadata.get("hitl_approved", False)),
-                owner_id=str(request.metadata.get("owner_id"))
-                if request.metadata.get("owner_id")
-                else None,
-            )
+            self._execution_context(request)
         )
         try:
             instruction = request.payload.instruction
@@ -113,14 +129,7 @@ class A2AAgentExecutor:
 
         accumulated_output: list[str] = []
         context_token = set_tool_execution_context(
-            ToolExecutionContext(
-                agent_name=self.card.name,
-                step_id=request.task_id,
-                hitl_approved=bool(request.metadata.get("hitl_approved", False)),
-                owner_id=str(request.metadata.get("owner_id"))
-                if request.metadata.get("owner_id")
-                else None,
-            )
+            self._execution_context(request)
         )
         try:
             yield {

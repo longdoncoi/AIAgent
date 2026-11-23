@@ -159,24 +159,36 @@ def write_file_core(file_path: str, content: str) -> str:
 @mcp.tool()
 async def repo_list_files(directory: str = ".", max_depth: int = 3) -> str:
     """List directory tree up to max_depth."""
+    from src.agentic.tools.servers.security import authorize_tool_execution
+
+    authorize_tool_execution("repo_list_files")
     return list_files_core(directory, max_depth)
 
 
 @mcp.tool()
 async def repo_read_file(file_path: str, start_line: int = 1, end_line: int = 200) -> str:
     """Read a slice of lines from a file."""
+    from src.agentic.tools.servers.security import authorize_tool_execution
+
+    authorize_tool_execution("repo_read_file")
     return read_file_core(file_path, start_line, end_line)
 
 
 @mcp.tool()
 async def repo_search_symbol(query: str, directory: str = ".") -> str:
     """Search for a symbol or text pattern in files."""
+    from src.agentic.tools.servers.security import authorize_tool_execution
+
+    authorize_tool_execution("repo_search_symbol")
     return search_symbol_core(query, directory)
 
 
 @mcp.tool()
 async def repo_write_file(file_path: str, content: str) -> str:
     """Write or overwrite a file with given content."""
+    from src.agentic.tools.servers.security import authorize_tool_execution
+
+    authorize_tool_execution("repo_write_file")
     return write_file_core(file_path, content)
 
 

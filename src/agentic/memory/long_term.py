@@ -199,6 +199,8 @@ class LongTermStore:
                     f"[DEAD-LETTER-FALLBACK] PostgreSQL upsert error for entry '{entry_id}' ({e}). "
                     "Persisting locally to SQLite WAL buffer to prevent data loss."
                 )
+                if self.settings.environment == "production":
+                    raise RuntimeError("PostgreSQL long-term memory write failed.") from e
 
         with self._lock:
             with self._get_sqlite_connection() as conn:
@@ -264,7 +266,10 @@ class LongTermStore:
                             )
                         return results
             except Exception as e:
-                logger.error(f"PostgreSQL search error ({e}). Falling back to SQLite.")
+                logger.error(f"PostgreSQL search error ({e}).")
+                if self.settings.environment == "production":
+                    raise RuntimeError("PostgreSQL long-term memory search failed.") from e
+                logger.warning("Falling back to SQLite in non-production mode.")
 
         with self._lock:
             with self._get_sqlite_connection() as conn:

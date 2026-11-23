@@ -14,7 +14,7 @@ async def consolidate_session_memory(
 ) -> None:
     """Extracts summary and writes episodic memory entry upon session completion."""
     try:
-        store = get_long_term_store()
+        store = await asyncio.to_thread(get_long_term_store)
         summary = f"Goal: {goal}\nOutcome: {final_answer[:300]}..."
         await asyncio.to_thread(
             store.add_episodic,

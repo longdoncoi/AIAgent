@@ -56,28 +56,63 @@ spec:
             methods: ["POST", "GET"]
 ---
 # ------------------------------------------------------------------------------
-# 3. AuthorizationPolicy: L3 Agents to L4 MCP Tools
+# 3. AuthorizationPolicy: CodingAgent to repository and code-execution MCP tools
 # ------------------------------------------------------------------------------
 apiVersion: security.istio.io/v1beta1
 kind: AuthorizationPolicy
 metadata:
-  name: allow-agents-to-mcp-tools
+  name: allow-coding-agent-to-coding-mcp
   namespace: agentic-platform
 spec:
   selector:
     matchLabels:
-      tier: l4-tools
+      app: agentic-mcp-code-exec
   action: ALLOW
   rules:
     - from:
         - source:
-            principals:
-              - "cluster.local/ns/agentic-platform/sa/agentic-coding-agent-sa"
-              - "cluster.local/ns/agentic-platform/sa/agentic-chat-agent-sa"
-              - "cluster.local/ns/agentic-platform/sa/agentic-rag-agent-sa"
+            principals: ["cluster.local/ns/agentic-platform/sa/agentic-coding-agent-sa"]
       to:
         - operation:
-            ports: ["9001", "9002", "9003"]
+            ports: ["9001"]
+            methods: ["POST", "GET"]
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-coding-agent-to-repo-mcp
+  namespace: agentic-platform
+spec:
+  selector:
+    matchLabels:
+      app: agentic-mcp-repo
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/agentic-platform/sa/agentic-coding-agent-sa"]
+      to:
+        - operation:
+            ports: ["9002"]
+            methods: ["POST", "GET"]
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-chat-agent-to-web-search-mcp
+  namespace: agentic-platform
+spec:
+  selector:
+    matchLabels:
+      app: agentic-mcp-web-search
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/agentic-platform/sa/agentic-chat-agent-sa"]
+      to:
+        - operation:
+            ports: ["9003"]
             methods: ["POST", "GET"]
 ---
 # ------------------------------------------------------------------------------
@@ -87,7 +122,7 @@ apiVersion: security.istio.io/v1beta1
 kind: AuthorizationPolicy
 metadata:
   name: deny-sandbox-egress-to-internal
-  namespace: agentic-platform
+  namespace: agentic-sandbox
 spec:
   selector:
     matchLabels:

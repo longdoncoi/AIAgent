@@ -19,6 +19,10 @@ class Step(BaseModel):
     )
     output: str | None = Field(default=None, description="Result output from sub-agent")
     risk_level: Literal["low", "medium", "high"] = Field(default="low")
+    approval_tools: list[str] = Field(
+        default_factory=list,
+        description="Exact approval-gated tools reviewed for this step",
+    )
     depends_on: list[str] = Field(
         default_factory=list, description="IDs of prerequisite steps before this step can run"
     )
@@ -78,5 +82,6 @@ class AgentState(BaseModel):
     approval_granted: bool | None = None
     approved_step_ids: list[str] = Field(default_factory=list)
     final_answer: str | None = None
+    run_id: str | None = None
     thread_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)

@@ -41,7 +41,7 @@
 - Cơ chế token trim giữ context window của prompt luôn nằm trong ngân sách an toàn.
 
 ### 2.2. Long-term Memory (`long_term.py`)
-- Tái sử dụng `ConnectionPool` từ `short_term.py` qua `_get_pg_conn()`, loại bỏ chi phí bắt tay TCP/SSL trên mỗi transaction. Dead-letter fallback tự động lưu trữ tạm thời sang SQLite WAL khi PostgreSQL mất kết nối.
+- Tái sử dụng `ConnectionPool` từ `short_term.py` qua `_get_pg_conn()`, loại bỏ chi phí bắt tay TCP/SSL trên mỗi transaction. Production fail-closed khi PostgreSQL lỗi; SQLite WAL chỉ dành cho development/test và không được dùng làm fallback âm thầm giữa nhiều replica.
 - Lưu trữ trong cơ sở dữ liệu quan hệ kết hợp vector embeddings:
   - **Semantic**: Thông tin hồ sơ người dùng, các thực thể cố định.
   - **Episodic**: Bản ghi các tác vụ đã thực hiện thành công/thất bại trong quá khứ.
@@ -64,3 +64,5 @@
 - Public `thread_id` được claim nguyên tử theo principal và chuyển thành HMAC-scoped checkpoint key trước khi truy cập state.
 - Redis checkpoint chỉ deserialize payload có HMAC hợp lệ; legacy unsigned migration mặc định tắt và bị cấm ở production.
 - HITL resume phải khớp đồng thời public thread, owner đã đăng ký và `step_id` của interrupt hiện tại.
+- Long-term store được khởi tạo trong worker thread khi consolidation chạy để không block event loop.
+- CDC lưu tenant metadata trong sidecar; retrieval chỉ tin tenant từ signed execution context. Tài liệu thiếu `tenant_id` chỉ được đọc khi khai báo `visibility: shared`; tenant filter được áp trước BM25/vector fusion và KG không tenant-aware bị loại khỏi truy vấn tenant.

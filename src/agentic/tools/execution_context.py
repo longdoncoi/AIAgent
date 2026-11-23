@@ -10,6 +10,9 @@ class ToolExecutionContext:
     step_id: str
     hitl_approved: bool = False
     owner_id: str | None = None
+    run_id: str | None = None
+    approval_capability: str | None = None
+    allowed_tools: tuple[str, ...] = ()
 
 
 _context: ContextVar[ToolExecutionContext | None] = ContextVar(
