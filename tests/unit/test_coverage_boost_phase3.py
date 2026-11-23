@@ -66,12 +66,16 @@ async def test_api_main_lifespan_clean_and_exceptions():
             new_callable=AsyncMock,
         ) as mock_wait,
         patch("src.agentic.a2a.client.get_a2a_client") as mock_get_a2a,
+        patch("src.agentic.memory.thread_registry.get_thread_registry") as mock_get_registry,
         patch("src.agentic.memory.short_term.close_postgres_pool") as mock_pg_close,
         patch("src.agentic.core.redis.close_redis_pools") as mock_redis_close,
     ):
         mock_a2a_client = MagicMock()
         mock_a2a_client.aclose = AsyncMock()
         mock_get_a2a.return_value = mock_a2a_client
+        mock_registry = MagicMock()
+        mock_registry.aclose = AsyncMock()
+        mock_get_registry.return_value = mock_registry
 
         async with lifespan(app):
             assert hasattr(app.state, "graph")
@@ -79,6 +83,7 @@ async def test_api_main_lifespan_clean_and_exceptions():
 
         mock_wait.assert_awaited_once_with(timeout=5.0)
         mock_a2a_client.aclose.assert_awaited_once()
+        mock_registry.aclose.assert_awaited_once()
         mock_pg_close.assert_called_once()
         mock_redis_close.assert_called_once()
 

@@ -32,14 +32,14 @@ dev:
 	uvicorn src.agentic.api.main:app --host 0.0.0.0 --port 8000 --reload
 
 lint:
-	ruff check src/ tests/
+	ruff check .
 	mypy src/
 
 audit:
 	pip-audit
 
 test:
-	pytest tests/ -v --cov=src
+	pytest tests/ -n auto -v --cov=src
 
 eval:
 	python evals/run_eval.py

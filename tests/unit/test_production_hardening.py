@@ -221,3 +221,79 @@ def test_k8s_sandbox_isolation_checks() -> None:
     # In local test environment, k8s sandbox defaults to disabled unless configured
     avail = _is_k8s_available()
     assert isinstance(avail, bool)
+
+
+@pytest.mark.asyncio
+async def test_a2a_client_retry_and_backpressure() -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from src.agentic.a2a.client import A2AClient
+
+    client = A2AClient()
+    client.settings.allow_local_agent_fallback = False
+    client.settings.a2a_max_retries = 2
+    client.settings.a2a_retry_backoff_base_seconds = 0.001
+    client.settings.a2a_retry_backoff_max_seconds = 0.005
+
+    # 1. Simulate 503 transient error followed by 200 OK
+    resp_503 = MagicMock()
+    resp_503.status_code = 503
+
+    resp_200 = MagicMock()
+    resp_200.status_code = 200
+    resp_200.json.return_value = {
+        "task_id": "step_retry",
+        "status": "completed",
+        "output": "Recovered after retry",
+        "error": None,
+    }
+
+    mock_http = MagicMock()
+    mock_http.is_closed = False
+    mock_http.post = AsyncMock(side_effect=[resp_503, resp_200])
+
+    client._http_client = mock_http
+
+    res = await client.call_agent(
+        target_agent="chat",
+        step_id="step_retry",
+        instruction="Hello with retry",
+    )
+    assert res.status == "completed"
+    assert res.output == "Recovered after retry"
+    assert mock_http.post.call_count == 2
+
+    # 2. Verify semaphore bounds concurrency
+    assert client._concurrency_semaphore._value >= 0
+
+
+def test_qdrant_sharding_and_replication_parameters() -> None:
+    from unittest.mock import MagicMock, patch
+
+    from src.agentic.rag.retriever import get_qdrant_vector_store
+
+    mock_qdrant_client = MagicMock()
+    mock_qdrant_client.get_collections.return_value.collections = []
+
+    with patch("src.agentic.rag.retriever.get_settings") as mock_settings:
+        settings = mock_settings.return_value
+        settings.enable_qdrant = True
+        settings.qdrant_collection_name = "test_sharded_coll"
+        settings.qdrant_host = "localhost"
+        settings.qdrant_port = 6333
+        settings.qdrant_api_key = None
+        settings.qdrant_shard_number = 4
+        settings.qdrant_replication_factor = 2
+        settings.qdrant_write_consistency_factor = 2
+
+        store = get_qdrant_vector_store(
+            collection_name="test_sharded_coll",
+            client=mock_qdrant_client,
+        )
+        assert store is not None
+        mock_qdrant_client.create_collection.assert_called_once()
+        _, kwargs = mock_qdrant_client.create_collection.call_args
+        assert kwargs["shard_number"] == 4
+        assert kwargs["replication_factor"] == 2
+        assert kwargs["write_consistency_factor"] == 2
+

@@ -18,14 +18,27 @@ from src.agentic.observability.metrics import TOKENS_TOTAL
 logger = logging.getLogger(__name__)
 
 
+class _AwaitableNone:
+    """Helper enabling callback methods to be called synchronously or awaited."""
+
+    def __await__(self) -> Any:
+        async def _noop() -> None:
+            pass
+
+        return _noop().__await__()
+
+
 class TokenMetricsCallbackHandler(AsyncCallbackHandler):
-    """Tracks prompt and completion tokens consumed per model alias into Prometheus metrics."""
+    """Tracks prompt and completion tokens consumed per model alias into Prometheus metrics.
+
+    Supports both asynchronous (ainvoke) and synchronous (invoke) LangChain execution.
+    """
 
     def __init__(self, model_alias: str) -> None:
         super().__init__()
         self.model_alias = model_alias
 
-    async def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
+    def _record_success(self, response: LLMResult) -> None:
         _circuit_breaker.record_success(self.model_alias)
         if response.llm_output and "token_usage" in response.llm_output:
             usage = response.llm_output["token_usage"]
@@ -40,10 +53,20 @@ class TokenMetricsCallbackHandler(AsyncCallbackHandler):
                     completion_tokens
                 )
 
-    async def on_llm_error(self, error: BaseException, **kwargs: Any) -> None:
+    def _record_error(self, error: BaseException) -> None:
         """Trip the shared breaker from real provider failures."""
         _circuit_breaker.record_failure(self.model_alias)
-        logger.warning("Model request failed for alias '%s': %s", self.model_alias, type(error).__name__)
+        logger.warning(
+            "Model request failed for alias '%s': %s", self.model_alias, type(error).__name__
+        )
+
+    def on_llm_end(self, response: LLMResult, **kwargs: Any) -> Any:
+        self._record_success(response)
+        return _AwaitableNone()
+
+    def on_llm_error(self, error: BaseException, **kwargs: Any) -> Any:
+        self._record_error(error)
+        return _AwaitableNone()
 
 
 class ModelCircuitBreaker:
@@ -93,6 +116,39 @@ class ModelCircuitBreaker:
 
 
 _circuit_breaker = ModelCircuitBreaker()
+_socket_cache: dict[tuple[str, int], tuple[float, bool]] = {}
+_socket_cache_lock = threading.Lock()
+SOCKET_PROBE_TTL = 5.0  # seconds
+
+
+def check_endpoint_reachability(
+    host: str,
+    port: int,
+    timeout: float = 0.2,
+    ttl: float = SOCKET_PROBE_TTL,
+) -> bool:
+    """Checks TCP socket reachability with TTL caching to avoid blocking repeated calls."""
+    now = time.time()
+    key = (host, port)
+    if ttl > 0.0:
+        with _socket_cache_lock:
+            if key in _socket_cache:
+                ts, status = _socket_cache[key]
+                if now - ts < ttl:
+                    return status
+
+    import socket
+
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            is_active = True
+    except Exception:
+        is_active = False
+
+    if ttl > 0.0:
+        with _socket_cache_lock:
+            _socket_cache[key] = (now, is_active)
+    return is_active
 
 
 def reload_gateway_config() -> None:
@@ -103,7 +159,9 @@ def reload_gateway_config() -> None:
         _circuit_breaker.last_failure_time.clear()
         _circuit_breaker.state.clear()
         _circuit_breaker.trip_count.clear()
-    logger.info("ModelCircuitBreaker state reset during gateway config reload.")
+    with _socket_cache_lock:
+        _socket_cache.clear()
+    logger.info("ModelCircuitBreaker and gateway socket cache reset during config reload.")
 
 
 def get_llm(
@@ -144,22 +202,15 @@ def get_llm(
 
     is_test = settings.environment == "test"
 
-    # Fast check if gateway endpoint is reachable
-    import socket
+    # Fast check if gateway endpoint is reachable with TTL caching
     from urllib.parse import urlparse
 
     parsed = urlparse(base_url)
     target_host = parsed.hostname or "localhost"
     target_port = parsed.port or 4000
 
-    def _is_active() -> bool:
-        try:
-            with socket.create_connection((target_host, target_port), timeout=0.2):
-                return True
-        except Exception:
-            return False
-
-    is_online = _is_active()
+    probe_ttl = 0.0 if is_test else SOCKET_PROBE_TTL
+    is_online = check_endpoint_reachability(target_host, target_port, timeout=0.2, ttl=probe_ttl)
     effective_timeout = (
         timeout if timeout is not None else (0.5 if (is_test or not is_online) else 60.0)
     )

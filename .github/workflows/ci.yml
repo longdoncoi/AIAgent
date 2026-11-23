@@ -91,7 +91,7 @@ jobs:
         run: python scripts/migrate_db.py
 
       - name: Run Unit & Integration Tests (pytest)
-        run: pytest tests/ -v --cov=src --cov-report=term-missing
+        run: pytest tests/ -n auto -v --cov=src --cov-report=term-missing
         env:
           ENABLE_DOCKER_SANDBOX: "false"
 

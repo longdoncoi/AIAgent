@@ -833,7 +833,8 @@ async def test_temporal_worker_successful_run():
                 await run_worker()
                 mock_run.assert_called_once()
 
-    with patch("src.agentic.workflows.worker.run_worker", return_value=None):
+    mock_rw = MagicMock()
+    with patch("src.agentic.workflows.worker.run_worker", mock_rw):
         with patch("asyncio.run", return_value=None) as mock_ar:
             main()
             mock_ar.assert_called_once()
@@ -863,6 +864,7 @@ async def test_docker_and_k8s_sandbox_execution_branches():
     mock_proc_to = MagicMock()
     mock_proc_to.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
     mock_proc_to.kill = MagicMock(return_value=None)
+    mock_proc_to.wait = AsyncMock(return_value=0)
     with patch(
         "asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc_to
     ):
@@ -912,6 +914,7 @@ async def test_redis_saver_full_lifecycle_with_mocked_redis():
     mock_async_redis.set = AsyncMock(return_value=True)
     mock_async_redis.lrange = AsyncMock(return_value=[])
     mock_async_redis.rpush = AsyncMock(return_value=1)
+    mock_async_redis.sadd = AsyncMock(return_value=1)
     mock_async_redis.expire = AsyncMock(return_value=True)
 
     with patch("redis.Redis.from_url", return_value=mock_sync_redis):

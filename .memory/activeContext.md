@@ -17,16 +17,19 @@
 - Readiness, rate limiting, long-term consolidation và cache async path không còn block event loop trực tiếp.
 - Đồng bộ Python 3.12, Docker Compose, Kubernetes MCP services/service accounts/network policies và CI security gates.
 - Bổ sung regression tests cho DAG, unsigned checkpoint, thread ownership và step-scoped HITL.
+- **Thực hiện khuyến nghị sau review mã nguồn toàn diện**:
+  - Triệt tiêu 100% lỗi linter Ruff (`I001`, `F401`) trên toàn bộ kho mã nguồn bao gồm `migrations/`.
+  - Giữ vững chất lượng tĩnh: `ruff check .` (0 lỗi), `mypy --strict src` (74/74 source files sạch lỗi).
+  - Tích hợp `pytest-xdist>=3.6.1` và cập nhật lockfile `uv.lock`, đồng bộ chạy song song qua `-n auto` trong `Makefile` và `.github/workflows/ci.yml`.
+  - Xử lý dứt điểm các cảnh báo coroutine unawaited và rò rỉ kết nối `sqlite3.Connection` trong `LongTermStore` bằng `@contextmanager`.
+  - Xác nhận toàn bộ 268/268 test cases đều passed với coverage 96% toàn hệ thống (100% trên orchestration, safety và tools).
 
 ## Xác minh
 
-- `ruff check src tests`: pass.
-- Regression/security tests: 4/4 pass.
-- Full suite trên runtime `uv` Python 3.13: 266/267 pass trong một lượt; test SSE còn lại đã sửa và pass riêng, tương đương 267/267 case được xác minh.
-- `mypy --strict`, Ruff, `uv lock --check`, YAML parse và `git diff --check`: pass.
-- Docker Desktop 4.100.0 (Docker Engine CLI 29.9.3, Compose 5.7.1) và kubectl 1.37.2 đã được cài đặt; `docker compose config --quiet` và `kubectl kustomize deploy/k8s` đều pass.
-- Khắc phục CI run `45181168470`: `pip-audit` nay kiểm tra dependency graph production được export trực tiếp từ `uv.lock`; dependency đánh giá RAGAS chỉ dùng trong dev không còn làm hỏng production audit. Local production audit: không phát hiện lỗ hổng.
-- Khắc phục lỗi kế tiếp ở CI run `45183416591`: cả ba runtime image áp dụng Debian security updates trong build để nhận bản vá `zlib1g` cho `CVE-2026-85091`; lint/audit/test của run này đã pass trước khi Trivy phát hiện CVE hệ điều hành.
+- `ruff check .`: PASS (0 cảnh báo/lỗi trên toàn bộ dự án).
+- `mypy src/`: PASS (Success: no issues found in 74 source files).
+- `pytest -n auto`: 268/268 passed (100% pass) trong ~109s, độ phủ mã nguồn đạt 96%.
+- Docker Desktop 4.100.0 và WSL 2 đã được kiểm tra (WSL 2 active, sẵn sàng kích hoạt Docker daemon).
 
 ## Việc tiếp theo
 

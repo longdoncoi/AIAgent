@@ -95,12 +95,16 @@ class LongTermStore:
             with psycopg.connect(self._pg_conn_str, prepare_threshold=None) as conn:
                 yield conn
 
-    def _get_sqlite_connection(self) -> sqlite3.Connection:
+    @contextmanager
+    def _get_sqlite_connection(self) -> Generator[sqlite3.Connection, None, None]:
         conn = sqlite3.connect(str(self.db_path), timeout=10.0, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
-        return conn
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def _init_sqlite(self) -> None:
         """Initializes SQLite schema and migrates legacy JSON records if present."""

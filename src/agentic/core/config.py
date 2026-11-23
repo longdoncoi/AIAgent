@@ -48,10 +48,14 @@ class Settings(BaseSettings):
     llama_chat_base_url: str = "http://localhost:8080/v1"
     llama_embed_base_url: str = "http://localhost:8081/v1"
 
-    # A2A Sub-Agents Endpoints
+    # A2A Sub-Agents Endpoints & Resilience
     a2a_chat_agent_url: str = "http://localhost:9100/a2a"
     a2a_rag_agent_url: str = "http://localhost:9101/a2a"
     a2a_coding_agent_url: str = "http://localhost:9102/a2a"
+    a2a_max_retries: int = 3
+    a2a_retry_backoff_base_seconds: float = 0.5
+    a2a_retry_backoff_max_seconds: float = 4.0
+    a2a_max_concurrent_requests: int = 100
 
     # MCP Tool Servers
     mcp_code_exec_url: str = "http://localhost:9001/sse"
@@ -70,6 +74,9 @@ class Settings(BaseSettings):
     qdrant_api_key: str | None = None
     enable_qdrant: bool = False
     qdrant_collection_name: str = "agentic_knowledge"
+    qdrant_shard_number: int = 1
+    qdrant_replication_factor: int = 1
+    qdrant_write_consistency_factor: int = 1
 
     # Knowledge Graph (Neo4j / NetworkX)
     enable_knowledge_graph: bool = True

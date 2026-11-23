@@ -1,8 +1,7 @@
 """Alembic environment configuration for Agentic Platform."""
 
-from logging.config import fileConfig
-import os
 import sys
+from logging.config import fileConfig
 from pathlib import Path
 
 from alembic import context

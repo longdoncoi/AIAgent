@@ -1,7 +1,9 @@
 """A2A Client used by Supervisor to dispatch tasks to Sub-Agents."""
 
+import asyncio
 import json
 import logging
+import random
 from collections.abc import AsyncIterator
 from functools import lru_cache
 from typing import Any
@@ -34,6 +36,7 @@ class A2AClient:
         }
         self._local_executors: dict[str, Any] = {}
         self._http_client: httpx.AsyncClient | None = None
+        self._concurrency_semaphore = asyncio.Semaphore(self.settings.a2a_max_concurrent_requests)
 
     def _get_http_client(self, timeout: float = 60.0) -> httpx.AsyncClient:
         """Returns or creates the pooled, persistent HTTP client with optional mTLS support."""
@@ -107,31 +110,60 @@ class A2AClient:
             TraceContextTextMapPropagator().inject(headers)
 
         if endpoint:
-            try:
-                client = self._get_http_client(timeout=timeout)
-                resp = await client.post(
-                    endpoint, json=req.model_dump(), headers=headers, timeout=timeout
-                )
-                if resp.status_code == 200:
-                    A2A_REQUESTS_TOTAL.labels(
-                        caller="supervisor", target_agent=target_agent, status="success"
-                    ).inc()
-                    return A2ATaskResponse(**resp.json())
-                if not self.settings.allow_local_agent_fallback:
-                    raise A2ACommunicationError(
-                        target_agent=target_agent,
-                        message=f"A2A endpoint rejected the request with HTTP {resp.status_code}.",
-                    )
-                logger.warning("A2A HTTP error; using development-only local fallback.")
-            except A2ACommunicationError:
-                raise
-            except httpx.TransportError as exc:
-                if not self.settings.allow_local_agent_fallback:
-                    raise A2ACommunicationError(
-                        target_agent=target_agent,
-                        message="A2A transport is unavailable.",
-                    ) from exc
-                logger.info("A2A transport unavailable; using development fallback.")
+            max_attempts = max(1, self.settings.a2a_max_retries)
+            for attempt in range(max_attempts):
+                try:
+                    async with self._concurrency_semaphore:
+                        client = self._get_http_client(timeout=timeout)
+                        resp = await client.post(
+                            endpoint, json=req.model_dump(), headers=headers, timeout=timeout
+                        )
+                    if resp.status_code == 200:
+                        A2A_REQUESTS_TOTAL.labels(
+                            caller="supervisor", target_agent=target_agent, status="success"
+                        ).inc()
+                        return A2ATaskResponse(**resp.json())
+                    if (
+                        resp.status_code in {429, 502, 503, 504}
+                        and attempt < max_attempts - 1
+                    ):
+                        backoff = min(
+                            self.settings.a2a_retry_backoff_max_seconds,
+                            self.settings.a2a_retry_backoff_base_seconds * (2**attempt),
+                        ) * random.uniform(0.5, 1.0)
+                        logger.warning(
+                            f"A2A call to '{target_agent}' returned {resp.status_code}; retrying in {backoff:.2f}s (attempt {attempt+1}/{max_attempts})."
+                        )
+                        await asyncio.sleep(backoff)
+                        continue
+
+                    if not self.settings.allow_local_agent_fallback:
+                        raise A2ACommunicationError(
+                            target_agent=target_agent,
+                            message=f"A2A endpoint rejected the request with HTTP {resp.status_code}.",
+                        )
+                    logger.warning("A2A HTTP error; using development-only local fallback.")
+                    break
+                except A2ACommunicationError:
+                    raise
+                except (httpx.TransportError, httpx.TimeoutException) as exc:
+                    if attempt < max_attempts - 1:
+                        backoff = min(
+                            self.settings.a2a_retry_backoff_max_seconds,
+                            self.settings.a2a_retry_backoff_base_seconds * (2**attempt),
+                        ) * random.uniform(0.5, 1.0)
+                        logger.warning(
+                            f"A2A transport error connecting to '{target_agent}': {exc}; retrying in {backoff:.2f}s (attempt {attempt+1}/{max_attempts})."
+                        )
+                        await asyncio.sleep(backoff)
+                        continue
+                    if not self.settings.allow_local_agent_fallback:
+                        raise A2ACommunicationError(
+                            target_agent=target_agent,
+                            message="A2A transport is unavailable.",
+                        ) from exc
+                    logger.info("A2A transport unavailable; using development fallback.")
+                    break
 
         # Local fallback execution
         local_graph = self._get_local_graph(target_agent)
@@ -192,41 +224,70 @@ class A2AClient:
             TraceContextTextMapPropagator().inject(headers)
 
         if endpoint:
-            try:
-                client = self._get_http_client(timeout=timeout)
-                async with client.stream(
-                    "POST", endpoint, json=req.model_dump(), headers=headers, timeout=timeout
-                ) as resp:
-                    if resp.status_code == 200:
-                        A2A_REQUESTS_TOTAL.labels(
-                            caller="supervisor", target_agent=target_agent, status="success"
-                        ).inc()
-                        async for line in resp.aiter_lines():
-                            if line.startswith("data:"):
-                                data_str = line[5:].strip()
-                                if data_str:
-                                    try:
-                                        yield json.loads(data_str)
-                                    except Exception:
-                                        pass
-                        return
+            max_attempts = max(1, self.settings.a2a_max_retries)
+            for attempt in range(max_attempts):
+                try:
+                    async with self._concurrency_semaphore:
+                        client = self._get_http_client(timeout=timeout)
+                        async with client.stream(
+                            "POST", endpoint, json=req.model_dump(), headers=headers, timeout=timeout
+                        ) as resp:
+                            if resp.status_code == 200:
+                                A2A_REQUESTS_TOTAL.labels(
+                                    caller="supervisor", target_agent=target_agent, status="success"
+                                ).inc()
+                                async for line in resp.aiter_lines():
+                                    if line.startswith("data:"):
+                                        data_str = line[5:].strip()
+                                        if data_str:
+                                            try:
+                                                yield json.loads(data_str)
+                                            except Exception:
+                                                pass
+                                return
+                            if (
+                                resp.status_code in {429, 502, 503, 504}
+                                and attempt < max_attempts - 1
+                            ):
+                                backoff = min(
+                                    self.settings.a2a_retry_backoff_max_seconds,
+                                    self.settings.a2a_retry_backoff_base_seconds * (2**attempt),
+                                ) * random.uniform(0.5, 1.0)
+                                logger.warning(
+                                    f"A2A streaming to '{target_agent}' returned {resp.status_code}; retrying in {backoff:.2f}s (attempt {attempt+1}/{max_attempts})."
+                                )
+                                await asyncio.sleep(backoff)
+                                continue
+
+                            if not self.settings.allow_local_agent_fallback:
+                                raise A2ACommunicationError(
+                                    target_agent=target_agent,
+                                    message=f"A2A streaming endpoint returned HTTP {resp.status_code}.",
+                                )
+                            logger.warning(
+                                "A2A stream HTTP error; using development-only local fallback."
+                            )
+                            break
+                except A2ACommunicationError:
+                    raise
+                except (httpx.TransportError, httpx.TimeoutException) as exc:
+                    if attempt < max_attempts - 1:
+                        backoff = min(
+                            self.settings.a2a_retry_backoff_max_seconds,
+                            self.settings.a2a_retry_backoff_base_seconds * (2**attempt),
+                        ) * random.uniform(0.5, 1.0)
+                        logger.warning(
+                            f"A2A streaming transport error for '{target_agent}': {exc}; retrying in {backoff:.2f}s (attempt {attempt+1}/{max_attempts})."
+                        )
+                        await asyncio.sleep(backoff)
+                        continue
                     if not self.settings.allow_local_agent_fallback:
                         raise A2ACommunicationError(
                             target_agent=target_agent,
-                            message=f"A2A streaming endpoint returned HTTP {resp.status_code}.",
-                        )
-                    logger.warning(
-                        "A2A stream HTTP error; using development-only local fallback."
-                    )
-            except A2ACommunicationError:
-                raise
-            except httpx.TransportError as exc:
-                if not self.settings.allow_local_agent_fallback:
-                    raise A2ACommunicationError(
-                        target_agent=target_agent,
-                        message="A2A streaming transport is unavailable.",
-                    ) from exc
-                logger.info("A2A streaming transport unavailable; using development fallback.")
+                            message="A2A streaming transport is unavailable.",
+                        ) from exc
+                    logger.info("A2A streaming transport unavailable; using development fallback.")
+                    break
 
         local_graph = self._get_local_graph(target_agent)
         card = get_agent_card(target_agent)

@@ -13,6 +13,7 @@ Targeting >= 95% total code coverage across all enterprise modules in src/agenti
 """
 
 import asyncio
+import inspect
 import json
 import os
 import sys
@@ -564,6 +565,12 @@ async def test_health_routes_tcp_failure():
 # ==============================================================================
 
 
+async def _mock_wait_for_timeout(coro, timeout=None):
+    if inspect.iscoroutine(coro):
+        coro.close()
+    raise asyncio.TimeoutError()
+
+
 @pytest.mark.asyncio
 async def test_code_exec_server_docker_branches():
     # 1. Docker execution success
@@ -580,7 +587,7 @@ async def test_code_exec_server_docker_branches():
     # 2. Docker container timeout
     with (
         patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc),
-        patch("asyncio.wait_for", side_effect=asyncio.TimeoutError),
+        patch("asyncio.wait_for", side_effect=_mock_wait_for_timeout),
     ):
         res_timeout = await _execute_in_docker("sleep 10", is_python=False, timeout=1)
         assert "Execution timed out in container" in res_timeout
@@ -612,6 +619,7 @@ async def test_code_exec_server_k8s_branches():
 async def test_code_exec_server_local_and_fastmcp():
     # 1. Local execution with returncode = 1
     mock_proc = AsyncMock()
+    mock_proc.kill = MagicMock(return_value=None)
     mock_proc.communicate.return_value = (b"", b"SyntaxError: invalid syntax\n")
     mock_proc.returncode = 1
 
@@ -622,7 +630,7 @@ async def test_code_exec_server_local_and_fastmcp():
     # 2. Local execution timeout
     with (
         patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc),
-        patch("asyncio.wait_for", side_effect=asyncio.TimeoutError),
+        patch("asyncio.wait_for", side_effect=_mock_wait_for_timeout),
     ):
         res_to = await execute_bash_command("long bash loop", timeout=1)
         assert "timed out" in res_to
@@ -844,7 +852,12 @@ async def test_a2a_client_streaming_and_fallback():
 
     with patch.object(client, "_get_http_client", return_value=mock_failed_client):
         mock_local_graph = MagicMock()
-        mock_local_graph.astream_events = AsyncMock(return_value=[])
+
+        async def _empty_events(*args, **kwargs):
+            if False:
+                yield {}
+
+        mock_local_graph.astream_events = _empty_events
         with patch.object(client, "_get_local_graph", return_value=mock_local_graph):
             events = []
             async for ev in client.call_agent_stream("chat_agent", "step_01", "instruction"):

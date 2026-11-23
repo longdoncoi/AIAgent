@@ -1,7 +1,9 @@
 """Planner Node decomposing queries into discrete execution steps."""
 
 import logging
+import threading
 import time
+from pathlib import Path
 from typing import Any, Literal
 
 from langchain_core.messages import HumanMessage
@@ -16,6 +18,30 @@ from src.agentic.orchestrator.state import AgentState, Plan, Step
 from src.agentic.safety.policy import get_policy_manager  # compatibility hook for tests
 
 logger = logging.getLogger(__name__)
+
+_planner_prompt_cache: dict[Path, tuple[int, str]] = {}
+_planner_prompt_cache_lock = threading.Lock()
+
+
+def load_cached_planner_prompt(prompt_path: Path) -> str:
+    """Reads prompt template from markdown file with thread-safe mtime caching."""
+    if not prompt_path.exists():
+        return ""
+    try:
+        mtime = prompt_path.stat().st_mtime_ns
+        with _planner_prompt_cache_lock:
+            if prompt_path in _planner_prompt_cache:
+                cached_mtime, content = _planner_prompt_cache[prompt_path]
+                if cached_mtime == mtime:
+                    return content
+        with open(prompt_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        with _planner_prompt_cache_lock:
+            _planner_prompt_cache[prompt_path] = (mtime, content)
+        return content
+    except Exception as e:
+        logger.debug("Could not read prompt from %s: %s", prompt_path, e)
+        return ""
 
 
 def _heuristic_planner(query: str) -> Plan:
@@ -151,13 +177,7 @@ async def planner_node(state: AgentState) -> dict[str, Any]:
 
         settings = get_settings()
         prompt_file = settings.prompts_dir / "planner.md"
-        system_prompt = ""
-        if prompt_file.exists():
-            try:
-                with open(prompt_file, "r", encoding="utf-8") as f:
-                    system_prompt = f.read()
-            except Exception:
-                pass
+        system_prompt = load_cached_planner_prompt(prompt_file)
 
         try:
             llm = get_llm(alias="reasoning-llm", temperature=0.1)

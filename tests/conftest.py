@@ -16,6 +16,8 @@ os.environ["DEBUG"] = "false"
 os.environ["USE_POSTGRES_CHECKPOINT"] = "false"
 os.environ["ENABLE_GUARDRAILS"] = "true"
 os.environ["PII_REDACTION_ENABLED"] = "true"
+os.environ["A2A_RETRY_BACKOFF_BASE_SECONDS"] = "0.001"
+os.environ["A2A_RETRY_BACKOFF_MAX_SECONDS"] = "0.01"
 
 from langgraph.checkpoint.memory import MemorySaver
 

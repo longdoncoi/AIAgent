@@ -138,7 +138,7 @@ async def test_code_exec_sandboxes_deep_branches():
     with patch("asyncio.create_subprocess_exec") as mock_exec:
         d_proc = AsyncMock()
         d_proc.communicate.side_effect = asyncio.TimeoutError()
-        d_proc.kill.side_effect = Exception("cannot kill")
+        d_proc.kill = MagicMock(side_effect=Exception("cannot kill"))
         mock_exec.return_value = d_proc
         d_timeout = await _execute_in_docker("sleep 100", is_python=False, timeout=1)
         assert "timed out" in d_timeout
@@ -870,7 +870,10 @@ async def test_workflows_cdc_and_ingestion_runs():
         assert res_rag["status"] == "completed"
 
     # 3. worker_main execution
-    with patch("asyncio.run") as mock_run:
-        with patch("src.agentic.workflows.worker.run_worker", return_value=None):
-            worker_main()
-            assert mock_run.called
+    def _close_coro(coro):
+        if asyncio.iscoroutine(coro):
+            coro.close()
+
+    with patch("asyncio.run", side_effect=_close_coro) as mock_run:
+        worker_main()
+        assert mock_run.called

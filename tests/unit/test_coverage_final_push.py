@@ -663,7 +663,10 @@ def test_servers_remaining_k8s_timeout_and_sse():
     # Line 63: _is_k8s_available with enable_k8s_sandbox
     with (
         patch.object(get_settings(), "enable_k8s_sandbox", True),
-        patch("shutil.which", return_value="/usr/bin/kubectl"),
+        patch(
+            "src.agentic.tools.servers.code_exec_server._k8s_api_config",
+            return_value=("https://k8s.local:443", "/var/token", "/var/ca"),
+        ),
     ):
         assert code_exec_server._is_k8s_available() is True
 
@@ -695,3 +698,81 @@ def test_servers_remaining_k8s_timeout_and_sse():
         repo_server.main()
         web_search_server.main()
         assert mock_uv.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_k8s_api_config_and_run_pod(tmp_path: Path):
+    """Covers code_exec_server._k8s_api_config and _run_k8s_pod."""
+    import httpx
+
+    # 1. Config returns None when missing host or files
+    with patch.dict(os.environ, {"KUBERNETES_SERVICE_HOST": ""}, clear=False):
+        assert code_exec_server._k8s_api_config() is None
+
+    # 2. Config returns tuple when host and files exist
+    token_f = tmp_path / "token"
+    token_f.write_text("dummy-token", encoding="utf-8")
+    ca_f = tmp_path / "ca.crt"
+    ca_f.write_text("dummy-ca", encoding="utf-8")
+
+    env_mock = {
+        "KUBERNETES_SERVICE_HOST": "10.0.0.1",
+        "KUBERNETES_SERVICE_PORT_HTTPS": "443",
+        "KUBERNETES_SERVICE_ACCOUNT_TOKEN_FILE": str(token_f),
+        "KUBERNETES_SERVICE_ACCOUNT_CA_FILE": str(ca_f),
+    }
+    with patch.dict(os.environ, env_mock, clear=False):
+        cfg = code_exec_server._k8s_api_config()
+        assert cfg == ("https://10.0.0.1:443", str(token_f), str(ca_f))
+
+    # 3. _run_k8s_pod raises when config is None
+    with (
+        patch("src.agentic.tools.servers.code_exec_server._k8s_api_config", return_value=None),
+        pytest.raises(RuntimeError, match="credentials are unavailable"),
+    ):
+        await code_exec_server._run_k8s_pod({}, "default", "pod-1", timeout=5)
+
+    # 4. _run_k8s_pod success flow with httpx mock
+    class DummyResponse:
+        def __init__(self, status_code: int, json_data: dict, text_data: str = ""):
+            self.status_code = status_code
+            self._json = json_data
+            self.text = text_data
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise httpx.HTTPStatusError("err", request=MagicMock(), response=MagicMock())
+
+        def json(self):
+            return self._json
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.post.return_value = DummyResponse(201, {})
+    mock_client.get.side_effect = [
+        DummyResponse(
+            200,
+            {
+                "status": {
+                    "phase": "Succeeded",
+                    "containerStatuses": [{"state": {"terminated": {"exitCode": 0}}}],
+                }
+            },
+        ),
+        DummyResponse(200, {}, text_data="pod output log"),
+    ]
+    mock_client.delete.side_effect = Exception("delete fail warning")
+
+    with (
+        patch(
+            "src.agentic.tools.servers.code_exec_server._k8s_api_config",
+            return_value=("https://10.0.0.1:443", str(token_f), str(ca_f)),
+        ),
+        patch("httpx.AsyncClient", return_value=mock_client),
+    ):
+        out, code = await code_exec_server._run_k8s_pod(
+            {}, "agentic-sandbox", "sandbox-1", timeout=5
+        )
+        assert out == "pod output log"
+        assert code == 0
+

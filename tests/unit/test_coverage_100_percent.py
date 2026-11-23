@@ -18,6 +18,7 @@ Covers all remaining statements across:
 import asyncio
 import inspect
 import runpy
+import warnings
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -717,7 +718,11 @@ def test_cli_main_entrypoints():
         patch("mcp.server.mcpserver.MCPServer.run"),
         patch("asyncio.run", side_effect=close_coro_run),
     ):
-        runpy.run_module("src.agentic.tools.servers.code_exec_server", run_name="__main__")
-        runpy.run_module("src.agentic.tools.servers.repo_server", run_name="__main__")
-        runpy.run_module("src.agentic.tools.servers.web_search_server", run_name="__main__")
-        runpy.run_module("src.agentic.workflows.worker", run_name="__main__")
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", category=RuntimeWarning, message=".*found in sys.modules.*"
+            )
+            runpy.run_module("src.agentic.tools.servers.code_exec_server", run_name="__main__")
+            runpy.run_module("src.agentic.tools.servers.repo_server", run_name="__main__")
+            runpy.run_module("src.agentic.tools.servers.web_search_server", run_name="__main__")
+            runpy.run_module("src.agentic.workflows.worker", run_name="__main__")

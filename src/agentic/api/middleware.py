@@ -127,8 +127,40 @@ class SlidingWindowRateLimiter:
 
         if self._redis_client is not None:
             try:
-                pipe = self._redis_client.pipeline()
                 redis_key = f"rl:tokens:{client_key}"
+                token_script = """
+                redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[1])
+                local entries = redis.call('ZRANGE', KEYS[1], 0, -1)
+                local total = 0
+                for _, entry in ipairs(entries) do
+                    local match = string.match(entry, ":(%d+):")
+                    if match then
+                        total = total + tonumber(match)
+                    end
+                end
+                if total + tonumber(ARGV[2]) > tonumber(ARGV[3]) then
+                    return 0
+                end
+                redis.call('ZADD', KEYS[1], ARGV[4], ARGV[5])
+                redis.call('EXPIRE', KEYS[1], 65)
+                return 1
+                """
+                now_member = f"{now}:{tokens}:{uuid.uuid4().hex[:6]}"
+                allowed = self._redis_client.eval(
+                    token_script,
+                    1,
+                    redis_key,
+                    window_start,
+                    tokens,
+                    self.token_limit,
+                    now,
+                    now_member,
+                )
+                if isinstance(allowed, int):
+                    return (bool(allowed), 0 if allowed else 60)
+
+                # Compatibility fallback for Redis clients/mocks without EVAL support
+                pipe = self._redis_client.pipeline()
                 pipe.zremrangebyscore(redis_key, 0, window_start)
                 pipe.zrange(redis_key, 0, -1)
                 results = pipe.execute()
@@ -146,7 +178,7 @@ class SlidingWindowRateLimiter:
                     return False, 60
 
                 pipe = self._redis_client.pipeline()
-                pipe.zadd(redis_key, {f"{now}:{tokens}:{uuid.uuid4().hex[:6]}": now})
+                pipe.zadd(redis_key, {now_member: now})
                 pipe.expire(redis_key, 65)
                 pipe.execute()
                 return True, 0

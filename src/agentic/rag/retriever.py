@@ -270,28 +270,37 @@ def get_qdrant_vector_store(
         collections = [c.name for c in q_client.get_collections().collections]
 
         if target_collection not in collections:
-            q_client.create_collection(
-                collection_name=target_collection,
-                vectors_config=qmodels.VectorParams(
+            create_kwargs: dict[str, Any] = {
+                "collection_name": target_collection,
+                "vectors_config": qmodels.VectorParams(
                     size=embed_dim,
                     distance=qmodels.Distance.COSINE,
                     on_disk=True,
                 ),
-                hnsw_config=qmodels.HnswConfigDiff(
+                "hnsw_config": qmodels.HnswConfigDiff(
                     m=16,
                     ef_construct=100,
                     on_disk=True,
                 ),
-                quantization_config=qmodels.ScalarQuantization(
+                "quantization_config": qmodels.ScalarQuantization(
                     scalar=qmodels.ScalarQuantizationConfig(
                         type=qmodels.ScalarType.INT8,
                         quantile=0.99,
                         always_ram=True,
                     )
                 ),
-            )
+            }
+            if settings.qdrant_shard_number > 1:
+                create_kwargs["shard_number"] = settings.qdrant_shard_number
+            if settings.qdrant_replication_factor > 1:
+                create_kwargs["replication_factor"] = settings.qdrant_replication_factor
+            if settings.qdrant_write_consistency_factor > 1:
+                create_kwargs["write_consistency_factor"] = settings.qdrant_write_consistency_factor
+
+            q_client.create_collection(**create_kwargs)
             logger.info(
-                f"Configured Qdrant collection '{target_collection}' with HNSW on-disk mmap and INT8 Scalar Quantization."
+                f"Configured Qdrant collection '{target_collection}' with HNSW on-disk mmap, INT8 Scalar Quantization, "
+                f"shards={settings.qdrant_shard_number}, replication={settings.qdrant_replication_factor}."
             )
 
         return QdrantVectorStore(client=q_client, collection_name=target_collection)
