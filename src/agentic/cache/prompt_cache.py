@@ -1,5 +1,29 @@
-"""Exact Match Prompt and Completion Cache with Multi-Tier (L1 In-Memory + L2 Distributed Redis) Architecture."""
+"""Exact Match Prompt and Completion Cache with Multi-Tier (L1 In-Memory + L2 Distributed Redis) Architecture.
 
+Integration guide (LLM gateway stream)
+--------------------------------------
+``PromptCache`` is intentionally decoupled from ``llm/gateway.py`` so the cache
+subsystem stays dependency-inverted. The model gateway should call::
+
+    from src.agentic.cache.prompt_cache import get_prompt_cache
+
+    cached = await asyncio.to_thread(
+        get_prompt_cache().get_response, alias, messages, temperature
+    )
+    if cached is not None:
+        return cached
+    response = await call_model(...)           # existing gateway path
+    await asyncio.to_thread(
+        get_prompt_cache().set_response, alias, messages, temperature, response
+    )
+
+Or use the single-call helper ``get_or_compute_async(alias, messages, compute_fn)``
+which handles stampede locking, L1/L2 lookups and population in one place.
+Both paths are no-ops when ``settings.enable_prompt_cache`` is false or
+``temperature > 0.7`` (non-deterministic requests are never cached).
+"""
+
+import asyncio
 import hashlib
 import json
 import logging
@@ -19,6 +43,16 @@ class PromptCache:
 
     Tier 1 (L1): In-memory LRU for low-latency local hits.
     Tier 2 (L2): Distributed Redis cache shared across multi-replica pods.
+
+    Public API
+    ----------
+    * ``get_response`` / ``set_response`` — direct L1/L2 access (sync).
+    * ``get_or_compute`` / ``get_or_compute_async`` — stampede-guarded
+      lookup-and-compute helpers; synchronous ``compute_fn`` passed to the
+      async variant is always executed with ``asyncio.to_thread``.
+    * ``clear`` / ``stats`` — maintenance and observability.
+
+    See the module docstring for the recommended ``llm/gateway.py`` wiring.
     """
 
     def __init__(
@@ -211,13 +245,19 @@ class PromptCache:
         ttl: int | None = None,
         timeout: float = 5.0,
     ) -> str:
-        """Async stampede-guarded completion generation."""
-        cached = self.get_response(model_alias, messages, temperature)
+        """Async stampede-guarded completion generation.
+
+        All synchronous cache I/O and any synchronous ``compute_fn`` are
+        offloaded with ``asyncio.to_thread`` so the event loop is never blocked.
+        """
+        cached = await asyncio.to_thread(
+            self.get_response, model_alias, messages, temperature
+        )
         if cached is not None:
             return cached
 
         key = self._hash_key(model_alias, messages, temperature)
-        has_lock = self.acquire_lock(key, timeout=timeout)
+        has_lock = await asyncio.to_thread(self.acquire_lock, key, timeout)
 
         if has_lock:
             try:
@@ -226,25 +266,64 @@ class PromptCache:
                 if inspect.iscoroutinefunction(compute_fn):
                     computed = await compute_fn()
                 else:
-                    computed = compute_fn()
-                self.set_response(model_alias, messages, temperature, str(computed), ttl=ttl)
+                    computed = await asyncio.to_thread(compute_fn)
+                await asyncio.to_thread(
+                    self.set_response,
+                    model_alias,
+                    messages,
+                    temperature,
+                    str(computed),
+                    ttl,
+                    None,
+                )
                 return str(computed)
             finally:
-                self.release_lock(key)
+                await asyncio.to_thread(self.release_lock, key)
         else:
-            import asyncio
-
             start_wait = time.time()
             while time.time() - start_wait < timeout:
                 await asyncio.sleep(0.05)
-                cached = self.get_response(model_alias, messages, temperature)
+                cached = await asyncio.to_thread(
+                    self.get_response, model_alias, messages, temperature
+                )
                 if cached is not None:
                     return cached
             import inspect
 
             if inspect.iscoroutinefunction(compute_fn):
                 return str(await compute_fn())
-            return str(compute_fn())
+            return str(await asyncio.to_thread(compute_fn))
+
+    def get_or_compute(
+        self,
+        model_alias: str,
+        messages: list[Any],
+        compute_fn: Any,
+        temperature: float = 0.2,
+        ttl: int | None = None,
+        timeout: float = 5.0,
+    ) -> str:
+        """Synchronous stampede-guarded counterpart of :meth:`get_or_compute_async`."""
+        cached = self.get_response(model_alias, messages, temperature)
+        if cached is not None:
+            return cached
+
+        key = self._hash_key(model_alias, messages, temperature)
+        if self.acquire_lock(key, timeout=timeout):
+            try:
+                computed = str(compute_fn())
+                self.set_response(model_alias, messages, temperature, computed, ttl=ttl)
+                return computed
+            finally:
+                self.release_lock(key)
+
+        start_wait = time.time()
+        while time.time() - start_wait < timeout:
+            time.sleep(0.05)
+            cached = self.get_response(model_alias, messages, temperature)
+            if cached is not None:
+                return cached
+        return str(compute_fn())
 
     def clear(self) -> None:
         """Flushes all cached entries from L1 and L2."""

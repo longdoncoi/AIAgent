@@ -69,3 +69,17 @@ groups:
         annotations:
           summary: "RAG Semantic Cache miss rate exceeds 80%"
           description: "Cache efficiency low; check vector store load and query diversity."
+
+      # 6. FinOps: anomalous token spend vs the same window last week
+      - alert: TokenSpikeAnomalyAlert
+        expr: |
+          sum(increase(agent_tokens_total[15m]))
+          > 2 * sum(increase(agent_tokens_total[15m] offset 1w))
+          and sum(increase(agent_tokens_total[15m])) > 1000
+        for: 5m
+        labels:
+          severity: warning
+          tier: finops
+        annotations:
+          summary: "Token consumption in the last 15m is >2x the same window last week"
+          description: "Possible runaway agent loop or abuse. Notify the FinOps channel and review per-tenant budgets in configs/litellm_config.yaml."

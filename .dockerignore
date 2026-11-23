@@ -17,7 +17,7 @@ build/
 .venv/
 venv/
 data/index/
-data/raw/
+# data/raw/ is included so baseline policies are packaged in the image
 *.log
 .DS_Store
 Thumbs.db

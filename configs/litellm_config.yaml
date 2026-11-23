@@ -1,40 +1,63 @@
+# All model traffic (including circuit-breaker fallback) enters through this
+# LiteLLM router. The `api_key` values below are downstream credentials used by
+# LiteLLM only; callers always authenticate with settings.litellm_api_key.
+# `llama-chat-backup` is the single valid fallback alias referenced by
+# src/agentic/llm/gateway.py -- keep its api_base/api_key populated or the
+# gateway will refuse to fail over (fail closed).
+# FinOps guardrails: hard token/cost budgets per model alias and globally.
+# Values below are the approved production caps; override per tenant via keys.
+general_settings:
+  max_budget: 500.0
+  budget_duration: 30d
+  enforce_budget_on_fallbacks: true
+
 model_list:
   - model_name: reasoning-llm
     litellm_params:
       model: openai/Qwen/Qwen2.5-72B-Instruct
       api_base: http://localhost:8001/v1
       api_key: sk-vllm-dummy
-    fallbacks:
-      - llama-chat-backup
+      max_budget: 200.0
+      budget_duration: 30d
 
   - model_name: fast-llm
     litellm_params:
       model: openai/Qwen/Qwen2.5-14B-Instruct
       api_base: http://localhost:8080/v1
       api_key: sk-llama-dummy
+      max_budget: 150.0
+      budget_duration: 30d
 
   - model_name: coding-llm
     litellm_params:
       model: openai/Qwen/Qwen2.5-Coder-32B-Instruct
-      api_base: http://localhost:8001/v1
+      api_base: http://localhost:8002/v1
       api_key: sk-vllm-dummy
-    fallbacks:
-      - llama-chat-backup
+      max_budget: 100.0
+      budget_duration: 30d
 
   - model_name: llama-chat-backup
     litellm_params:
       model: openai/llama-server
       api_base: http://localhost:8080/v1
       api_key: sk-llama-dummy
+      max_budget: 25.0
+      budget_duration: 30d
 
   - model_name: text-embedding-bge
     litellm_params:
       model: openai/BAAI/bge-large-en-v1.5
       api_base: http://localhost:8081/v1
       api_key: sk-embed-dummy
+      max_budget: 25.0
+      budget_duration: 30d
 
 router_settings:
   routing_strategy: least-busy
   num_retries: 2
   timeout: 60.0
   allowed_fails: 3
+  fallbacks:
+    - reasoning-llm: ["llama-chat-backup"]
+    - coding-llm: ["llama-chat-backup"]
+    - fast-llm: ["llama-chat-backup"]

@@ -1,3 +1,10 @@
+<!--
+  ACTIVE RUNTIME PROMPT: this is the only file under configs/prompts/ that is
+  loaded and injected as a SystemMessage by `orchestrator/nodes/planner.py`.
+  It is injected by the caller, so it remains present even when KV-cache prefix
+  optimization is disabled.
+-->
+
 # Planner Prompt
 
 You are the Planning Node in the Hierarchical Supervisor.

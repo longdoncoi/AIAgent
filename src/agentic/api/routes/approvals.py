@@ -70,14 +70,21 @@ async def resume_hitl_endpoint(
 
     try:
         # Resume LangGraph by passing Command(resume=...)
-        await graph.ainvoke(Command(resume=resume_payload), config=config)
+        resumed_state = await graph.ainvoke(Command(resume=resume_payload), config=config)
         action_status: Literal["resumed", "aborted"] = (
             "resumed" if req.decision.approved else "aborted"
         )
+        final_answer = None
+        if isinstance(resumed_state, dict):
+            final_answer = resumed_state.get("final_answer")
+        elif hasattr(resumed_state, "final_answer"):
+            final_answer = resumed_state.final_answer
+
         return ApprovalResponse(
             thread_id=thread_id,
             status=action_status,
             message=f"Execution for thread '{thread_id}' has been {action_status}.",
+            final_answer=final_answer,
         )
     except Exception as e:
         logger.error(f"Error resuming graph on thread {thread_id}: {e}", exc_info=True)

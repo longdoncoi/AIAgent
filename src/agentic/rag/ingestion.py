@@ -91,6 +91,13 @@ def ingest_documents(
         chunk_overlap=32,
     )
     nodes = node_parser.get_nodes_from_documents(documents)
+    # Assign deterministic content-based IDs to eliminate duplicate vectors on re-ingestion
+    import hashlib
+    for idx, node in enumerate(nodes):
+        file_key = str(node.metadata.get("file_name", ""))
+        node_content = node.get_content()
+        node.id_ = hashlib.sha256(f"{file_key}:{idx}:{node_content}".encode("utf-8")).hexdigest()
+
     leaf_nodes = get_leaf_nodes(nodes)
 
     # Setup docstore and storage context
@@ -110,35 +117,12 @@ def ingest_documents(
     else:
         storage_context = StorageContext.from_defaults(docstore=docstore)
 
-    # Embedding model configuration
-    import socket
+    # Embedding model configuration -- shared with retrieval, fail-closed in production.
+    # Raises RuntimeError when require_embedding_service=True and the configured
+    # llama_embed_base_url is unreachable; never silently builds mock vectors.
+    from src.agentic.rag.embedding import configure_embedding_model
 
-    def _is_server_active(host: str = "localhost", port: int = 8081) -> bool:
-        try:
-            with socket.create_connection((host, port), timeout=0.3):
-                return True
-        except Exception:
-            return False
-
-    from llama_index.core import Settings as LlamaSettings
-
-    if _is_server_active("localhost", 8081):
-        from llama_index.embeddings.openai import OpenAIEmbedding
-
-        LlamaSettings.embed_model = OpenAIEmbedding(
-            api_base=settings.llama_embed_base_url,
-            api_key="sk-embed-dummy",
-            model_name=settings.default_embedding_model,
-            timeout=2.0,
-            max_retries=0,
-        )
-    else:
-        logger.info(
-            "Embedding server on port 8081 not active. Using MockEmbedding for local index."
-        )
-        from llama_index.core.embeddings.mock_embed_model import MockEmbedding
-
-        LlamaSettings.embed_model = MockEmbedding(embed_dim=768)
+    configure_embedding_model()
 
     # Build Vector Store Index over leaf nodes
     _ = VectorStoreIndex(

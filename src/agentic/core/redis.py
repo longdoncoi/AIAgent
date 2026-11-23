@@ -10,122 +10,183 @@ logger = logging.getLogger(__name__)
 
 _sync_pool: Any | None = None
 _async_pool: Any | None = None
+# Binary pools are mandatory for pickle/HMAC checkpoint payloads: redis-py
+# ignores ``decode_responses`` on the client when a connection_pool is passed,
+# so the flag must be set on the pool itself.
+_binary_sync_pool: Any | None = None
+_binary_async_pool: Any | None = None
 _pool_lock = threading.Lock()
 
 
-def get_redis_connection_pool(redis_url: str | None = None, max_connections: int = 100) -> Any:
-    """Returns singleton synchronous redis.ConnectionPool instance."""
-    global _sync_pool
-    if _sync_pool is not None:
-        return _sync_pool
+def get_redis_connection_pool(
+    redis_url: str | None = None,
+    max_connections: int = 100,
+    *,
+    decode_responses: bool = True,
+) -> Any:
+    """Returns a singleton synchronous redis.ConnectionPool.
+
+    ``decode_responses=False`` selects a dedicated binary-safe pool. This is
+    required for raw pickle/HMAC payloads (LangGraph checkpoints); otherwise
+    redis-py attempts UTF-8 decoding of arbitrary bytes and corrupts them.
+    """
+    global _sync_pool, _binary_sync_pool
+    current = _sync_pool if decode_responses else _binary_sync_pool
+    if current is not None:
+        return current
 
     with _pool_lock:
-        if _sync_pool is None:
+        current = _sync_pool if decode_responses else _binary_sync_pool
+        if current is None:
             settings = get_settings()
             target_url = redis_url or settings.redis_url
             try:
                 import redis
 
-                _sync_pool = redis.ConnectionPool.from_url(
+                current = redis.ConnectionPool.from_url(
                     target_url,
                     max_connections=max_connections,
                     socket_timeout=0.5,
                     socket_connect_timeout=1.0,
-                    decode_responses=True,
+                    decode_responses=decode_responses,
                     health_check_interval=30,
                 )
                 logger.info(
-                    f"Initialized singleton sync Redis ConnectionPool (max_connections={max_connections}) at {target_url}"
+                    "Initialized singleton sync Redis ConnectionPool "
+                    "(max_connections=%s, decode_responses=%s) at %s",
+                    max_connections,
+                    decode_responses,
+                    target_url,
                 )
             except Exception as e:
                 logger.debug(f"Could not initialize sync Redis ConnectionPool ({e})")
-                _sync_pool = None
-    return _sync_pool
+                current = None
+            if decode_responses:
+                _sync_pool = current
+            else:
+                _binary_sync_pool = current
+    return current
 
 
 def get_async_redis_connection_pool(
-    redis_url: str | None = None, max_connections: int = 100
+    redis_url: str | None = None,
+    max_connections: int = 100,
+    *,
+    decode_responses: bool = True,
 ) -> Any:
-    """Returns singleton asynchronous redis.asyncio.ConnectionPool instance."""
-    global _async_pool
-    if _async_pool is not None:
-        return _async_pool
+    """Returns a singleton asynchronous redis.asyncio.ConnectionPool.
+
+    As with the sync pool, ``decode_responses=False`` selects a dedicated
+    binary-safe pool so checkpoint blobs are never UTF-8 decoded.
+    """
+    global _async_pool, _binary_async_pool
+    current = _async_pool if decode_responses else _binary_async_pool
+    if current is not None:
+        return current
 
     with _pool_lock:
-        if _async_pool is None:
+        current = _async_pool if decode_responses else _binary_async_pool
+        if current is None:
             settings = get_settings()
             target_url = redis_url or settings.redis_url
             try:
                 import redis.asyncio as aioredis
 
-                _async_pool = aioredis.ConnectionPool.from_url(
+                current = aioredis.ConnectionPool.from_url(
                     target_url,
                     max_connections=max_connections,
                     socket_timeout=2.0,
                     socket_connect_timeout=2.0,
-                    decode_responses=True,
+                    decode_responses=decode_responses,
                     health_check_interval=30,
                 )
                 logger.info(
-                    f"Initialized singleton async Redis ConnectionPool (max_connections={max_connections}) at {target_url}"
+                    "Initialized singleton async Redis ConnectionPool "
+                    "(max_connections=%s, decode_responses=%s) at %s",
+                    max_connections,
+                    decode_responses,
+                    target_url,
                 )
             except Exception as e:
                 logger.debug(f"Could not initialize async Redis ConnectionPool ({e})")
-                _async_pool = None
-    return _async_pool
+                current = None
+            if decode_responses:
+                _async_pool = current
+            else:
+                _binary_async_pool = current
+    return current
 
 
-def get_redis_client(redis_url: str | None = None) -> Any | None:
-    """Returns a redis.Redis client backed by the singleton connection pool."""
-    pool = get_redis_connection_pool(redis_url=redis_url)
+def get_redis_client(redis_url: str | None = None, decode_responses: bool = True) -> Any | None:
+    """Returns a redis.Redis client backed by the singleton connection pool.
+
+    ``decode_responses=False`` is required for binary checkpoint payloads;
+    the flag is forwarded to the pool (redis-py ignores it on the client when
+    an external pool is supplied).
+    """
+    pool = get_redis_connection_pool(redis_url=redis_url, decode_responses=decode_responses)
     if pool is not None:
         try:
             import redis
 
-            return redis.Redis(connection_pool=pool)
+            # Keep the legacy call shape for the default (`True`) so existing
+            # instrumentation/mocks keep working; only binary mode needs the
+            # explicit client-level override.
+            if decode_responses:
+                return redis.Redis(connection_pool=pool)
+            return redis.Redis(connection_pool=pool, decode_responses=False)
         except Exception as e:
             logger.debug(f"Error creating Redis client from pool: {e}")
     return None
 
 
-def get_async_redis_client(redis_url: str | None = None) -> Any | None:
-    """Returns an async redis.asyncio.Redis client backed by the singleton async connection pool."""
-    pool = get_async_redis_connection_pool(redis_url=redis_url)
+def get_async_redis_client(
+    redis_url: str | None = None, *, decode_responses: bool = True
+) -> Any | None:
+    """Returns an async redis.asyncio.Redis client backed by the singleton async pool."""
+    pool = get_async_redis_connection_pool(
+        redis_url=redis_url, decode_responses=decode_responses
+    )
     if pool is not None:
         try:
             import redis.asyncio as aioredis
 
-            return aioredis.Redis(connection_pool=pool)
+            if decode_responses:
+                return aioredis.Redis(connection_pool=pool)
+            return aioredis.Redis(connection_pool=pool, decode_responses=False)
         except Exception as e:
             logger.debug(f"Error creating async Redis client from pool: {e}")
     return None
 
 
 def close_redis_pools() -> None:
-    """Gracefully closes all Redis connection pools on application shutdown."""
-    global _sync_pool, _async_pool
+    """Gracefully closes all synchronous Redis connection pools on shutdown."""
+    global _sync_pool, _binary_sync_pool
     with _pool_lock:
-        if _sync_pool is not None:
-            try:
-                _sync_pool.disconnect()
-                logger.info("Closed synchronous Redis ConnectionPool cleanly.")
-            except Exception as e:
-                logger.warning(f"Error disconnecting sync Redis pool: {e}")
-            finally:
-                _sync_pool = None
-
-        if _async_pool is not None:
-            try:
-                import asyncio
-
+        for name, pool in (("sync", _sync_pool), ("binary sync", _binary_sync_pool)):
+            if pool is not None:
                 try:
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(_async_pool.disconnect())
-                except RuntimeError:
-                    # No running event loop
-                    pass
-                logger.info("Triggered async Redis ConnectionPool disconnect.")
+                    pool.disconnect()
+                    logger.info("Closed %s Redis ConnectionPool cleanly.", name)
+                except Exception as e:
+                    logger.warning(f"Error disconnecting {name} Redis pool: {e}")
+        _sync_pool = None
+        _binary_sync_pool = None
+
+    # The async pools are closed by ``aclose_redis_pools`` from the app
+    # lifespan so the disconnect is always awaited.
+
+
+async def aclose_redis_pools() -> None:
+    """Await graceful shutdown of the async pools, then close the sync pools."""
+    global _async_pool, _binary_async_pool
+    for name, pool in (("async", _async_pool), ("binary async", _binary_async_pool)):
+        if pool is not None:
+            try:
+                await pool.disconnect()
+                logger.info("Closed %s Redis ConnectionPool cleanly.", name)
             except Exception as e:
-                logger.warning(f"Error disconnecting async Redis pool: {e}")
-            finally:
-                _async_pool = None
+                logger.warning("Error disconnecting %s Redis pool: %s", name, e)
+    _async_pool = None
+    _binary_async_pool = None
+    close_redis_pools()

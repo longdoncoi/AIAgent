@@ -20,11 +20,9 @@ spec:
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: agentic-platform
+  # GOVERNANCE: production deploys require explicit Release Board sign-off.
+  # Auto-sync/prune/self-heal were removed; sync is MANUAL after attestation.
   syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-      allowEmpty: false
     syncOptions:
       - CreateNamespace=true
       - PruneLast=true

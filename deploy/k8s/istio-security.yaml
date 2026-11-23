@@ -87,7 +87,8 @@ apiVersion: security.istio.io/v1beta1
 kind: AuthorizationPolicy
 metadata:
   name: deny-sandbox-egress-to-internal
-  namespace: agentic-platform
+  # Sandbox untrusted pods live in agentic-sandbox, not agentic-platform.
+  namespace: agentic-sandbox
 spec:
   selector:
     matchLabels:

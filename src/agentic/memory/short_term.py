@@ -72,6 +72,16 @@ async def close_checkpointer() -> None:
         finally:
             _pg_saver_cm = None
 
+    saver = _global_checkpointer
+    if saver is not None:
+        try:
+            from src.agentic.memory.redis_saver import RedisSaver
+
+            if isinstance(saver, RedisSaver):
+                await saver.aclose()
+        except Exception as e:
+            logger.debug("Error closing RedisSaver resources: %s", e)
+
     _global_checkpointer = None
     close_postgres_pool()
 

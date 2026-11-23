@@ -10,6 +10,7 @@ from typing import Any
 
 from src.agentic.core.config import get_settings
 from src.agentic.core.errors import GuardrailViolation
+from src.agentic.observability.metrics import GUARDRAIL_SEMANTIC_FALLBACK_TOTAL
 from src.agentic.safety.policy import get_policy_manager
 
 logger = logging.getLogger(__name__)
@@ -110,6 +111,18 @@ class GuardrailManager:
             except Exception:
                 continue
 
+    async def asanitize_input(self, text: str) -> str:
+        """Full input guardrail including the semantic jailbreak check."""
+        cleaned = self.sanitize_input(text)
+        safe, reason = await self.check_semantic_safety(cleaned)
+        if not safe:
+            raise GuardrailViolation(
+                message="Semantic safety check rejected the request.",
+                rule="semantic_safety_defense",
+                details={"reason": reason},
+            )
+        return cleaned
+
     def sanitize_input(self, text: str) -> str:
         """Sanitizes user input: checks for direct/obfuscated prompt injection and masks PII."""
         if not self.settings.enable_guardrails:
@@ -149,6 +162,37 @@ class GuardrailManager:
             text = self.mask_pii(text)
 
         return text
+
+    def sanitize_context(self, context: dict[str, Any], *, max_depth: int = 4) -> dict[str, Any]:
+        """Sanitize an untrusted structured context before it enters a prompt.
+
+        Only primitives and small lists/dicts are allowed. Every string is
+        passed through :meth:`sanitize_input`, so injection text hidden in
+        nested ``metadata`` cannot bypass the input guardrail.
+        """
+        if not self.settings.enable_guardrails or not context:
+            return {}
+
+        def _clean(value: Any, depth: int) -> Any:
+            if depth > max_depth:
+                return "[omitted: max depth]"
+            if isinstance(value, str):
+                return self.sanitize_input(value[:10_000])
+            if isinstance(value, (int, float, bool)) or value is None:
+                return value
+            if isinstance(value, list):
+                return [_clean(item, depth + 1) for item in value[:100]]
+            if isinstance(value, dict):
+                return {
+                    str(key)[:120]: _clean(item, depth + 1)
+                    for key, item in list(value.items())[:100]
+                }
+            return f"[omitted: unsupported type {type(value).__name__}]"
+
+        return {
+            str(key)[:120]: _clean(value, 1)
+            for key, value in list(context.items())[:100]
+        }
 
     def mask_pii(self, text: str) -> str:
         """Replaces detected PII with anonymized placeholders."""
@@ -218,9 +262,15 @@ class GuardrailManager:
             if content.upper().startswith("UNSAFE"):
                 return False, content
             return True, "Safe"
-        except Exception:
-            # Fallback to permissive if model guardrail times out
-            return True, "Safe (Heuristic Fallback)"
+        except Exception as exc:
+            # Fail-closed in production: an unavailable judge must not silently
+            # disable jailbreak detection precisely when the system is stressed.
+            GUARDRAIL_SEMANTIC_FALLBACK_TOTAL.labels(mode="unavailable").inc()
+            if self.settings.environment == "production":
+                logger.error("Semantic guardrail judge unavailable (fail-closed): %s", exc)
+                return False, "Semantic guardrail unavailable (fail-closed)"
+            logger.warning("Semantic guardrail judge unavailable; heuristic-only result: %s", exc)
+            return True, "Safe (heuristic fallback — LLM judge unavailable)"
 
 
 class StreamingOutputGuard:

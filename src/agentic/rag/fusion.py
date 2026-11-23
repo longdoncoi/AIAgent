@@ -1,4 +1,4 @@
-"""Multi-Retrieval Fusion combining Vector, BM25 Lexical, and Knowledge Graph streams."""
+"""Multi-Retrieval Fusion combining Vector, lexical keyword, and Knowledge Graph streams."""
 
 import logging
 from collections import defaultdict
@@ -6,14 +6,28 @@ from typing import Any
 
 from llama_index.core.schema import NodeWithScore
 
+from src.agentic.core.config import get_settings
+
 logger = logging.getLogger(__name__)
 
 
 class MultiRetrievalFusion:
-    """Combines ranked lists from Dense Vector, Lexical BM25, and Knowledge Graph using RRF."""
+    """Combines Dense Vector, keyword, and Knowledge Graph lists using weighted RRF.
+
+    Default channel weights come from ``Settings`` (``rag_vector_weight``,
+    ``rag_lexical_weight``, ``rag_kg_weight``); no hardcoded production weights.
+    """
 
     def __init__(self, rrf_k: int = 60) -> None:
         self.rrf_k = rrf_k
+        settings = get_settings()
+        self.channel_weights: dict[str, float] = {
+            "vector": settings.rag_vector_weight,
+            "keyword": settings.rag_lexical_weight,
+            # Historical channel name kept as an alias for backward compatibility.
+            "bm25": settings.rag_lexical_weight,
+            "kg": settings.rag_kg_weight,
+        }
 
     def fuse(
         self,
@@ -24,13 +38,9 @@ class MultiRetrievalFusion:
         """Fuses multiple retrieval channels using Weighted Reciprocal Rank Fusion.
 
         channels:
-            {"vector": [...], "bm25": [...], "kg": [...]}
+            {"vector": [...], "keyword": [...], "kg": [...]}
         """
-        weights = channel_weights or {
-            "vector": 0.40,
-            "bm25": 0.30,
-            "kg": 0.30,
-        }
+        weights = channel_weights or self.channel_weights
 
         fused_scores: dict[str, float] = defaultdict(float)
         node_map: dict[str, Any] = {}

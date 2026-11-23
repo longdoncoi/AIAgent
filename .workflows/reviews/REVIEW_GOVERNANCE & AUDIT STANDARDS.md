@@ -64,3 +64,13 @@ Tất cả các tệp kiểm định chuyên biệt (`REVIEW_*.md`) áp dụng �
 | **Product Owner (I)** | Tiếp nhận trạng thái phát hành, xác nhận các tính năng nghiệp vụ và nghiệm thu phạm vi sản phẩm. | Product Manager |
 
 *(Ghi chú: **R** = Responsible/Thực hiện; **A** = Accountable/Chịu trách nhiệm phê duyệt; **C** = Consulted/Tư vấn kiểm duyệt; **I** = Informed/Nhận thông báo)*
+
+---
+
+## 6. Bằng Chứng Kiểm Định Tự Động (Auto-Evidence Status)
+
+> **AUTO-EVIDENCE PENDING** — chờ đối soát và **ký bởi Release Board**. Không có nhãn `PASSED` được tự động gán cho tài liệu này.
+
+- Artifact: [evidence/prr/latest.json](file:///f:/PROJECTS/AIAgent/evidence/prr/latest.json) (`commit_sha`, `timestamp_utc`, exit code của `ruff` / `mypy` / `pytest --collect-only` / `eval --mode smoke` / parse YAML).
+- Sinh artifact: `python scripts/generate_prr_evidence.py`. Tất cả ô trạng thái `[]` ở các mục trên vẫn giữ nguyên cho đến khi Hội đồng đối soát artifact và ký duyệt.
+- Bảng chữ ký 9 đại diện: [REVIEW.md mục 6.3](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md#63-bảng-chữ-ký-phê-chuẩn-của-hội-đồng-đánh-giá).

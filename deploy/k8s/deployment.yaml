@@ -24,8 +24,24 @@ spec:
         tier: l1-interface
     spec:
       serviceAccountName: agentic-api-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: api
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           image: ghcr.io/agentic-platform/api:latest
           imagePullPolicy: IfNotPresent
           ports:
@@ -114,8 +130,24 @@ spec:
         tier: l3-agent
     spec:
       serviceAccountName: agentic-chat-agent-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: chat-agent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           image: ghcr.io/agentic-platform/agent:latest
           env:
             - name: AGENT_MODULE
@@ -138,13 +170,13 @@ spec:
               memory: "2Gi"
           livenessProbe:
             httpGet:
-              path: /a2a/card
+              path: /health
               port: 9100
             initialDelaySeconds: 10
             periodSeconds: 15
           readinessProbe:
             httpGet:
-              path: /a2a/card
+              path: /health
               port: 9100
             initialDelaySeconds: 5
             periodSeconds: 5
@@ -202,8 +234,24 @@ spec:
         tier: l3-agent
     spec:
       serviceAccountName: agentic-rag-agent-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: rag-agent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           image: ghcr.io/agentic-platform/agent:latest
           env:
             - name: AGENT_MODULE
@@ -226,13 +274,13 @@ spec:
               memory: "4Gi"
           livenessProbe:
             httpGet:
-              path: /a2a/card
+              path: /health
               port: 9101
             initialDelaySeconds: 10
             periodSeconds: 15
           readinessProbe:
             httpGet:
-              path: /a2a/card
+              path: /health
               port: 9101
             initialDelaySeconds: 5
             periodSeconds: 5
@@ -290,8 +338,24 @@ spec:
         tier: l3-agent
     spec:
       serviceAccountName: agentic-coding-agent-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: coding-agent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           image: ghcr.io/agentic-platform/agent:latest
           env:
             - name: AGENT_MODULE
@@ -314,13 +378,13 @@ spec:
               memory: "4Gi"
           livenessProbe:
             httpGet:
-              path: /a2a/card
+              path: /health
               port: 9102
             initialDelaySeconds: 10
             periodSeconds: 15
           readinessProbe:
             httpGet:
-              path: /a2a/card
+              path: /health
               port: 9102
             initialDelaySeconds: 5
             periodSeconds: 5
@@ -378,8 +442,24 @@ spec:
         tier: l4-tools
     spec:
       serviceAccountName: agentic-mcp-code-exec-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: mcp-code-exec
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           image: ghcr.io/agentic-platform/mcp:latest
           env:
             - name: MCP_SERVER_MODULE
@@ -393,6 +473,18 @@ spec:
                 name: agentic-secrets
           ports:
             - containerPort: 9001
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9001
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9001
+            initialDelaySeconds: 5
+            periodSeconds: 5
           resources:
             requests:
               cpu: "250m"
@@ -432,8 +524,24 @@ spec:
         tier: l4-tools
     spec:
       serviceAccountName: agentic-mcp-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: mcp-repo
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           image: ghcr.io/agentic-platform/mcp:latest
           env:
             - name: MCP_SERVER_MODULE
@@ -447,6 +555,18 @@ spec:
                 name: agentic-secrets
           ports:
             - containerPort: 9002
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9002
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9002
+            initialDelaySeconds: 5
+            periodSeconds: 5
           resources:
             requests: {cpu: "100m", memory: "256Mi"}
             limits: {cpu: "500m", memory: "1Gi"}
@@ -481,8 +601,24 @@ spec:
         tier: l4-tools
     spec:
       serviceAccountName: agentic-mcp-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: mcp-web-search
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           image: ghcr.io/agentic-platform/mcp:latest
           env:
             - name: MCP_SERVER_MODULE
@@ -496,6 +632,18 @@ spec:
                 name: agentic-secrets
           ports:
             - containerPort: 9003
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9003
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9003
+            initialDelaySeconds: 5
+            periodSeconds: 5
           resources:
             requests: {cpu: "100m", memory: "256Mi"}
             limits: {cpu: "500m", memory: "1Gi"}

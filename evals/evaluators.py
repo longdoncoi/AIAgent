@@ -1,6 +1,7 @@
 """LLM-as-a-judge and heuristic evaluators for routing accuracy and groundedness."""
 
 import logging
+import os
 
 from pydantic import BaseModel, Field
 
@@ -58,20 +59,21 @@ async def evaluate_groundedness(question: str, generated_answer: str, ground_tru
     overlap = len(gt_tokens.intersection(ans_tokens)) / max(1, len(gt_tokens))
 
     # Try LLM-as-a-judge if model is responsive
-    try:
-        llm = get_llm(alias="reasoning-llm", temperature=0.0)
-        structured_llm = llm.with_structured_output(GroundednessScore)
-        prompt = (
-            f"Question: {question}\n\n"
-            f"Ground Truth Reference: {ground_truth}\n\n"
-            f"Candidate Answer: {generated_answer}\n\n"
-            "Score the factual groundedness of the candidate answer against the reference."
-        )
-        judge_res = await structured_llm.ainvoke(prompt)
-        if isinstance(judge_res, GroundednessScore):
-            return judge_res.groundedness
-    except Exception as e:
-        logger.debug(f"LLM-as-a-judge fallback to objective token recall ({e})")
+    if os.environ.get("SKIP_LLM_JUDGE") != "true":
+        try:
+            llm = get_llm(alias="reasoning-llm", temperature=0.0)
+            structured_llm = llm.with_structured_output(GroundednessScore)
+            prompt = (
+                f"Question: {question}\n\n"
+                f"Ground Truth Reference: {ground_truth}\n\n"
+                f"Candidate Answer: {generated_answer}\n\n"
+                "Score the factual groundedness of the candidate answer against the reference."
+            )
+            judge_res = await structured_llm.ainvoke(prompt)
+            if isinstance(judge_res, GroundednessScore):
+                return judge_res.groundedness
+        except Exception as e:
+            logger.debug(f"LLM-as-a-judge fallback to objective token recall ({e})")
 
     return round(min(1.0, overlap), 3)
 

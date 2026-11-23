@@ -1,3 +1,12 @@
+<!--
+  DOCUMENTATION / REFERENCE ONLY — NOT loaded by the runtime.
+  The Supervisor is implemented as a LangGraph StateGraph in
+  `src/agentic/orchestrator/graph.py`; its behaviour is defined by node code,
+  not by this file. The only prompt file actually injected into an LLM call is
+  `configs/prompts/planner.md` (see `orchestrator/nodes/planner.py`).
+  Reflector evaluation instructions live in `configs/prompts/reflector.md`.
+-->
+
 # Supervisor Prompt
 
 You are the central orchestrator (Supervisor) of the Agentic Multi-Agent Platform.

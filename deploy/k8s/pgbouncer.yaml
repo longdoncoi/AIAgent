@@ -16,8 +16,24 @@ spec:
       labels:
         app: pgbouncer
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: pgbouncer
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           image: edoburu/pgbouncer:v1.22.0
           imagePullPolicy: IfNotPresent
           ports:
@@ -59,6 +75,12 @@ spec:
             limits:
               cpu: "500m"
               memory: "256Mi"
+          # readOnlyRootFilesystem=true: provide explicit writable scratch space.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: pgbouncer-run
+              mountPath: /var/run/pgbouncer
           livenessProbe:
             tcpSocket:
               port: 5432
@@ -69,6 +91,11 @@ spec:
               port: 5432
             initialDelaySeconds: 5
             periodSeconds: 5
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: pgbouncer-run
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

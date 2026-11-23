@@ -30,7 +30,7 @@ from src.agentic.a2a.cards import CHAT_AGENT_CARD
 from src.agentic.a2a.client import A2AClient
 from src.agentic.a2a.executor import create_a2a_server
 from src.agentic.api.main import app
-from src.agentic.api.middleware import SlidingWindowRateLimiter
+from src.agentic.api.middleware import RateLimiterUnavailable, SlidingWindowRateLimiter
 from src.agentic.api.routes.health import _check_tcp_port
 from src.agentic.cache.prompt_cache import PromptCache, get_prompt_cache
 from src.agentic.cache.rag_cache import RAGCache, get_rag_cache
@@ -65,6 +65,7 @@ from src.agentic.observability.langsmith_tracer import (
     trace_langsmith_run,
     traceable_operation,
 )
+from src.agentic.observability.metrics import TOKENS_TOTAL
 from src.agentic.observability.tracing import (
     extract_trace_context,
     get_tracer,
@@ -481,42 +482,37 @@ def test_short_term_store_and_window_trimming():
 
 @pytest.mark.asyncio
 async def test_rate_limiter_redis_and_token_branches():
+    """The Redis path uses one atomic Lua eval; no pipeline fallback exists."""
     mock_redis = MagicMock()
-    pipe = MagicMock()
-    mock_redis.pipeline.return_value = pipe
 
-    # 1. Rate limiter with Redis count < limit -> Allowed
-    pipe.execute.return_value = [1, 5]  # count=5
     rl = SlidingWindowRateLimiter(limit_per_minute=10)
     rl._redis_client = mock_redis
-    allowed, retry_after = rl.is_allowed("client_001")
-    assert allowed is True
-    assert retry_after == 0
 
-    # 2. Rate limiter with Redis count >= limit -> Disallowed (HTTP 429)
-    pipe.execute.return_value = [1, 15]  # count=15
-    allowed_over, retry_after_over = rl.is_allowed("client_001")
-    assert allowed_over is False
-    assert retry_after_over == 60
+    # 1. Lua signals success -> allowed
+    mock_redis.eval.return_value = 1
+    assert rl.is_allowed("client_001") == (True, 0)
+    mock_redis.pipeline.assert_not_called()
 
-    # 3. Rate limiter Redis exception fallback to memory
-    pipe.execute.side_effect = Exception("Redis pipeline broken")
-    allowed_fb, _ = rl.is_allowed("client_002")
-    assert allowed_fb is True
-    pipe.execute.side_effect = None
+    # 2. Lua returns a negative retry budget -> rejected
+    mock_redis.eval.return_value = -42
+    assert rl.is_allowed("client_001") == (False, 42)
 
-    # 4. Token rate limiter with Redis total_tokens <= limit -> Allowed
-    pipe.execute.return_value = [1, [b"12345:100:abc", b"12346:200:def"]]
+    # 3. Redis is authoritative: an outage fails closed instead of falling back.
+    rl.enable_redis = True
+    mock_redis.eval.side_effect = Exception("Redis eval broken")
+    with pytest.raises(RateLimiterUnavailable):
+        rl.is_allowed("client_002")
+    mock_redis.eval.side_effect = None
+
+    # 4. Token quota within limit -> allowed
     rl.enable_token_limit = True
     rl.token_limit = 1000
-    tok_ok, _ = rl.is_token_allowed("client_001", tokens=50)
-    assert tok_ok is True
+    mock_redis.eval.return_value = 1
+    assert rl.is_token_allowed("client_001", tokens=50) == (True, 0)
 
-    # 5. Token rate limiter with Redis total_tokens > limit -> Disallowed
-    pipe.execute.return_value = [1, [b"12345:800:abc", b"12346:300:def"]]
-    tok_over, tok_retry = rl.is_token_allowed("client_001", tokens=50)
-    assert tok_over is False
-    assert tok_retry == 60
+    # 5. Token quota exceeded -> rejected with Lua retry budget
+    mock_redis.eval.return_value = -42
+    assert rl.is_token_allowed("client_001", tokens=50) == (False, 42)
 
 
 @pytest.mark.asyncio
@@ -556,8 +552,12 @@ async def test_health_routes_tcp_failure():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         with patch("src.agentic.api.routes.health._check_tcp_port", return_value=False):
             resp = await client.get("/readyz")
-            # Should reflect degraded or return status code
-            assert resp.status_code in (200, 503)
+            # Every TCP probe failed: non-critical deps must be reported as down
+            # without failing the whole readiness probe in the test environment.
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["checks"]["model_gateway"] == "offline"
+            assert data["checks"]["vector_store"] == "offline_or_local"
 
 
 # ==============================================================================
@@ -862,8 +862,11 @@ async def test_a2a_client_streaming_and_fallback():
             events = []
             async for ev in client.call_agent_stream("chat_agent", "step_01", "instruction"):
                 events.append(ev)
-            # Local fallback ran without crashing
-            assert isinstance(events, list)
+            # The local executor still emits the start/completed lifecycle even
+            # when the graph produces no tokens.
+            assert [ev["event"] for ev in events] == ["start", "completed"]
+            assert events[-1]["output"] == ""
+            assert events[-1]["task_id"] == "step_01"
 
     # 4. Graceful aclose
     await client.aclose()
@@ -949,7 +952,8 @@ async def test_hitl_rejection_and_modification_branches():
     ):
         res_int = await hitl_node(state_interrupt)
         assert res_int["approval_granted"] is True
-        assert state_interrupt.plan.steps[0].input_query == "terraform plan -out=tfplan"
+        # Nodes return a state delta; the modified step lives in that delta.
+        assert res_int["plan"].steps[0].input_query == "terraform plan -out=tfplan"
 
 
 @pytest.mark.asyncio
@@ -1115,7 +1119,13 @@ async def test_token_metrics_callback_handler():
         generations=[],
         llm_output={"token_usage": {"prompt_tokens": 120, "completion_tokens": 80}},
     )
+    prompt_counter = TOKENS_TOTAL.labels(model_alias="reasoning-llm", token_type="prompt")
+    completion_counter = TOKENS_TOTAL.labels(model_alias="reasoning-llm", token_type="completion")
+    prompt_before = prompt_counter._value.get()
+    completion_before = completion_counter._value.get()
     await handler.on_llm_end(llm_result)
+    assert prompt_counter._value.get() - prompt_before == 120
+    assert completion_counter._value.get() - completion_before == 80
 
 
 def test_guardrails_cccd_credit_card_and_streaming():
@@ -1153,12 +1163,10 @@ def test_guardrails_cccd_credit_card_and_streaming():
 
 def test_safety_policy_risk_level():
     pm = get_policy_manager()
-    assert pm.get_tool_risk("code_exec_bash") in ("high", "medium", "low")
+    assert pm.get_tool_risk("code_exec_bash") == "high"
     assert pm.get_tool_risk("repo_read_file") == "low"
-    assert (
-        pm.is_approval_required("code_exec_bash") is True
-        or pm.is_approval_required("code_exec_bash") is False
-    )
+    assert pm.is_approval_required("code_exec_bash") is True
+    assert pm.is_approval_required("repo_read_file") is False
     assert pm.is_tool_allowed("coding_agent", "repo_read_file") is True
     assert pm.is_tool_allowed("chat_agent", "code_exec_bash") is False
     guardrails_cfg = pm.get_guardrails_config()
@@ -1261,7 +1269,7 @@ async def test_opentelemetry_tracing_and_propagation():
 
     # 2. trace_span async context manager
     async with trace_span("test-operation", {"user.id": "user_123"}) as span:
-        assert span.is_recording() or span is not None
+        assert span.is_recording() is True
 
     # 3. traced_operation decorator
     @traced_operation("decorated-op")

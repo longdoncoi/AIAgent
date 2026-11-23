@@ -50,3 +50,45 @@ Bên cạnh 14 trụ cột kỹ thuật, quy trình kiểm định và vận hà
 ---
 
 *Tài liệu này là Bộ chỉ huy trung tâm (Master Orchestrator). Mọi thay đổi về tiêu chí kiểm định bắt buộc phải cập nhật đồng bộ tại các tệp chuyên biệt trong thư mục [.workflows/reviews/](file:///f:/PROJECTS/AIAgent/.workflows/reviews/) trước khi đệ trình Hội đồng Đánh giá.*
+
+---
+
+## 6. Bằng Chứng Kiểm Định Tự Động & Phê Chuẩn (Auto-Evidence & Sign-off)
+
+### 6.1 Trạng Thái Bằng Chứng
+
+> **AUTO-EVIDENCE PENDING** — **Chờ đối soát và ký bởi Release Board.** Không có trạng thái `PASSED` nào được tự động gán.
+
+- Artifact máy tạo: **[evidence/prr/latest.json](file:///f:/PROJECTS/AIAgent/evidence/prr/latest.json)** — chứa `commit_sha`, `timestamp_utc`, exit code và output của từng lệnh `ruff`, `mypy`, `pytest --collect-only`, `eval --mode smoke`, parse YAML K8s.
+- Lệnh sinh artifact: `python scripts/generate_prr_evidence.py` (hoặc `make prr-evidence`). Script **không** chạy full pytest; verdict luôn là `AUTO-EVIDENCE PENDING REVIEW BOARD`.
+- CI upload artifact này dưới tên `prr-evidence-<sha>`. Pipeline **không** tự động deploy nếu thiếu artifact sign-off (xem `evidence/signoff/release-board.json` và bước `Verify Release Sign-off` trong `.github/workflows/ci.yml`).
+- Release gate chất lượng là lệnh riêng `make eval-release` (`evals/release_gate.py`), **không** phải smoke eval. Chỉ release gate mới được phép đưa ra kết luận "Ready for Production", và nó từ chối mọi proxy/heuristic.
+
+### 6.2 Các Tiêu Chí Chưa Có Code (Truthful Gaps)
+
+Các tiêu chí dưới đây được ghi rõ **NOT IMPLEMENTED** trong tệp review tương ứng thay vì để trống — Hội đồng cần nhìn đúng thực trạng:
+
+| Tiêu chí | Tệp review | Trạng thái thực tế |
+| :--- | :--- | :--- |
+| Xóa dữ liệu theo yêu cầu (Right to be Forgotten) | `REVIEW_COMPLIANCE, PRIVACY & AI ETHICS.md` (12.1) | **NOT IMPLEMENTED** |
+| Citations có cấu trúc (`doc_id`, `page`, `source`) | `REVIEW_COMPLIANCE, PRIVACY & AI ETHICS.md` (12.4) | **NOT IMPLEMENTED** |
+| RBAC tài liệu theo `user_roles` / `department` | `REVIEW_DATA GOVERNANCE & RAG RBAC.md` (14.1) | **NOT IMPLEMENTED** |
+| Ngân sách token cứng theo tenant + cảnh báo đột biến | `REVIEW_FINOPS & COST GOVERNANCE.md` (13.1, 13.5) | **CONFIGURED — cần kiểm chứng runtime** |
+
+### 6.3 Bảng Chữ Ký Phê Chuẩn Của Hội Đồng Đánh Giá (Release Board)
+
+> **9 ô chữ ký dưới đây để trống — chờ ký bởi Release Board.** Không được tự động điền tên, ngày hay "PASSED".
+
+| # | Vai Trò (RACI) | Đại Diện | Quyết Định (Go / Waiver / No-Go) | Chữ Ký | Ngày (UTC) |
+| :---: | :--- | :--- | :---: | :---: | :---: |
+| 1 | Chief AI Architect (A) | Lead Architect | ____________ | ____________ | ____________ |
+| 2 | Lead AI/Backend Engineer (R) | Backend Tech Lead | ____________ | ____________ | ____________ |
+| 3 | QA / Test Engineering Lead (R/A) | Head of QA | ____________ | ____________ | ____________ |
+| 4 | SecOps / Security Lead (C) | Head of Cyber Security | ____________ | ____________ | ____________ |
+| 5 | Legal Counsel & DPO (C/A) | Legal & DPO Lead | ____________ | ____________ | ____________ |
+| 6 | FinOps / Cloud Cost Lead (C) | FinOps Lead | ____________ | ____________ | ____________ |
+| 7 | Data Governance Lead (R) | Data Governance Lead | ____________ | ____________ | ____________ |
+| 8 | Principal SRE / DevOps (R/A) | Principal SRE | ____________ | ____________ | ____________ |
+| 9 | Product Owner (I) | Product Manager | ____________ | ____________ | ____________ |
+
+*Chuyển tiếp: sau khi đủ 9 chữ ký, lưu biên bản vào `evidence/signoff/release-board.json` để CI cho phép auto-push GitOps.*

@@ -51,3 +51,13 @@ Giai đoạn Hypercare chỉ được xem là hoàn tất và chính thức chuy
 - **Độ ổn định hệ thống**: Không phát sinh bất kỳ sự cố P0 nào chưa giải quyết trong 72 giờ liên tục.
 - **Tiêu chuẩn nghiệm thu tuần**: 100% các tiêu chí giám sát tại mốc `T+7 Ngày` trong 14 tệp chuyên biệt đều đạt trạng thái nghiệm thu.
 - **Phê chuẩn tài chính & chất lượng**: Báo cáo đối soát tài chính FinOps và báo cáo kiểm toán chất lượng AI tuần đầu tiên được Lead Architect và Finance Lead phê duyệt.
+
+---
+
+## 6. Bằng Chứng Kiểm Định Tự Động (Auto-Evidence Status)
+
+> **AUTO-EVIDENCE PENDING** — chờ đối soát và **ký bởi Release Board**. Không có nhãn `PASSED` được tự động gán cho tài liệu này.
+
+- Artifact: [evidence/prr/latest.json](file:///f:/PROJECTS/AIAgent/evidence/prr/latest.json) (`commit_sha`, `timestamp_utc`, exit code của `ruff` / `mypy` / `pytest --collect-only` / `eval --mode smoke` / parse YAML).
+- Sinh artifact: `python scripts/generate_prr_evidence.py`. Tất cả ô trạng thái `[]` ở các mục trên vẫn giữ nguyên cho đến khi Hội đồng đối soát artifact và ký duyệt.
+- Bảng chữ ký 9 đại diện: [REVIEW.md mục 6.3](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md#63-bảng-chữ-ký-phê-chuẩn-của-hội-đồng-đánh-giá).

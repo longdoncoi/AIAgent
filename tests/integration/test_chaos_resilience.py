@@ -1,10 +1,11 @@
 """Chaos engineering and resilience integration tests: Failover, Graceful Degradation, and Concurrency."""
 
 from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
 
 import pytest
 
-from src.agentic.api.middleware import SlidingWindowRateLimiter
+from src.agentic.api.middleware import RateLimiterUnavailable, SlidingWindowRateLimiter
 from src.agentic.cache.prompt_cache import PromptCache
 from src.agentic.cache.rag_cache import RAGCache
 from src.agentic.core.config import get_settings
@@ -13,7 +14,7 @@ from src.agentic.workflows.rag_workflow import ingest_documents_activity
 
 
 def test_circuit_breaker_failover_routing():
-    """Verifies that circuit breaker trip automatically switches endpoints to backup CPU model."""
+    """An open breaker swaps only the LiteLLM model alias, never the gateway URL."""
     settings = get_settings()
     cb = ModelCircuitBreaker(failure_threshold=2, recovery_time_seconds=10.0)
     alias = "reasoning-llm"
@@ -33,9 +34,11 @@ def test_circuit_breaker_failover_routing():
     try:
         gw._circuit_breaker = cb
         llm = get_llm(alias=alias)
-        # Should now route to backup llama_chat_base_url
-        assert llm.openai_api_base == settings.llama_chat_base_url
-        assert llm.model_name == settings.default_fast_model
+        # Failover still goes through LiteLLM with its credentials; only the
+        # router alias changes to the validated llama.cpp backup.
+        assert llm.openai_api_base == settings.litellm_base_url
+        assert llm.openai_api_key.get_secret_value() == settings.litellm_api_key
+        assert llm.model_name == "llama-chat-backup"
 
         # Record success -> resets to closed
         cb.record_success(alias)
@@ -47,15 +50,41 @@ def test_circuit_breaker_failover_routing():
         gw._circuit_breaker = orig_cb
 
 
+def test_circuit_breaker_failover_requires_valid_config(tmp_path) -> None:
+    """A missing/invalid LiteLLM fallback config must fail loudly, not bypass the router."""
+    import src.agentic.llm.gateway as gw
+
+    settings = get_settings()
+    cb = ModelCircuitBreaker(failure_threshold=1, recovery_time_seconds=10.0)
+    cb.record_failure("reasoning-llm")
+    assert cb.should_fallback("reasoning-llm") is True
+
+    # Point the config property at an empty project tree so the fallback entry
+    # cannot be validated.
+    broken_settings = settings.model_copy(update={"project_root": tmp_path})
+    orig_cb = gw._circuit_breaker
+    try:
+        gw._circuit_breaker = cb
+        with (
+            patch("src.agentic.llm.gateway.get_settings", return_value=broken_settings),
+            pytest.raises(RuntimeError, match="refusing to fall back"),
+        ):
+            get_llm(alias="reasoning-llm")
+    finally:
+        gw._circuit_breaker = orig_cb
+
+
 def test_redis_outage_graceful_degradation():
     """Verifies system degrades gracefully to L1 in-memory when Redis is offline or throws errors."""
     # Point to a non-existent port (simulating down/crashed Redis)
     dead_redis_url = "redis://localhost:59999/0"
 
-    # 1. Rate Limiter degradation
-    rl = SlidingWindowRateLimiter(limit_per_minute=5, redis_url=dead_redis_url, enable_redis=True)
-    assert rl.is_allowed("client_chaos_1")[0] is True
-    assert rl.is_allowed("client_chaos_1")[0] is True
+    # 1. Rate limiter is authoritative: an unreachable Redis fails closed
+    # instead of silently degrading to a per-process counter.
+    with pytest.raises(RateLimiterUnavailable):
+        SlidingWindowRateLimiter(
+            limit_per_minute=5, redis_url=dead_redis_url, enable_redis=True
+        )
 
     # 2. Prompt Cache degradation
     pc = PromptCache(redis_url=dead_redis_url, enable_redis=True)

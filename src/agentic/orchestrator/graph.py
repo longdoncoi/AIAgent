@@ -11,7 +11,7 @@ from src.agentic.orchestrator.nodes.finalize import finalize_node
 from src.agentic.orchestrator.nodes.hitl import hitl_node
 from src.agentic.orchestrator.nodes.planner import planner_node
 from src.agentic.orchestrator.nodes.reflector import reflector_node
-from src.agentic.orchestrator.state import AgentState
+from src.agentic.orchestrator.state import MAX_REFLECTION_ATTEMPTS, AgentState
 
 logger = logging.getLogger(__name__)
 
@@ -27,13 +27,42 @@ def should_continue_steps(state: AgentState) -> Literal["hitl", "reflector"]:
     return "reflector"
 
 
-def should_replan_or_finalize(state: AgentState) -> Literal["planner", "finalize"]:
-    """Determines whether to loop back to planner for self-correction or proceed to finalization."""
-    if state.reflection_count < 2 and state.reflection_notes:
-        latest_note = state.reflection_notes[-1].lower()
-        if "replan_required" in latest_note or "retry" in latest_note:
-            logger.info("Reflector triggered self-correction loop back to Planner.")
+def should_replan_or_finalize(state: AgentState) -> Literal["planner", "hitl", "finalize"]:
+    """Routes after reflection: bounded retry/replan, or fail-closed finalization.
+
+    * ``degraded`` (judge unavailable) never finalizes while budget remains —
+      it re-plans first, then hands off to Finalize for manual review.
+    * ``retry`` keeps the plan and re-enters HITL/dispatch for failed steps.
+    * ``replan`` discards the plan and returns to the Planner.
+    """
+    latest_note = state.reflection_notes[-1] if state.reflection_notes else ""
+
+    if state.degraded:
+        if state.reflection_count < MAX_REFLECTION_ATTEMPTS:
+            logger.warning(
+                "Reflector degraded (reason=%s); re-planning with budget %d/%d.",
+                state.degraded_reason,
+                state.reflection_count,
+                MAX_REFLECTION_ATTEMPTS,
+            )
             return "planner"
+        logger.error(
+            "Reflector still degraded after %d attempts (reason=%s); "
+            "routing to Finalize for manual review — outputs are NOT verified.",
+            state.reflection_count,
+            state.degraded_reason,
+        )
+        return "finalize"
+
+    if state.reflection_count >= MAX_REFLECTION_ATTEMPTS:
+        return "finalize"
+
+    if "RETRY_REQUIRED" in latest_note:
+        logger.info("Reflector requested retry of failed steps; re-entering HITL/dispatch.")
+        return "hitl"
+    if "REPLAN_REQUIRED" in latest_note or "replan_required" in latest_note.lower():
+        logger.info("Reflector triggered self-correction loop back to Planner.")
+        return "planner"
     return "finalize"
 
 
@@ -67,6 +96,7 @@ def create_supervisor_graph(checkpointer: Any | None = None) -> Any:
         should_replan_or_finalize,
         {
             "planner": "planner",
+            "hitl": "hitl",
             "finalize": "finalize",
         },
     )

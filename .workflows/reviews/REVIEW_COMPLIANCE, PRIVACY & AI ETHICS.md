@@ -22,12 +22,17 @@ Trụ cột này bảo đảm hệ thống `agentic-platform` tuân thủ đầy
 
 | ID | Trạng Thái | Mức Độ | Tiêu Chí Kiểm Tra (Verification Criteria) | Tệp Mã Nguồn / Cấu Hình | Phương Pháp & Lệnh Kiểm Chứng |
 | :---: | :---: | :---: | :--- | :--- | :--- |
-| **12.1** | `[ ]` | **P0** | **Cơ Chế Xóa Dữ Liệu Theo Yêu Cầu (Right to be Forgotten)**: Có endpoint API hoặc script quản trị cho phép xóa sạch hoàn toàn mọi dữ liệu liên quan đến một `user_id` hoặc `thread_id` trên cả 3 tầng lưu trữ: PostgreSQL checkpoints, Redis session keys, và Long-term Memory. | [src/agentic/memory/short_term.py](file:///f:/PROJECTS/AIAgent/src/agentic/memory/short_term.py)<br>[src/agentic/memory/long_term.py](file:///f:/PROJECTS/AIAgent/src/agentic/memory/long_term.py) | Kiểm tra test xóa dữ liệu người dùng:<br>`pytest tests/unit/test_production_hardening.py -k test_delete_user_data` |
+| **12.1** | **NOT IMPLEMENTED** | **P0** | **Cơ Chế Xóa Dữ Liệu Theo Yêu Cầu (Right to be Forgotten)**: Có endpoint API hoặc script quản trị cho phép xóa sạch hoàn toàn mọi dữ liệu liên quan đến một `user_id` hoặc `thread_id` trên cả 3 tầng lưu trữ: PostgreSQL checkpoints, Redis session keys, và Long-term Memory. | [src/agentic/memory/short_term.py](file:///f:/PROJECTS/AIAgent/src/agentic/memory/short_term.py)<br>[src/agentic/memory/long_term.py](file:///f:/PROJECTS/AIAgent/src/agentic/memory/long_term.py) | Kiểm tra test xóa dữ liệu người dùng:<br>`pytest tests/unit/test_production_hardening.py -k test_delete_user_data` |
 | **12.2** | `[ ]` | **P0** | **Chính Sách Zero Data Retention (ZDR)**: Hệ thống sử dụng 100% model nội bộ (vLLM, llama.cpp). Đối với bất kỳ API gateway ngoài nào (nếu dùng fallback), phải có văn bản xác nhận thỏa thuận Doanh nghiệp (Enterprise Agreement) cam kết không lưu dữ liệu để train lại model. | [configs/litellm_config.yaml](file:///f:/PROJECTS/AIAgent/configs/litellm_config.yaml) | Kiểm tra cấu hình LiteLLM và hợp đồng dịch vụ đám mây (Cloud Service Agreement). |
 | **12.3** | `[ ]` | **P0** | **Nhật Ký Kiểm Toán Không Thể Sửa Đổi (Immutable Audit Trail)**: Mọi thao tác nhạy cảm, lệnh bash, quyết định phê duyệt HITL và input/output được ghi vào audit log bảo mật với `trace_id`, lưu trữ tối thiểu 365 ngày trên cold storage. | [src/agentic/orchestrator/nodes/hitl.py](file:///f:/PROJECTS/AIAgent/src/agentic/orchestrator/nodes/hitl.py) | Xác minh trường nhật ký phê duyệt lưu vào CSDL Postgres kèm timestamp chuẩn UTC. |
-| **12.4** | `[ ]` | **P0** | **Bản Quyền Tri Thức & Bắt Buộc Trích Dẫn (Citations)**: RAGAgent bắt buộc kèm danh sách nguồn tham khảo (`citations: [doc_id, page, source]`). Phản hồi không có căn cứ hoặc vi phạm bản quyền bị chặn bởi Reflection node hoặc Output Guard. | [src/agentic/orchestrator/nodes/reflector.py](file:///f:/PROJECTS/AIAgent/src/agentic/orchestrator/nodes/reflector.py)<br>[src/agentic/rag/tools.py](file:///f:/PROJECTS/AIAgent/src/agentic/rag/tools.py) | Gửi truy vấn RAG và xác nhận response trả về danh mục `sources` / `citations` đầy đủ. |
+| **12.4** | **NOT IMPLEMENTED** | **P0** | **Bản Quyền Tri Thức & Bắt Buộc Trích Dẫn (Citations)**: RAGAgent bắt buộc kèm danh sách nguồn tham khảo (`citations: [doc_id, page, source]`). Phản hồi không có căn cứ hoặc vi phạm bản quyền bị chặn bởi Reflection node hoặc Output Guard. | [src/agentic/orchestrator/nodes/reflector.py](file:///f:/PROJECTS/AIAgent/src/agentic/orchestrator/nodes/reflector.py)<br>[src/agentic/rag/tools.py](file:///f:/PROJECTS/AIAgent/src/agentic/rag/tools.py) | Gửi truy vấn RAG và xác nhận response trả về danh mục `sources` / `citations` đầy đủ. |
 | **12.5** | `[ ]` | **P1** | **Minh Bạch AI & Tuyên Bố Miễn Trừ Trách Nhiệm (Disclaimer)**: Giao diện Web UI và API schema chứa trường disclaimer pháp lý: *"Nội dung do Trí tuệ nhân tạo tạo ra tự động, người dùng cần kiểm chứng lại trước khi áp dụng vào các quyết định quan trọng."* | `src/agentic/core/schemas.py` | Kiểm tra metadata của response API luôn chứa nhãn `ai_generated: true` và `disclaimer`. |
 | **12.6** | `[ ]` | **P1** | **Bộ Lọc Độc Hại & Định Kiến (Fairness & Toxicity Guard)**: Output Guardrail tích hợp bộ lọc chặn ngôn từ kích động thù địch, xúc phạm danh dự, hoặc định kiến giới tính, chủng tộc, tôn giáo. | [src/agentic/safety/guardrails.py](file:///f:/PROJECTS/AIAgent/src/agentic/safety/guardrails.py) | Chạy test an toàn đạo đức:<br>`pytest tests/unit/test_guardrails.py -k test_toxicity_filter` |
+
+### Thực Trạng Triển Khai (Implementation Truth)
+
+- **12.1 — NOT IMPLEMENTED**: hiện chưa có endpoint/script xóa sạch dữ liệu theo `user_id`/`thread_id` trên cả 3 tầng (Postgres checkpoints, Redis session keys, Long-term Memory). Các lệnh curl trong mục 3 là *quy trình dự kiến*, không phải bằng chứng đã chạy được.
+- **12.4 — NOT IMPLEMENTED**: response RAG hiện không trả về cấu trúc `citations: [{doc_id, page, source}]` bắt buộc. Chưa có Output Guard chặn phản hồi thiếu trích dẫn. Không được coi là đã đáp ứng P0 cho tới khi có code + test.
 
 ---
 
@@ -70,3 +75,13 @@ Sau khi hệ thống vận hành chính thức:
 - **Kết luận**: [ ] ĐẠT (PASS) &nbsp;&nbsp;&nbsp; [ ] CẦN KHẮC PHỤC (REJECT)
 
 > 🎯 **Biên Bản Ký Duyệt**: Kết quả đánh giá của Trụ cột này được tổng hợp và ký duyệt chính thức tại [Bảng Chữ Ký Phê Chuẩn Của Hội Đồng Đánh Giá (Mục 6.3 - REVIEW.md)](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md#63-bảng-chữ-ký-phê-chuẩn-của-hội-đồng-đánh-giá).
+
+---
+
+## 6. Bằng Chứng Kiểm Định Tự Động (Auto-Evidence Status)
+
+> **AUTO-EVIDENCE PENDING** — chờ đối soát và **ký bởi Release Board**. Không có nhãn `PASSED` được tự động gán cho tài liệu này.
+
+- Artifact: [evidence/prr/latest.json](file:///f:/PROJECTS/AIAgent/evidence/prr/latest.json) (`commit_sha`, `timestamp_utc`, exit code của `ruff` / `mypy` / `pytest --collect-only` / `eval --mode smoke` / parse YAML).
+- Sinh artifact: `python scripts/generate_prr_evidence.py`. Tất cả ô trạng thái `[]` ở các mục trên vẫn giữ nguyên cho đến khi Hội đồng đối soát artifact và ký duyệt.
+- Bảng chữ ký 9 đại diện: [REVIEW.md mục 6.3](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md#63-bảng-chữ-ký-phê-chuẩn-của-hội-đồng-đánh-giá).

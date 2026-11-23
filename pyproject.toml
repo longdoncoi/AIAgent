@@ -54,6 +54,12 @@ dev = [
     "ragas>=0.2.0",
     "datasets>=2.19.0",
 ]
+# Optional neural retrieval stack. Release gates require it; the default
+# installation intentionally stays light and uses honestly-labelled heuristics.
+neural = [
+    "sentence-transformers>=3.0.0",
+    "rank-bm25>=0.2.2",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -76,6 +82,11 @@ strict = true
 ignore_missing_imports = true
 explicit_package_bases = true
 mypy_path = "."
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

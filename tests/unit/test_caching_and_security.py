@@ -94,16 +94,40 @@ async def test_rbac_approval_endpoint_protection():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # Resume without auth or with guest role on thread -> returns 403 Forbidden because guest is not supervisor/admin
-        headers = {"Authorization": "Bearer unauthorized_guest_token"}
-        resp = await client.post(
-            "/api/v1/approvals/fake_thread_123/resume",
-            json={
-                "thread_id": "fake_thread_123",
-                "step_id": "step_1",
-                "decision": {"approved": True},
-            },
-            headers=headers,
+        import time
+
+        import jwt
+
+        from src.agentic.core.config import get_settings
+
+        payload = {
+            "thread_id": "fake_thread_123",
+            "step_id": "step_1",
+            "decision": {"approved": True},
+        }
+        url = "/api/v1/approvals/fake_thread_123/resume"
+
+        # An invalid token is always rejected (no downgrade to an identity).
+        resp_invalid = await client.post(
+            url, json=payload, headers={"Authorization": "Bearer unauthorized_guest_token"}
         )
+        assert resp_invalid.status_code == 401
+
+        # A valid guest JWT is authenticated but not authorized for approvals.
+        settings = get_settings()
+        now = int(time.time())
+        guest_token = jwt.encode(
+            {
+                "sub": "guest",
+                "role": "guest",
+                "aud": settings.jwt_audience,
+                "iss": settings.jwt_issuer,
+                "iat": now,
+                "exp": now + 3600,
+            },
+            settings.jwt_secret_key,
+            algorithm=settings.jwt_algorithm,
+        )
+        resp = await client.post(url, json=payload, headers={"Authorization": f"Bearer {guest_token}"})
         assert resp.status_code == 403
         assert "privileges" in resp.text

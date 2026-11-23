@@ -1,4 +1,22 @@
-"""RAG Query and Semantic Retrieval Cache with Multi-Tier (L1 In-Memory + L2 Distributed Redis) Architecture."""
+"""RAG Query and Semantic Retrieval Cache with Multi-Tier (L1 In-Memory + L2 Distributed Redis) Architecture.
+
+Cross-replica invalidation
+--------------------------
+``publish_invalidation(doc_id, file_path)`` atomically bumps a shared Redis
+generation key and publishes the event on a pub/sub channel. It never raises:
+when Redis is unavailable it logs a warning and returns ``None``.
+
+Other replicas can react in either of two ways:
+
+* Poll ``check_invalidation_generation()`` (e.g. from a background task). It
+  clears that pod's L1 cache and invokes callbacks registered with
+  ``register_invalidation_callback()`` so a process-local retriever can be
+  rebuilt.
+* Subscribe directly to ``RAG_INVALIDATION_CHANNEL`` with redis pub/sub.
+
+The caller in the same process should use ``invalidate_by_source`` /
+``invalidate_or_noop`` (never ``clear``) for its own L1/L2 entries.
+"""
 
 import asyncio
 import hashlib
@@ -8,12 +26,17 @@ import math
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from src.agentic.core.config import get_settings
 from src.agentic.observability.metrics import RAG_CACHE_HITS_TOTAL, RAG_CACHE_MISSES_TOTAL
 
 logger = logging.getLogger(__name__)
+
+RAG_INVALIDATION_CHANNEL = "rag_cache:invalidation"
+RAG_INVALIDATION_GENERATION_KEY = "rag_cache:invalidation:generation"
+RAG_INVALIDATION_LATEST_KEY = "rag_cache:invalidation:latest"
 
 
 class RAGCache:
@@ -43,6 +66,8 @@ class RAGCache:
         self._semantic_hits = 0
         self._redis_client: Any = None
         self._embed_fn: Any = embed_fn or self._resolve_default_embed_fn()
+        self._invalidation_generation = 0
+        self._invalidation_callbacks: list[Callable[[str, str, int], None]] = []
 
         target_redis_url = redis_url or self.settings.redis_url
         should_use_redis = (
@@ -68,7 +93,7 @@ class RAGCache:
                     f"Initialized Distributed Redis L2 backend for RAGCache at {target_redis_url}"
                 )
             except Exception as e:
-                logger.debug(
+                logger.warning(
                     f"Redis L2 backend not reachable for RAGCache ({e}). Operating in L1 local memory mode."
                 )
 
@@ -76,6 +101,26 @@ class RAGCache:
     def _normalize_query(query: str) -> str:
         """Normalizes query text for deterministic hashing."""
         return " ".join(query.strip().lower().split())
+
+    @staticmethod
+    def _as_text(value: Any) -> str:
+        """Decodes Redis values regardless of the client's decode_responses setting."""
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        if isinstance(value, (bytearray, memoryview)):
+            return bytes(value).decode("utf-8", errors="replace")
+        return str(value)
+
+    def _iter_redis_keys(self, pattern: str) -> Iterator[Any]:
+        """Non-blocking SCAN_ITER over L2 keys; never issue KEYS on the hot path."""
+        client = self._redis_client
+        if client is None:
+            return
+        scan_iter = getattr(client, "scan_iter", None)
+        if callable(scan_iter):
+            yield from scan_iter(match=pattern, count=500)
+        else:  # pragma: no cover - only legacy/minimal Redis clients
+            yield from client.keys(pattern)
 
     def _hash_key(self, query: str, top_k: int, **kwargs: Any) -> str:
         norm = self._normalize_query(query)
@@ -113,14 +158,16 @@ class RAGCache:
                 cached_data = self._redis_client.get(redis_key)
                 if cached_data is not None:
                     # Deserialize and populate back into L1
+                    text_data = self._as_text(cached_data)
                     payload = (
-                        json.loads(cached_data)
-                        if cached_data.startswith("{")
-                        else {"result": cached_data}
+                        json.loads(text_data)
+                        if text_data.startswith("{")
+                        else {"result": text_data}
                     )
-                    result_val = payload.get("result", cached_data)
-                    meta_val = payload.get("metadata", {})
-                    ttl_left = max(60, self._redis_client.ttl(redis_key))
+                    result_val = str(payload.get("result", text_data))
+                    meta_raw = payload.get("metadata", {})
+                    meta_val = meta_raw if isinstance(meta_raw, dict) else {}
+                    ttl_left = max(60, int(self._redis_client.ttl(redis_key)))
                     with self._lock:
                         if len(self._cache) >= self.max_entries:
                             self._cache.popitem(last=False)
@@ -520,68 +567,248 @@ class RAGCache:
                     return cached
             return str(compute_fn())
 
+    @staticmethod
+    def _source_matches(
+        norm_source: str, metadata: Any, result: Any, query: Any = ""
+    ) -> bool:
+        """True when an L1/semantic entry references the given source."""
+        if not norm_source:
+            return False
+        try:
+            meta_text = json.dumps(metadata or {}, ensure_ascii=False, default=str).lower()
+        except Exception:
+            meta_text = str(metadata).lower()
+        return (
+            norm_source in meta_text
+            or norm_source in str(result).lower()
+            or norm_source in str(query).lower()
+        )
+
+    def _collect_invalidation_targets(
+        self, source: str
+    ) -> tuple[list[str], list[int], list[Any]]:
+        """Finds matching L1 keys, semantic indexes and L2 keys without mutating state."""
+        norm_source = source.lower().strip()
+        exact_keys: list[str] = []
+        semantic_indexes: list[int] = []
+        with self._lock:
+            for key, (_, result, meta) in self._cache.items():
+                if self._source_matches(norm_source, meta, result):
+                    exact_keys.append(key)
+            for idx, entry in enumerate(self._semantic_entries):
+                if self._source_matches(
+                    norm_source,
+                    entry.get("metadata", {}),
+                    entry.get("result", ""),
+                    entry.get("query", ""),
+                ):
+                    semantic_indexes.append(idx)
+
+        redis_keys: list[Any] = []
+        if self._redis_client is not None and norm_source:
+            try:
+                for key in self._iter_redis_keys("rag_cache:*"):
+                    raw_val = self._redis_client.get(key)
+                    if raw_val is not None and norm_source in self._as_text(raw_val).lower():
+                        redis_keys.append(key)
+            except Exception as ex:
+                logger.warning(f"Redis selective invalidation scan failed: {ex}")
+        return exact_keys, semantic_indexes, redis_keys
+
+    def _apply_invalidation_targets(
+        self, exact_keys: list[str], semantic_indexes: list[int], redis_keys: list[Any]
+    ) -> int:
+        """Deletes only matched keys and returns the real number of removed keys."""
+        with self._lock:
+            for key in exact_keys:
+                self._cache.pop(key, None)
+            for idx in reversed(semantic_indexes):
+                if 0 <= idx < len(self._semantic_entries):
+                    del self._semantic_entries[idx]
+
+        removed = len(exact_keys) + len(semantic_indexes)
+        if redis_keys and self._redis_client is not None:
+            try:
+                pipe = self._redis_client.pipeline()
+                for key in redis_keys:
+                    pipe.delete(key)
+                pipe.execute()
+                removed += len(redis_keys)
+            except Exception as ex:
+                logger.warning(f"Redis selective invalidation delete failed: {ex}")
+        return removed
+
     def invalidate_by_source(self, source: str) -> int:
         """Selectively invalidates cached RAG entries associated with a document or source."""
         if not source:
             return 0
-        removed_count = 0
-        norm_source = source.lower().strip()
+        targets = self._collect_invalidation_targets(source)
+        removed = self._apply_invalidation_targets(*targets)
+        logger.info(f"Selectively invalidated {removed} RAG cache entries for source '{source}'.")
+        return removed
 
-        with self._lock:
-            # 1. Invalidate matching L1 exact cache entries
-            keys_to_del = []
-            for k, (_, res, meta) in self._cache.items():
-                meta_str = json.dumps(meta).lower()
-                if norm_source in meta_str or norm_source in str(res).lower():
-                    keys_to_del.append(k)
-            for k in keys_to_del:
-                del self._cache[k]
-                removed_count += 1
+    async def ainvalidate_by_source(self, source: str) -> int:
+        """Async counterpart of :meth:`invalidate_by_source` (offloads blocking Redis I/O)."""
+        return await asyncio.to_thread(self.invalidate_by_source, source)
 
-            # 2. Invalidate matching semantic entries
-            before_len = len(self._semantic_entries)
-            self._semantic_entries = [
-                e
-                for e in self._semantic_entries
-                if norm_source not in json.dumps(e.get("metadata", {})).lower()
-                and norm_source not in str(e.get("result", "")).lower()
-                and norm_source not in str(e.get("query", "")).lower()
-            ]
-            removed_count += before_len - len(self._semantic_entries)
+    def invalidate_or_noop(self, source: str) -> int:
+        """Invalidates matching entries, or does absolutely nothing when none match.
 
-        # 3. Invalidate in L2 Redis if active
-        if self._redis_client is not None:
-            try:
-                keys = self._redis_client.keys("rag_cache:*")
-                for key in keys:
-                    raw_val = self._redis_client.get(key)
-                    if raw_val and norm_source in str(raw_val).lower():
-                        self._redis_client.delete(key)
-                        removed_count += 1
-            except Exception as ex:
-                logger.debug(f"Redis selective invalidation note: {ex}")
+        Used by callers that previously fell back to ``clear()`` when the count
+        was zero — a full flush is never safe in a shared multi-tenant cache.
+        """
+        if not source:
+            return 0
+        targets = self._collect_invalidation_targets(source)
+        if not any(targets):
+            logger.info(
+                "RAG invalidation for source '%s' matched no keys; no-op (cache left intact).",
+                source,
+            )
+            return 0
+        removed = self._apply_invalidation_targets(*targets)
+        logger.info(f"Selectively invalidated {removed} RAG cache entries for source '{source}'.")
+        return removed
 
-        logger.info(
-            f"Selectively invalidated {removed_count} RAG cache entries for source '{source}'."
-        )
-        return removed_count
+    async def ainvalidate_or_noop(self, source: str) -> int:
+        """Async counterpart of :meth:`invalidate_or_noop`."""
+        return await asyncio.to_thread(self.invalidate_or_noop, source)
 
     def invalidate_document(self, doc_id: str) -> int:
         """Selectively invalidates cache entries for a specific document identifier."""
         return self.invalidate_by_source(doc_id)
 
+    def publish_invalidation(self, doc_id: str, file_path: str) -> int | None:
+        """Broadcasts a document invalidation to every replica via Redis.
+
+        Uses an atomic INCR generation key plus a pub/sub notification so other
+        pods can invalidate their process-local retriever and L1 cache. Failure
+        is explicitly non-fatal: returns ``None`` with a WARNING when Redis is
+        unavailable or misbehaving. Safe to call off the event loop with
+        ``asyncio.to_thread``.
+        """
+        if self._redis_client is None:
+            logger.warning(
+                "Redis L2 unavailable; skipping invalidation broadcast "
+                "for doc_id=%s file_path=%s.",
+                doc_id,
+                file_path,
+            )
+            return None
+        try:
+            generation = int(self._redis_client.incr(RAG_INVALIDATION_GENERATION_KEY))
+            message = json.dumps(
+                {
+                    "doc_id": doc_id,
+                    "file_path": file_path,
+                    "generation": generation,
+                    "ts": time.time(),
+                },
+                ensure_ascii=False,
+            )
+            self._redis_client.set(RAG_INVALIDATION_LATEST_KEY, message, ex=3600)
+            self._redis_client.publish(RAG_INVALIDATION_CHANNEL, message)
+            # This pod already invalidates its own entries via the caller;
+            # recording the generation prevents a redundant self-trigger.
+            self._invalidation_generation = generation
+            logger.info(
+                "Broadcast RAG invalidation generation=%s doc_id=%s file_path=%s.",
+                generation,
+                doc_id,
+                file_path,
+            )
+            return generation
+        except Exception as ex:
+            logger.warning(
+                "Redis invalidation broadcast failed for doc_id=%s file_path=%s: %s",
+                doc_id,
+                file_path,
+                ex,
+            )
+            return None
+
+    def register_invalidation_callback(
+        self, callback: Callable[[str, str, int], None]
+    ) -> None:
+        """Registers ``callback(doc_id, file_path, generation)`` for remote invalidations.
+
+        Use this to drop a process-local retriever/index on another replica.
+        """
+        with self._lock:
+            if callback not in self._invalidation_callbacks:
+                self._invalidation_callbacks.append(callback)
+
+    def check_invalidation_generation(self) -> int | None:
+        """Polls the shared generation key; applies remote invalidation when it advanced.
+
+        Clears this pod's L1 cache and invokes registered callbacks. Returns
+        ``None`` when Redis is unavailable (never raises).
+        """
+        if self._redis_client is None:
+            return None
+        try:
+            raw_generation = self._redis_client.get(RAG_INVALIDATION_GENERATION_KEY)
+            if raw_generation is None:
+                return self._invalidation_generation
+            generation = int(self._as_text(raw_generation).strip())
+            if generation <= self._invalidation_generation:
+                return generation
+
+            doc_id = file_path = ""
+            latest_raw = self._redis_client.get(RAG_INVALIDATION_LATEST_KEY)
+            if latest_raw is not None:
+                try:
+                    latest = json.loads(self._as_text(latest_raw))
+                    doc_id = str(latest.get("doc_id", ""))
+                    file_path = str(latest.get("file_path", ""))
+                except (TypeError, ValueError):
+                    pass
+
+            self._invalidation_generation = generation
+            with self._lock:
+                self._cache.clear()
+                self._semantic_entries.clear()
+            logger.info(
+                "Applied remote RAG invalidation generation=%s doc_id=%s file_path=%s; "
+                "cleared local L1 cache.",
+                generation,
+                doc_id,
+                file_path,
+            )
+            for callback in list(self._invalidation_callbacks):
+                try:
+                    callback(doc_id, file_path, generation)
+                except Exception as ex:
+                    logger.warning("RAG invalidation callback failed: %s", ex)
+            return generation
+        except Exception as ex:
+            logger.warning("Could not check RAG invalidation generation: %s", ex)
+            return None
+
+    @property
+    def invalidation_generation(self) -> int:
+        """Last observed cross-replica invalidation generation."""
+        return self._invalidation_generation
+
     def clear(self) -> None:
-        """Flushes all cached entries from L1 and L2."""
+        """Flushes all cached entries from L1 and L2 (maintenance use only)."""
         with self._lock:
             self._cache.clear()
             self._semantic_entries.clear()
         if self._redis_client is not None:
             try:
-                keys = self._redis_client.keys("rag_cache:*")
+                keys = list(self._iter_redis_keys("rag_cache:*"))
                 if keys:
-                    self._redis_client.delete(*keys)
+                    pipe = self._redis_client.pipeline()
+                    for key in keys:
+                        pipe.delete(key)
+                    pipe.execute()
             except Exception as ex:
-                logger.debug(f"Redis L2 clear exception: {ex}")
+                logger.warning(f"Redis L2 clear exception: {ex}")
+
+    async def aclear(self) -> None:
+        """Async counterpart of :meth:`clear`."""
+        await asyncio.to_thread(self.clear)
 
     @property
     def stats(self) -> dict[str, Any]:
@@ -597,6 +824,7 @@ class RAGCache:
                 "has_redis_backend": self._redis_client is not None,
                 "semantic_entries": len(self._semantic_entries),
                 "semantic_hits": self._semantic_hits,
+                "invalidation_generation": self._invalidation_generation,
             }
 
 

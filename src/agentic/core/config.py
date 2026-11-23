@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     default_fast_model: str = "fast-llm"
     default_coding_model: str = "coding-llm"
     default_embedding_model: str = "text-embedding-bge"
+    default_embedding_dim: int = 1024
 
     # Direct Inference Endpoints (fallback / standalone)
     vllm_base_url: str = "http://localhost:8001/v1"
@@ -95,6 +96,12 @@ class Settings(BaseSettings):
     require_authentication: bool = False
     enable_docker_sandbox: bool = True
     s2s_internal_token: str = "agentic-internal-s2s-token-2026"
+    approval_grant_ttl_seconds: int = 300
+    jwt_audience: str = "agentic-api"
+    jwt_issuer: str = "agentic-platform"
+    # CIDRs of trusted reverse proxies. X-Forwarded-For is ignored entirely
+    # unless the direct peer is in this list.
+    trusted_proxies: list[str] = Field(default_factory=list)
     enable_mtls: bool = False
     mtls_cert_path: str | None = None
     mtls_key_path: str | None = None
@@ -121,6 +128,14 @@ class Settings(BaseSettings):
     cache_max_entries: int = 2048
     enable_semantic_cache: bool = True
     semantic_cache_default_threshold: float = 0.92
+    # Hybrid retrieval fusion weights (vector / lexical / knowledge graph)
+    rag_vector_weight: float = 0.40
+    rag_lexical_weight: float = 0.30
+    rag_kg_weight: float = 0.30
+    # Hard ceiling for generation; also used by the token quota estimator.
+    max_output_tokens: int = 4096
+    # Embedding service is a required dependency in production.
+    require_embedding_service: bool = False
     semantic_cache_domain_thresholds: dict[str, float] = {
         "legal": 0.96,
         "finance": 0.96,
@@ -178,23 +193,26 @@ class Settings(BaseSettings):
 
     @property
     def checkpoint_signing_key(self) -> str:
-        """Return a domain-separated key without requiring another plaintext secret."""
+        """Return a dedicated domain-separated key for checkpoint signatures."""
         if self.checkpoint_hmac_secret:
             return self.checkpoint_hmac_secret
-        material = f"agentic-checkpoint\x00{self.jwt_secret_key}\x00{self.s2s_internal_token}"
+        material = f"agentic-chkpt-isolated\x00{self.s2s_internal_token}"
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
     @model_validator(mode="after")
     def validate_production_inviolables(self) -> "Settings":
         """Enforces zero-trust production security invariants."""
-        if self.environment != "production":
-            if "allow_host_code_execution" not in self.model_fields_set:
-                self.allow_host_code_execution = True
-            if "allow_local_agent_fallback" not in self.model_fields_set:
-                self.allow_local_agent_fallback = True
-            if "use_remote_mcp" not in self.model_fields_set:
-                self.use_remote_mcp = False
+        # Fail-closed: Never auto-enable host code execution even in development
         if self.environment == "production":
+            self.allow_host_code_execution = False
+            self.allow_local_agent_fallback = False
+            # Fail-closed operational defaults: enforce rather than merely
+            # document them, so a missing env var cannot weaken production.
+            self.debug = False
+            self.enable_redis_rate_limit = True
+            self.enable_redis_cache = True
+            self.enable_tracing = True
+            self.require_embedding_service = True
             if "require_model_gateway_ready" not in self.model_fields_set:
                 self.require_model_gateway_ready = True
             insecure_keys = [

@@ -18,6 +18,8 @@ os.environ["ENABLE_GUARDRAILS"] = "true"
 os.environ["PII_REDACTION_ENABLED"] = "true"
 os.environ["A2A_RETRY_BACKOFF_BASE_SECONDS"] = "0.001"
 os.environ["A2A_RETRY_BACKOFF_MAX_SECONDS"] = "0.01"
+os.environ["ALLOW_LOCAL_AGENT_FALLBACK"] = "true"
+os.environ["ALLOW_HOST_CODE_EXECUTION"] = "true"
 
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -43,3 +45,13 @@ async def async_client():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+
+
+@pytest.fixture(autouse=True)
+def reset_settings_cache():
+    """Ensure global Settings cache is refreshed between tests to prevent test pollution."""
+    yield
+    from src.agentic.core.config import get_settings
+
+    get_settings.cache_clear()
+

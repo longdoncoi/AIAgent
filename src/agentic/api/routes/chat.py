@@ -54,7 +54,9 @@ async def chat_endpoint(
         raise HTTPException(status_code=503, detail="Thread registry is unavailable.") from exc
 
     try:
-        clean_query = guardrails.sanitize_input(req.query)
+        # Full guardrail (regex + semantic) plus structured metadata sanitization.
+        clean_query = await guardrails.asanitize_input(req.query)
+        safe_metadata = await asyncio.to_thread(guardrails.sanitize_context, req.metadata)
     except GuardrailViolation as gv:
         raise HTTPException(
             status_code=400,
@@ -65,7 +67,7 @@ async def chat_endpoint(
     initial_input = {
         "messages": [HumanMessage(content=clean_query)],
         "thread_id": thread_id,
-        "metadata": {**req.metadata, "user_id": owner_id, "public_thread_id": thread_id},
+        "metadata": {**safe_metadata, "user_id": owner_id, "public_thread_id": thread_id},
     }
 
     try:
@@ -84,7 +86,7 @@ async def chat_endpoint(
                 StepResult(
                     step_id=s.id,
                     agent=s.agent,
-                    output=s.output or "",
+                    output=await asyncio.to_thread(guardrails.sanitize_output, s.output or ""),
                     status=s.status,
                 )
             )
@@ -104,9 +106,13 @@ async def chat_endpoint(
                     else str(interrupt_value)
                 )
 
+    final_answer = final_state.get("final_answer")
+    if final_answer:
+        final_answer = await asyncio.to_thread(guardrails.sanitize_output, str(final_answer))
+
     return ChatResponse(
         thread_id=thread_id,
-        answer=final_state.get("final_answer")
+        answer=final_answer
         or (
             "Execution paused waiting for Human-In-The-Loop approval."
             if requires_approval
@@ -141,7 +147,8 @@ async def chat_stream_endpoint(
         ownership_error = ""
 
     try:
-        clean_query = guardrails.sanitize_input(req.query)
+        clean_query = await guardrails.asanitize_input(req.query)
+        safe_metadata = await asyncio.to_thread(guardrails.sanitize_context, req.metadata)
     except GuardrailViolation as gv:
         gv_msg = str(gv)
 
@@ -157,7 +164,7 @@ async def chat_stream_endpoint(
     initial_input = {
         "messages": [HumanMessage(content=clean_query)],
         "thread_id": thread_id,
-        "metadata": {**req.metadata, "user_id": owner_id, "public_thread_id": thread_id},
+        "metadata": {**safe_metadata, "user_id": owner_id, "public_thread_id": thread_id},
     }
 
     async def event_generator() -> AsyncIterator[dict[str, Any]]:

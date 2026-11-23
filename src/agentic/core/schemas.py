@@ -8,11 +8,11 @@ from pydantic import BaseModel, Field
 class ChatRequest(BaseModel):
     """User incoming chat request."""
 
-    query: str = Field(..., description="User query or instruction")
+    query: str = Field(..., max_length=50000, description="User query or instruction")
     thread_id: str | None = Field(
-        default=None, description="Conversation session ID for checkpointing"
+        default=None, max_length=128, description="Conversation session ID for checkpointing"
     )
-    user_id: str | None = Field(default="default_user", description="Identifier of the requester")
+    user_id: str | None = Field(default="default_user", max_length=128, description="Identifier of the requester")
     stream: bool = Field(default=True, description="Whether to stream response via SSE")
     metadata: dict[str, Any] = Field(default_factory=dict, description="Custom request metadata")
 
@@ -23,7 +23,7 @@ class StepResult(BaseModel):
     step_id: str
     agent: str
     output: str
-    status: Literal["completed", "failed", "pending", "interrupted"] = "completed"
+    status: Literal["completed", "failed", "pending", "running", "interrupted"] = "completed"
     error: str | None = None
     duration_seconds: float = 0.0
 
@@ -78,3 +78,4 @@ class ApprovalResponse(BaseModel):
     thread_id: str
     status: Literal["resumed", "aborted"]
     message: str
+    final_answer: str | None = None

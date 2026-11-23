@@ -70,8 +70,16 @@ def test_admin_reload_configs_endpoint() -> None:
     assert resp_bad_header.status_code == 401
 
     # 2. Non-admin user token should be rejected with 403 Forbidden
+    now = int(__import__("time").time())
     user_token = jwt.encode(
-        {"sub": "regular_user", "role": "user"},
+        {
+            "sub": "regular_user",
+            "role": "user",
+            "aud": settings.jwt_audience,
+            "iss": settings.jwt_issuer,
+            "iat": now,
+            "exp": now + 3600,
+        },
         settings.jwt_secret_key,
         algorithm=settings.jwt_algorithm,
     )

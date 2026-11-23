@@ -15,6 +15,7 @@ resources:
   - network-policy.yaml
   - ingress.yaml
   - pgbouncer.yaml
+  - pod-disruption-budgets.yaml
   - istio-security.yaml
 
 commonLabels:

@@ -41,12 +41,17 @@ async def ingest_delta_document_activity(event_data: dict[str, Any]) -> dict[str
         target.relative_to(raw_root)
     except ValueError as exc:
         raise ValueError("Delta document path escapes the configured raw-data root.") from exc
-    invalidated_count = rag_cache.invalidate_document(doc_id)
+    # Selective invalidation only. Flushing the entire cache when no key
+    # matched caused a thundering herd after every CDC event.
+    invalidated_count = await asyncio.to_thread(rag_cache.invalidate_document, doc_id)
     if file_path:
-        invalidated_count += rag_cache.invalidate_by_source(file_path)
-    if invalidated_count == 0:
-        # Fallback to clear if doc_id was not explicitly in keys
-        rag_cache.clear()
+        invalidated_count += await asyncio.to_thread(rag_cache.invalidate_by_source, file_path)
+
+    # Publish a generation bump so other processes/replicas discard their
+    # process-local retriever and L1 cache instead of serving stale data.
+    publisher = getattr(rag_cache, "publish_invalidation", None)
+    if publisher is not None:
+        await asyncio.to_thread(publisher, doc_id, file_path)
 
     # If content is provided, save to raw folder
     if action == "upsert" and content:

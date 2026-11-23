@@ -1,4 +1,4 @@
-.PHONY: install infra-up infra-down serve-vllm serve-llama-chat serve-llama-embed serve-mcp serve-agents dev lint audit test eval eval-deep eval-ragas ingest docker-build load-test db-migrate db-upgrade clean memory-status pre-flight
+.PHONY: install infra-up infra-down serve-vllm serve-llama-chat serve-llama-embed serve-mcp serve-agents dev lint audit test eval eval-smoke eval-release eval-deep eval-ragas prr-evidence ingest docker-build load-test db-migrate db-upgrade clean memory-status pre-flight
 
 install:
 	uv pip install -e ".[dev]"
@@ -39,16 +39,27 @@ audit:
 	pip-audit
 
 test:
-	pytest tests/ -n auto -v --cov=src
+	pytest tests/ -n auto -v --cov=src --cov-fail-under=80
 
-eval:
-	python evals/run_eval.py
+# CI smoke gate only. Never claim production readiness from this target.
+eval: eval-smoke
+
+eval-smoke:
+	python evals/run_eval.py --mode smoke
+
+# STRICT release gate. Fails on proxy answers / missing LLM judge / downgraded thresholds.
+# This is the only target allowed to produce a "Ready for Production" verdict.
+eval-release:
+	python evals/release_gate.py
 
 eval-deep:
-	python evals/deepeval_runner.py
+	python evals/deepeval_runner.py --mode smoke
 
 eval-ragas:
-	python evals/ragas_runner.py
+	python evals/ragas_runner.py --mode smoke
+
+prr-evidence:
+	python scripts/generate_prr_evidence.py
 
 ingest:
 	python scripts/ingest.py --data-dir data/raw --index-dir data/index
@@ -74,6 +85,7 @@ clean:
 memory-status:
 	@cat .memory/activeContext.md
 
-pre-flight: lint test audit
+pre-flight: lint test audit eval
 	@echo "All pre-flight quality gates passed successfully!"
+	@echo "NOTE: pre-flight includes SMOKE eval only. Run 'make eval-release' for the strict release gate."
 

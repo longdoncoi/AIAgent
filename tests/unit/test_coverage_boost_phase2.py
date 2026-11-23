@@ -469,7 +469,7 @@ def test_long_term_store_production_and_metadata_fallbacks(tmp_path):
     ):
         with pytest.raises(RuntimeError) as exc:
             LongTermStore(storage_dir=tmp_path, force_sqlite=False)
-        assert "Single-node SQLite storage is strictly prohibited" in str(exc.value)
+        assert "PostgreSQL LongTermStore is unavailable" in str(exc.value)
 
     # 2. Search SQLite metadata JSON decoding exception fallback
     store = LongTermStore(storage_dir=tmp_path, force_sqlite=True)

@@ -9,6 +9,8 @@ from src.agentic.a2a.client import get_a2a_client
 from src.agentic.observability.metrics import NODE_DURATION
 from src.agentic.observability.tracing import traced_operation
 from src.agentic.orchestrator.state import AgentState, Step
+from src.agentic.safety.approvals import issue_approval_grant
+from src.agentic.safety.policy import get_policy_manager
 
 logger = logging.getLogger(__name__)
 
@@ -26,12 +28,23 @@ async def dispatch_node(state: AgentState) -> dict[str, Any]:
         completed_ids = {s.id for s in steps if s.status == "completed"}
         failed_ids = {s.id for s in steps if s.status == "failed"}
 
+        from src.agentic.orchestrator.nodes.hitl import compute_step_fingerprint
+
+        def is_step_approved(s: Step) -> bool:
+            if s.risk_level != "high":
+                return True
+            if s.id not in state.approved_step_ids:
+                return False
+            # A high-risk step is approved only if the recorded fingerprint
+            # matches exactly. An empty fingerprint map is NEVER a pass.
+            return state.approved_step_fingerprints.get(s.id) == compute_step_fingerprint(s)
+
         # Find pending steps that are ready to run
         ready_steps = [
             s
             for s in steps
             if s.status == "pending" and all(dep in completed_ids for dep in s.depends_on)
-            and (s.risk_level != "high" or s.id in state.approved_step_ids)
+            and is_step_approved(s)
         ]
 
         # If no steps are ready because a prerequisite failed, mark blocked steps as failed
@@ -57,6 +70,8 @@ async def dispatch_node(state: AgentState) -> dict[str, Any]:
             }
 
         a2a_client = get_a2a_client()
+        policy = get_policy_manager()
+        owner_id = str(state.metadata.get("user_id") or "anonymous_user")
 
         async def _execute_step(step: Step) -> None:
             logger.info(f"Dispatching step '{step.id}' to agent '{step.agent}'...")
@@ -73,8 +88,24 @@ async def dispatch_node(state: AgentState) -> dict[str, Any]:
                         "request_metadata": state.metadata,
                     },
                     metadata={
-                        "hitl_approved": step.id in state.approved_step_ids,
-                        "owner_id": state.metadata.get("user_id"),
+                        # Signed, step-scoped capability: the sub-agent verifies
+                        # it at the tool boundary. No caller-controlled boolean.
+                        "approval_token": issue_approval_grant(
+                            step_id=step.id,
+                            fingerprint=compute_step_fingerprint(step),
+                            owner_id=owner_id,
+                            agent_name=step.agent,
+                            tools=[
+                                tool
+                                for tool in policy.get_agent_tools(step.agent)
+                                # Approval-gated tools are only granted after a
+                                # genuine HITL decision on a high-risk step.
+                                if not policy.is_approval_required(tool)
+                                or (step.risk_level == "high" and is_step_approved(step))
+                            ],
+                        ),
+                        "owner_id": owner_id,
+                        "step_fingerprint": compute_step_fingerprint(step),
                     },
                     timeout=60.0,
                 ):

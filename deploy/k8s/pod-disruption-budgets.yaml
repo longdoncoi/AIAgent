@@ -1,0 +1,80 @@
+# ==============================================================================
+# PodDisruptionBudgets: guarantee voluntary-disruption headroom during drains,
+# node upgrades and cluster autoscaling. All workloads with replicas >= 2.
+# ==============================================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: agentic-api-pdb
+  namespace: agentic-platform
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: agentic-api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: agentic-chat-agent-pdb
+  namespace: agentic-platform
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: agentic-chat-agent
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: agentic-rag-agent-pdb
+  namespace: agentic-platform
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: agentic-rag-agent
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: agentic-mcp-code-exec-pdb
+  namespace: agentic-platform
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: agentic-mcp-code-exec
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: agentic-mcp-repo-pdb
+  namespace: agentic-platform
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: agentic-mcp-repo
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: agentic-mcp-web-search-pdb
+  namespace: agentic-platform
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: agentic-mcp-web-search
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: pgbouncer-pdb
+  namespace: agentic-platform
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: pgbouncer

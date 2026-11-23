@@ -60,6 +60,36 @@ jobs:
     name: Test Suite & Quality Evaluation Gate
     needs: [lint-and-audit]
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: agentic_db
+          POSTGRES_USER: agentic_user
+          POSTGRES_PASSWORD: agentic_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      ENVIRONMENT: "test"
+      CI: "true"
+      POSTGRES_URI: "postgresql://agentic_user:agentic_password@localhost:5432/agentic_db"
+      REDIS_URI: "redis://localhost:6379/0"
+      ALLOW_LOCAL_AGENT_FALLBACK: "true"
+      ALLOW_HOST_CODE_EXECUTION: "true"
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -90,13 +120,29 @@ jobs:
       - name: Verify Database Migrations (Alembic)
         run: python scripts/migrate_db.py
 
-      - name: Run Unit & Integration Tests (pytest)
-        run: pytest tests/ -n auto -v --cov=src --cov-report=term-missing
+      - name: Run Unit & Integration Tests (pytest, 80% coverage floor)
+        run: pytest tests/ -n auto -v --cov=src --cov-report=term-missing --cov-fail-under=80
         env:
           ENABLE_DOCKER_SANDBOX: "false"
 
-      - name: Run Quality Gate Benchmark (Routing, Groundedness, Faithfulness)
-        run: python evals/run_eval.py
+      - name: Run Smoke Quality Benchmark (NOT a release gate)
+        run: python evals/run_eval.py --mode smoke
+        env:
+          ENVIRONMENT: "test"
+          CI: "true"
+
+      - name: Generate PRR Machine Evidence (commit SHA + exit codes)
+        run: python scripts/generate_prr_evidence.py
+        env:
+          ENVIRONMENT: "test"
+          CI: "true"
+
+      - name: Upload PRR Evidence Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: prr-evidence-${{ github.sha }}
+          path: evidence/prr/latest.json
+          if-no-files-found: error
 
   # ----------------------------------------------------------------------------
   # 3. Container Build, Hardening & Security Scan
@@ -215,10 +261,38 @@ jobs:
           kubectl kustomize deploy/k8s > /tmp/agentic-manifests.yaml
           ./kubeconform -strict -summary -ignore-missing-schemas /tmp/agentic-manifests.yaml
 
-      - name: GitOps Image Tag Auto-Update & ArgoCD Sync
+      - name: Verify Release Sign-off & PRR Attestation Artifacts
+        id: signoff
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          echo "Release tag detected: ${{ github.ref_name }}."
+          # Auto-deploy is only permitted with a committed, valid sign-off and
+          # machine-generated PRR evidence. Otherwise release stays MANUAL.
+          if python - <<'PY'
+          import json, pathlib, sys
+          required = [
+              pathlib.Path("evidence/prr/latest.json"),
+              pathlib.Path("evidence/signoff/release-board.json"),
+          ]
+          missing = [str(p) for p in required if not p.exists()]
+          if missing:
+              print("::warning::Missing sign-off/attestation artifacts: " + ", ".join(missing))
+              sys.exit(2)
+          for p in required:
+              payload = json.loads(p.read_text(encoding="utf-8"))
+              if not isinstance(payload, dict):
+                  raise SystemExit(f"Invalid attestation payload: {p}")
+          print("Sign-off and PRR attestation artifacts verified.")
+          PY
+          then
+            echo "approved=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "approved=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: GitOps Image Tag Auto-Update & ArgoCD Sync (requires sign-off)
+        if: startsWith(github.ref, 'refs/tags/v') && steps.signoff.outputs.approved == 'true'
+        run: |
+          echo "Release tag detected: ${{ github.ref_name }}. Sign-off verified."
           echo "Updating deployment image references with immutable SHA: ${{ github.sha }}..."
           sed -i "s|image: ghcr.io/agentic-platform/api:latest|image: ghcr.io/${REPO_LOWER}/api:${{ github.sha }}|g" deploy/k8s/deployment.yaml
           sed -i "s|image: ghcr.io/agentic-platform/agent:latest|image: ghcr.io/${REPO_LOWER}/agent:${{ github.sha }}|g" deploy/k8s/deployment.yaml

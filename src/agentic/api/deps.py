@@ -1,7 +1,7 @@
 """FastAPI dependency providers with JWT validation and RBAC."""
 
 import logging
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 import jwt
 from fastapi import Depends, Header, HTTPException, Request, status
@@ -56,29 +56,38 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
 
     token = authorization.split(" ")[1].strip()
 
-    # In dev/test, support well-known testing tokens
-    if settings.environment in ["development", "test"]:
+    # Strictly restrict testing tokens to test/development environments (strictly blocked in production)
+    if settings.environment in ("development", "test"):
         if token in ["admin_token", "test_token", "secret"]:
             return {"user_id": "test_admin", "role": "admin", "token": token}
 
     try:
+        # Validate the full claim set at every trust boundary. A token without
+        # audience/issuer/expiry is not an authenticated identity.
         payload = jwt.decode(
             token,
             settings.jwt_secret_key,
             algorithms=[settings.jwt_algorithm],
+            audience=settings.jwt_audience,
+            issuer=settings.jwt_issuer,
+            options=cast(Any, {"require": ["exp", "iat", "sub", "aud", "iss"]}),
         )
-        user_id = str(payload.get("sub", payload.get("user_id", "authenticated_user")))
+        user_id = str(payload.get("sub") or payload.get("user_id") or "authenticated_user")
         role = str(payload.get("role", "user"))
+        if role not in {"admin", "supervisor", "operator", "user", "guest"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Unrecognized role claim: {role}",
+            )
         return {"user_id": user_id, "role": role, "token": token}
     except jwt.PyJWTError as e:
-        if settings.require_authentication:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or expired token.",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        logger.debug(f"JWT decode error ({e}). Falling back to authenticated_user role.")
-        return {"user_id": "authenticated_user", "role": "user", "token": token}
+        # Never downgrade an invalid token into an authenticated identity.
+        logger.warning("Rejected invalid JWT: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from e
 
 
 def require_role(allowed_roles: list[str]) -> Callable[..., Any]:

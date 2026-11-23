@@ -180,9 +180,9 @@ async def test_chat_route_stream_events_and_cancellation():
     guardrails = MagicMock(spec=GuardrailManager)
 
     # 1. GuardrailViolation in stream -> line 110
-    guardrails.sanitize_input.side_effect = GuardrailViolation(
-        rule="r1", message="Injection detected"
-    )
+    injection = GuardrailViolation(rule="r1", message="Injection detected")
+    guardrails.sanitize_input.side_effect = injection
+    guardrails.asanitize_input = AsyncMock(side_effect=injection)
     req = ChatRequest(query="attack")
     err_resp = await chat_stream_endpoint(
         req=req, graph=MagicMock(), guardrails=guardrails, user={"user_id": "u1"}
@@ -194,6 +194,7 @@ async def test_chat_route_stream_events_and_cancellation():
     # 2. Chat stream events (token, safety flag, final answer)
     guardrails.sanitize_input.side_effect = None
     guardrails.sanitize_input.return_value = "clean text"
+    guardrails.asanitize_input = AsyncMock(return_value="clean text")
 
     async def mock_events(initial_input, config=None, version="v2"):
         # on_chat_model_stream
@@ -410,14 +411,14 @@ def test_llm_gateway_circuit_breaker_and_socket_probe():
     cb = ModelCircuitBreaker()
     assert cb.should_fallback("model_never_tripped") is False
 
-    mock_sock = MagicMock()
-    mock_sock.__enter__.return_value = mock_sock
-    with (
-        patch("socket.create_connection", return_value=mock_sock),
-        patch("src.agentic.llm.gateway.ChatOpenAI") as mock_chat,
-    ):
+    # The old synchronous socket pre-probe was removed (it blocked the event
+    # loop and produced false negatives). Extra headers must still be passed.
+    # The gateway instantiates its prompt-cache-aware subclass, not the base
+    # ChatOpenAI symbol, so patch the effective constructor.
+    with patch("src.agentic.llm.gateway._PromptCachedChatOpenAI") as mock_chat:
         get_llm(alias="fast-llm", extra_headers={"X-Custom": "val"})
         mock_chat.assert_called_once()
+        assert mock_chat.call_args.kwargs["default_headers"]["X-Custom"] == "val"
 
 
 # ============================================================================

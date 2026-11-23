@@ -6,10 +6,18 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ToolExecutionContext:
+    """Authorization context for one tool execution.
+
+    ``approval_token`` is a signed capability token minted by the supervisor
+    after an actual HITL decision. It replaces the former caller-controlled
+    ``hitl_approved`` boolean, which could be forged by any A2A caller.
+    """
+
     agent_name: str
     step_id: str
-    hitl_approved: bool = False
+    approval_token: str | None = None
     owner_id: str | None = None
+    step_fingerprint: str | None = None
 
 
 _context: ContextVar[ToolExecutionContext | None] = ContextVar(

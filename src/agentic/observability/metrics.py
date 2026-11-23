@@ -75,3 +75,59 @@ LTM_WRITE_ERRORS_TOTAL = Counter(
     "Total write errors encountered in Long Term Store",
     ["backend"],
 )
+
+# --- Production hardening metrics (added during PRR remediation) -----------
+
+GUARDRAIL_SEMANTIC_FALLBACK_TOTAL = Counter(
+    "agent_guardrail_semantic_fallback_total",
+    "Semantic guardrail evaluations that fell back because the judge was unavailable",
+    ["mode"],
+)
+
+REFLECTION_FALLBACK_TOTAL = Counter(
+    "agent_reflection_fallback_total",
+    "Reflector evaluations that could not use the LLM judge",
+    ["reason"],
+)
+
+CHECKPOINT_PERSIST_ERRORS_TOTAL = Counter(
+    "agent_checkpoint_persist_errors_total",
+    "Checkpoint persistence failures",
+    ["backend", "operation"],
+)
+
+RAG_EMBED_PROVIDER = Counter(
+    "agent_rag_embed_provider_info",
+    "Embedding provider selected at retriever construction (1 = selected)",
+    ["type"],
+)
+
+RAG_RERANKER_MODE = Counter(
+    "agent_rag_reranker_mode_info",
+    "Reranker mode selected (1 = selected)",
+    ["mode"],
+)
+
+TOKEN_COST_TOTAL = Counter(
+    "agent_token_cost_total",
+    "Estimated token cost in USD",
+    ["model_alias", "token_type"],
+)
+
+APPROVAL_GRANTS_TOTAL = Counter(
+    "agent_approval_grants_total",
+    "Signed HITL approval grants issued, verified or rejected",
+    ["outcome"],
+)
+
+RATE_LIMIT_REJECTIONS_TOTAL = Counter(
+    "agent_rate_limit_rejections_total",
+    "Requests rejected by rate or token quota limits",
+    ["layer"],
+)
+
+OBSERVABILITY_ERRORS_TOTAL = Counter(
+    "agent_observability_errors_total",
+    "Self-failures of observability subsystems",
+    ["component"],
+)

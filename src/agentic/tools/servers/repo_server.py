@@ -1,6 +1,7 @@
 """FastMCP / MCPServer for Repository and File Operations (Port 9002)."""
 
 import argparse
+import asyncio
 import os
 import re
 from pathlib import Path
@@ -26,9 +27,23 @@ IGNORED_DIRS = {
     "build",
 }
 
+# Protected paths that coding agents must never overwrite to prevent security policy tampering
+DENIED_WRITE_PATTERNS = {
+    "configs",
+    "src",
+    ".git",
+    "migrations",
+    ".env",
+    "deploy",
+    "alembic.ini",
+}
+
 
 def _get_workspace_root() -> Path:
     """Retrieves the canonical root directory of the workspace."""
+    custom_root = os.environ.get("WORKSPACE_ROOT")
+    if custom_root:
+        return Path(custom_root).resolve()
     try:
         from src.agentic.core.config import get_settings
 
@@ -37,8 +52,10 @@ def _get_workspace_root() -> Path:
         return Path.cwd().resolve()
 
 
-def _validate_safe_path(target_path: str) -> Path:
-    """Validates that a path stays strictly within workspace boundary (prevents Path Traversal)."""
+def _validate_safe_path(target_path: str, is_write: bool = False) -> Path:
+    """Validates that a path stays strictly within workspace boundary (prevents Path Traversal)
+    and enforces strict access control policies against system configuration tampering.
+    """
     root = _get_workspace_root()
     path = Path(target_path)
     if not path.is_absolute():
@@ -50,6 +67,23 @@ def _validate_safe_path(target_path: str) -> Path:
         raise PermissionError(
             f"Security Violation: Target path '{target_path}' escapes workspace boundary ('{root}')."
         )
+
+    rel_posix = path.relative_to(root).as_posix()
+    top_dir = rel_posix.split("/")[0] if "/" in rel_posix else rel_posix
+
+    if is_write:
+        for denied in DENIED_WRITE_PATTERNS:
+            if rel_posix == denied or rel_posix.startswith(f"{denied}/") or top_dir == denied:
+                raise PermissionError(
+                    f"Security Violation: Writing to protected system directory/file '{rel_posix}' is forbidden."
+                )
+
+    # Protect secret files from direct read
+    if rel_posix == ".env" or rel_posix.startswith(".env.") or rel_posix.startswith("data/memory/checkpoints"):
+        raise PermissionError(
+            f"Security Violation: Direct access to secret file '{rel_posix}' is forbidden."
+        )
+
     return path
 
 
@@ -108,8 +142,19 @@ def read_file_core(file_path: str, start_line: int = 1, end_line: int = 200) -> 
         return f"Error reading file '{file_path}': {e}"
 
 
+_NESTED_QUANTIFIER = re.compile(r"\([^)]*[+*][^)]*\)[+*{]")
+_MAX_MATCH_LINE_CHARS = 4000
+
+
 def search_symbol_core(query: str, directory: str = ".") -> str:
-    """Searches for regex/symbol across text files in directory."""
+    """Searches for regex/symbol across text files in directory with ReDoS protection."""
+    if len(query) > 200:
+        return "Search query rejected: exceeds maximum length of 200 characters."
+    # Catastrophic-backtracking constructs (e.g. ``(a+)+$``) can hang the whole
+    # MCP server. Reject them up front instead of relying on a length check.
+    if _NESTED_QUANTIFIER.search(query) or query.count("|") > 32:
+        return "Search query rejected: potentially catastrophic regular expression."
+
     try:
         base_path = _validate_safe_path(directory)
     except PermissionError as pe:
@@ -118,7 +163,12 @@ def search_symbol_core(query: str, directory: str = ".") -> str:
     if not base_path.exists():
         return f"Directory '{directory}' not found."
 
-    pattern = re.compile(query, re.IGNORECASE)
+    try:
+        pattern = re.compile(query, re.IGNORECASE)
+    except re.error:
+        # Fall back to escaped literal pattern if regex is malformed
+        pattern = re.compile(re.escape(query), re.IGNORECASE)
+
     matches: list[str] = []
 
     for root, dirs, files in os.walk(base_path):
@@ -128,6 +178,8 @@ def search_symbol_core(query: str, directory: str = ".") -> str:
             try:
                 with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                     for line_num, line in enumerate(f, start=1):
+                        if len(line) > _MAX_MATCH_LINE_CHARS:
+                            continue
                         if pattern.search(line):
                             rel_path = file_path.relative_to(base_path)
                             matches.append(f"{rel_path.as_posix()}:{line_num}: {line.strip()}")
@@ -141,9 +193,9 @@ def search_symbol_core(query: str, directory: str = ".") -> str:
 
 
 def write_file_core(file_path: str, content: str) -> str:
-    """Writes content to a file, creating parent directories if needed."""
+    """Writes content to a file, creating parent directories if needed, blocking protected paths."""
     try:
-        path = _validate_safe_path(file_path)
+        path = _validate_safe_path(file_path, is_write=True)
     except PermissionError as pe:
         return str(pe)
 
@@ -159,25 +211,25 @@ def write_file_core(file_path: str, content: str) -> str:
 @mcp.tool()
 async def repo_list_files(directory: str = ".", max_depth: int = 3) -> str:
     """List directory tree up to max_depth."""
-    return list_files_core(directory, max_depth)
+    return await asyncio.to_thread(list_files_core, directory, max_depth)
 
 
 @mcp.tool()
 async def repo_read_file(file_path: str, start_line: int = 1, end_line: int = 200) -> str:
     """Read a slice of lines from a file."""
-    return read_file_core(file_path, start_line, end_line)
+    return await asyncio.to_thread(read_file_core, file_path, start_line, end_line)
 
 
 @mcp.tool()
 async def repo_search_symbol(query: str, directory: str = ".") -> str:
     """Search for a symbol or text pattern in files."""
-    return search_symbol_core(query, directory)
+    return await asyncio.to_thread(search_symbol_core, query, directory)
 
 
 @mcp.tool()
 async def repo_write_file(file_path: str, content: str) -> str:
     """Write or overwrite a file with given content."""
-    return write_file_core(file_path, content)
+    return await asyncio.to_thread(write_file_core, file_path, content)
 
 
 def main() -> None:

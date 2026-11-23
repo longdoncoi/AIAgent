@@ -1,11 +1,40 @@
 """Integration tests for the LangGraph Supervisor Orchestrator."""
 
+from typing import Any
+from unittest.mock import patch
+
 import pytest
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
 from src.agentic.orchestrator.graph import create_supervisor_graph
+from src.agentic.orchestrator.nodes.reflector import ReflectionEvaluation
+
+
+class _FakeStructuredJudge:
+    """Deterministic reflection judge; the real one needs an external LLM."""
+
+    async def ainvoke(self, prompt: str) -> ReflectionEvaluation:
+        return ReflectionEvaluation(
+            passed=True,
+            confidence_score=0.95,
+            critique="Deterministic test judge: goal addressed.",
+            action="proceed",
+        )
+
+
+class _FakeLLM:
+    def with_structured_output(self, schema: Any) -> _FakeStructuredJudge:
+        return _FakeStructuredJudge()
+
+
+class _FakeA2AClient:
+    """Deterministic sub-agent stream; no A2A/LiteLLM servers in integration tests."""
+
+    async def call_agent_stream(self, **kwargs: Any):  # type: ignore[no-untyped-def]
+        yield {"event": "token", "token": "done"}
+        yield {"event": "completed", "output": "Deterministic step output"}
 
 
 @pytest.mark.asyncio
@@ -51,9 +80,24 @@ async def test_supervisor_hitl_interrupt_and_resume():
         assert len(snapshot.tasks) > 0
         assert len(snapshot.tasks[0].interrupts) > 0
 
-        # Resume with approved decision
-        resumed_state = await graph.ainvoke(
-            Command(resume={"approved": True}),
-            config=config,
-        )
+        # Resume with approved decision. External LLM/A2A services are stubbed
+        # so the HITL resume path itself is what gets exercised.
+        with (
+            patch(
+                "src.agentic.orchestrator.nodes.dispatch.get_a2a_client",
+                return_value=_FakeA2AClient(),
+            ),
+            patch(
+                "src.agentic.orchestrator.nodes.reflector.get_llm",
+                return_value=_FakeLLM(),
+            ),
+        ):
+            resumed_state = await graph.ainvoke(
+                Command(resume={"approved": True}),
+                config=config,
+            )
         assert resumed_state.get("final_answer") is not None
+    else:
+        pytest.fail(
+            f"Expected the supervisor graph to pause at the HITL node, got next={snapshot.next!r}"
+        )

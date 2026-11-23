@@ -14,38 +14,42 @@ from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapProp
 
 from src.agentic.core.config import get_settings
 from src.agentic.observability.langsmith_tracer import setup_langsmith
+from src.agentic.observability.metrics import OBSERVABILITY_ERRORS_TOTAL
 
 logger = logging.getLogger(__name__)
+
+_settings = get_settings()
+# LangSmith setup is independent of who configured the OTel provider.
+setup_langsmith(_settings)
 
 # Initialize global TracerProvider if not already configured
 if not isinstance(trace.get_tracer_provider(), TracerProvider):
     resource = Resource.create({"service.name": "agentic-platform"})
     provider = TracerProvider(resource=resource)
-    settings = get_settings()
-    # Console exporter in dev / debug mode
-    if settings.debug:
-        provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
-    elif settings.otel_exporter_otlp_endpoint:
-        try:
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
-                OTLPSpanExporter,
-            )
+    if _settings.enable_tracing:
+        # OTLP always wins over the debug console. In production an endpoint is
+        # mandatory; console export must never silently replace a real backend.
+        if _settings.otel_exporter_otlp_endpoint:
+            try:
+                from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+                    OTLPSpanExporter,
+                )
 
-            otlp_exporter = OTLPSpanExporter(
-                endpoint=settings.otel_exporter_otlp_endpoint, insecure=True
-            )
-            provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
-            logger.info(
-                f"Initialized OTLPSpanExporter to endpoint: {settings.otel_exporter_otlp_endpoint}"
-            )
-        except Exception as e:
-            logger.debug(
-                f"OTLPSpanExporter not available in current environment ({e}). Using tracer provider default."
-            )
+                otlp_exporter = OTLPSpanExporter(
+                    endpoint=_settings.otel_exporter_otlp_endpoint, insecure=True
+                )
+                provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
+                logger.info("Initialized OTLPSpanExporter to %s", _settings.otel_exporter_otlp_endpoint)
+            except Exception as e:
+                OBSERVABILITY_ERRORS_TOTAL.labels(component="otel_otlp").inc()
+                logger.error("OTLPSpanExporter unavailable: %s", e)
+        elif _settings.debug and _settings.environment != "production":
+            provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
+            logger.warning("Using ConsoleSpanExporter — traces are NOT sent to a backend")
+        elif _settings.environment == "production":
+            OBSERVABILITY_ERRORS_TOTAL.labels(component="otel_no_exporter").inc()
+            logger.error("Production tracing has no exporter configured")
     trace.set_tracer_provider(provider)
-
-    # Initialize LangSmith Observability Integration
-    setup_langsmith(settings)
 
 
 def get_tracer(name: str = "agentic-platform") -> trace.Tracer:

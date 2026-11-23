@@ -21,11 +21,15 @@ Trụ cột này bảo đảm kho tri thức doanh nghiệp được quản tr�
 
 | ID | Trạng Thái | Mức Độ | Tiêu Chí Kiểm Tra (Verification Criteria) | Tệp Mã Nguồn / Cấu Hình | Phương Pháp & Lệnh Kiểm Chứng |
 | :---: | :---: | :---: | :--- | :--- | :--- |
-| **14.1** | `[ ]` | **P0** | **Phân Quyền Truy Cập Tri Thức Cấp Tài Liệu (Document-Level RBAC)**: Bộ lọc metadata filtering trên Vector Store và Knowledge Graph bắt buộc kiểm tra `user_roles` và `department` của người dùng trước khi trả về các chunk ngữ cảnh, triệt tiêu rủi ro lộ bí mật kinh doanh chéo bộ phận. | [src/agentic/rag/retriever.py](file:///f:/PROJECTS/AIAgent/src/agentic/rag/retriever.py)<br>[src/agentic/rag/tools.py](file:///f:/PROJECTS/AIAgent/src/agentic/rag/tools.py) | Gửi truy vấn với user quyền thấp truy vấn tài liệu nhạy cảm của Giám đốc $\rightarrow$ Xác nhận không trả về tài liệu mật. |
+| **14.1** | **NOT IMPLEMENTED** | **P0** | **Phân Quyền Truy Cập Tri Thức Cấp Tài Liệu (Document-Level RBAC)**: Bộ lọc metadata filtering trên Vector Store và Knowledge Graph bắt buộc kiểm tra `user_roles` và `department` của người dùng trước khi trả về các chunk ngữ cảnh, triệt tiêu rủi ro lộ bí mật kinh doanh chéo bộ phận. | [src/agentic/rag/retriever.py](file:///f:/PROJECTS/AIAgent/src/agentic/rag/retriever.py)<br>[src/agentic/rag/tools.py](file:///f:/PROJECTS/AIAgent/src/agentic/rag/tools.py) | Gửi truy vấn với user quyền thấp truy vấn tài liệu nhạy cảm của Giám đốc $\rightarrow$ Xác nhận không trả về tài liệu mật. |
 | **14.2** | `[ ]` | **P0** | **Tự Động Thu Hồi & Hủy Chỉ Mục Tài Liệu Hết Hạn (Vector Invalidation)**: Khi tài liệu bị đánh dấu thu hồi (deprecated), workflow Temporal (`rag_workflow.py`) phải tự động xóa bỏ các vector embeddings liên quan khỏi Qdrant và làm mới Semantic Cache. | [src/agentic/workflows/rag_workflow.py](file:///f:/PROJECTS/AIAgent/src/agentic/workflows/rag_workflow.py)<br>[src/agentic/cache/rag_cache.py](file:///f:/PROJECTS/AIAgent/src/agentic/cache/rag_cache.py) | Chạy test xóa tài liệu và kiểm chứng không còn tìm thấy trong vector store:<br>`pytest tests/unit/test_ten_out_of_ten.py -k test_rag_workflow_invalidation` |
 | **14.3** | `[ ]` | **P1** | **Khử Trùng Lặp & Vệ Sinh Chunk (Deduplication & Hygiene)**: Script nạp tri thức (`scripts/ingest.py`) kiểm tra hash MD5/SHA256 của từng file và nội dung chunk, loại bỏ các đoạn văn trùng lặp trước khi tính toán embeddings. | [scripts/ingest.py](file:///f:/PROJECTS/AIAgent/scripts/ingest.py)<br>[src/agentic/rag/ingestion.py](file:///f:/PROJECTS/AIAgent/src/agentic/rag/ingestion.py) | Chạy ingest với tài liệu trùng và xác nhận số lượng vector không bị nhân bản. |
 | **14.4** | `[ ]` | **P1** | **Tính Nhất Quán & Đồng Bộ Thời Gian Thực (Temporal CDC)**: Quy trình cập nhật chỉ mục xử lý bền bỉ qua Temporal Activity; nếu quá trình embed gặp sự cố mạng, Temporal tự động retry với exponential backoff mà không làm mất dữ liệu. | [src/agentic/workflows/rag_workflow.py](file:///f:/PROJECTS/AIAgent/src/agentic/workflows/rag_workflow.py) | Kiểm tra test retry activity của Temporal ingest. |
 | **14.5** | `[ ]` | **P2** | **Cam Kết Độ Tươi Mới Dữ Liệu (Data Freshness SLA)**: Tài liệu được nạp hoàn tất và sẵn sàng cho Agent trả lời trong vòng tối đa 60 giây sau khi upload. | `scripts/ingest.py` | Đo thời gian end-to-end từ khi nạp file vào `data/raw/` đến khi xuất hiện trong index `data/index/`. |
+
+### Thực Trạng Triển Khai (Implementation Truth)
+
+- **14.1 — NOT IMPLEMENTED**: retriever hiện chưa áp dụng bộ lọc metadata bắt buộc theo `user_roles` và `department`. `search_policy` chỉ có filter `tenant_id` tùy chọn từ execution context; chưa có kiểm tra phân quyền cấp tài liệu. Đây là lỗi P0 — không được tự động gán đạt.
 
 ---
 
@@ -65,3 +69,13 @@ Sau khi hệ thống vận hành chính thức:
 - **Kết luận**: [ ] ĐẠT (PASS) &nbsp;&nbsp;&nbsp; [ ] CẦN KHẮC PHỤC (REJECT)
 
 > 🎯 **Biên Bản Ký Duyệt**: Kết quả đánh giá của Trụ cột này được tổng hợp và ký duyệt chính thức tại [Bảng Chữ Ký Phê Chuẩn Của Hội Đồng Đánh Giá (Mục 6.3 - REVIEW.md)](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md#63-bảng-chữ-ký-phê-chuẩn-của-hội-đồng-đánh-giá).
+
+---
+
+## 6. Bằng Chứng Kiểm Định Tự Động (Auto-Evidence Status)
+
+> **AUTO-EVIDENCE PENDING** — chờ đối soát và **ký bởi Release Board**. Không có nhãn `PASSED` được tự động gán cho tài liệu này.
+
+- Artifact: [evidence/prr/latest.json](file:///f:/PROJECTS/AIAgent/evidence/prr/latest.json) (`commit_sha`, `timestamp_utc`, exit code của `ruff` / `mypy` / `pytest --collect-only` / `eval --mode smoke` / parse YAML).
+- Sinh artifact: `python scripts/generate_prr_evidence.py`. Tất cả ô trạng thái `[]` ở các mục trên vẫn giữ nguyên cho đến khi Hội đồng đối soát artifact và ký duyệt.
+- Bảng chữ ký 9 đại diện: [REVIEW.md mục 6.3](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md#63-bảng-chữ-ký-phê-chuẩn-của-hội-đồng-đánh-giá).

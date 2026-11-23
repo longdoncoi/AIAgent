@@ -405,9 +405,29 @@ async def test_approvals_resume_not_interrupted():
 
 @pytest.mark.asyncio
 async def test_chat_sse_stream_endpoint():
+    import time
+
+    import jwt
+
+    from src.agentic.core.config import get_settings
+
+    cfg = get_settings()
+    now = int(time.time())
+    valid_token = jwt.encode(
+        {
+            "sub": "stream_user",
+            "role": "user",
+            "aud": cfg.jwt_audience,
+            "iss": cfg.jwt_issuer,
+            "iat": now,
+            "exp": now + 3600,
+        },
+        cfg.jwt_secret_key,
+        algorithm=cfg.jwt_algorithm,
+    )
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        headers = {"Authorization": "Bearer user_token"}
+        headers = {"Authorization": f"Bearer {valid_token}"}
         payload = {
             "query": "Chào hệ thống, hãy tóm tắt ngắn.",
             "thread_id": "stream_test_thread_01",
@@ -579,9 +599,11 @@ def test_database_migrations_coverage():
         assert ok is True
         mock_upgrade.assert_called_once()
 
+    # Fail-closed: migration failure now raises instead of silently returning
+    # False (which previously let the app run against an outdated schema).
     with patch("alembic.command.upgrade", side_effect=Exception("DB down")):
-        ok = run_database_migrations()
-        assert ok is False
+        with pytest.raises(RuntimeError, match="Database migration to head failed"):
+            run_database_migrations()
 
 
 def test_short_term_memory_postgres_and_redis(monkeypatch):
@@ -732,6 +754,8 @@ async def test_chat_non_streaming_endpoint_full():
 
     mock_guard = MagicMock()
     mock_guard.sanitize_input.return_value = "clean question"
+    mock_guard.asanitize_input = AsyncMock(return_value="clean question")
+    mock_guard.sanitize_output.return_value = "out"
 
     req = ChatRequest(query="What is life?", thread_id="t-123")
     user = {"user_id": "u1", "role": "admin"}
@@ -759,6 +783,7 @@ async def test_chat_streaming_guardrail_violation():
     mock_guard.sanitize_input.side_effect = GuardrailViolation(
         "Malicious injection detected", rule="prompt_injection"
     )
+    mock_guard.asanitize_input = AsyncMock(side_effect=mock_guard.sanitize_input.side_effect)
 
     req = ChatRequest(query="DROP TABLE users;", thread_id="t-bad")
     user = {"user_id": "u1", "role": "user"}

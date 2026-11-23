@@ -57,7 +57,7 @@ class LongTermStore:
             self._init_sqlite()
 
     def _try_init_postgres(self) -> None:
-        """Attempts to initialize PostgreSQL database connection and apply versioned Alembic schema migrations."""
+        """Initializes PostgreSQL and verifies Alembic migrations (fail-closed)."""
         try:
             import psycopg
 
@@ -66,16 +66,24 @@ class LongTermStore:
                 with conn.cursor() as cur:
                     cur.execute("SELECT 1;")
 
-            # Apply versioned migrations
+            # Apply versioned migrations — an unsuccessful result must never be
+            # treated as a healthy PostgreSQL backend.
             from src.agentic.memory.migrations import run_database_migrations
 
-            run_database_migrations(self._pg_conn_str)
+            if not run_database_migrations(self._pg_conn_str):
+                raise RuntimeError("Alembic migration runner returned an unsuccessful status.")
 
             self.is_postgres = True
             logger.info(
                 "Initialized PostgreSQL LongTermStore backend with Alembic versioned schema."
             )
         except Exception as e:
+            if self.settings.environment == "production":
+                logger.error("PostgreSQL LongTermStore initialization failed in production: %s", e)
+                raise RuntimeError(
+                    "Fatal Production Configuration Error: PostgreSQL LongTermStore is unavailable "
+                    "or its schema could not be migrated."
+                ) from e
             logger.warning(
                 f"Could not connect to PostgreSQL LongTermStore ({e}). Falling back to SQLite WAL mode."
             )
@@ -92,8 +100,26 @@ class LongTermStore:
         else:
             import psycopg
 
-            with psycopg.connect(self._pg_conn_str, prepare_threshold=None) as conn:
+            with psycopg.connect(
+                self._pg_conn_str, prepare_threshold=None, connect_timeout=3
+            ) as conn:
                 yield conn
+
+    def _handle_pg_failure(
+        self, operation: str, exc: Exception, *, entry_id: str | None = None
+    ) -> None:
+        """Fails closed in production; dev/test may continue with node-local SQLite."""
+        context = f" (entry='{entry_id}')" if entry_id else ""
+        logger.error(
+            "PostgreSQL %s failed%s: %s. Node-local SQLite fallback is forbidden in production.",
+            operation,
+            context,
+            exc,
+        )
+        if self.settings.environment == "production":
+            raise RuntimeError(
+                f"PostgreSQL {operation} failed{context} in production; refusing node-local SQLite fallback."
+            ) from exc
 
     @contextmanager
     def _get_sqlite_connection(self) -> Generator[sqlite3.Connection, None, None]:
@@ -195,10 +221,7 @@ class LongTermStore:
                 from src.agentic.observability.metrics import LTM_WRITE_ERRORS_TOTAL
 
                 LTM_WRITE_ERRORS_TOTAL.labels(backend="postgres").inc()
-                logger.error(
-                    f"[DEAD-LETTER-FALLBACK] PostgreSQL upsert error for entry '{entry_id}' ({e}). "
-                    "Persisting locally to SQLite WAL buffer to prevent data loss."
-                )
+                self._handle_pg_failure("upsert", e, entry_id=entry_id)
 
         with self._lock:
             with self._get_sqlite_connection() as conn:
@@ -264,7 +287,7 @@ class LongTermStore:
                             )
                         return results
             except Exception as e:
-                logger.error(f"PostgreSQL search error ({e}). Falling back to SQLite.")
+                self._handle_pg_failure("search", e)
 
         with self._lock:
             with self._get_sqlite_connection() as conn:

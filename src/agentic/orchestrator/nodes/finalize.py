@@ -68,36 +68,89 @@ async def finalize_node(state: AgentState) -> dict[str, Any]:
     step_outputs = [f"### {s.id} ({s.agent})\n{s.output or 'No output'}" for s in state.plan.steps]
     combined_steps = "\n\n".join(step_outputs)
 
-    # Synthesis via LLM or direct aggregation
-    try:
-        llm = get_llm(alias="reasoning-llm", temperature=0.2)
-        prompt = (
-            f"You are the Supervisor. Synthesize a coherent, final answer for the user based on the executed steps.\n\n"
-            f"User Goal: {goal}\n\n"
-            f"Step Details:\n{combined_steps}\n\n"
-            f"Deliver a clear, professional, well-formatted response addressing the original request."
+    failed_steps = [s for s in state.plan.steps if s.status == "failed"]
+    is_all_failed = len(failed_steps) == len(state.plan.steps)
+    has_failures = len(failed_steps) > 0
+
+    if is_all_failed:
+        # Never ask the model to "synthesize" from nothing — that is a licence
+        # to hallucinate. Return an explicit, deterministic failure notice.
+        logger.warning("All plan steps failed; skipping LLM synthesis.")
+        raw_answer = (
+            f"**Task Failed**: Could not achieve goal '{goal}'. "
+            "All execution steps failed, so no answer could be synthesized.\n\n"
+            f"{combined_steps}"
         )
-        ai_resp = await llm.ainvoke(prompt)
-        raw_answer = str(ai_resp.content)
-    except Exception as e:
-        logger.warning(f"Synthesis LLM call failed ({e}). Using compiled step outputs.")
-        raw_answer = f"**Goal Completed**: {goal}\n\n" + combined_steps
+    elif state.degraded:
+        # The Reflector could not verify outputs. Finalize must not present
+        # unverified material as an approved answer.
+        logger.error(
+            "Finalizing a degraded run (reason=%s); manual review required, skipping synthesis.",
+            state.degraded_reason,
+        )
+        raw_answer = (
+            "**Manual Review Required**: The reflection judge was unavailable "
+            f"(reason: {state.degraded_reason or 'unknown'}), so the step outputs below "
+            "could not be verified. No synthesized answer is provided.\n\n"
+            f"{combined_steps}"
+        )
+    else:
+        # Synthesis via LLM — strictly grounded in the supplied step outputs.
+        try:
+            # The API consumes `astream_events`, so request real token streaming.
+            llm = get_llm(alias="reasoning-llm", temperature=0.2, streaming=True)
+            status_guidance = (
+                "Some steps failed. State clearly what succeeded and what failed, "
+                "and do not present failed output as fact."
+                if has_failures
+                else "All steps completed successfully."
+            )
+            prompt = (
+                "You are the Supervisor. Synthesize a coherent final answer strictly "
+                "from the provided step outputs.\n\n"
+                "GROUNDING RULES (non-negotiable):\n"
+                "1. Answer ONLY from the step outputs below. Never use external or prior knowledge.\n"
+                "2. Cite the step ID (e.g. [step_1]) for every factual claim.\n"
+                "3. If the outputs do not support a claim, say "
+                "'Insufficient information from step outputs to answer the request.'\n"
+                "4. Do not invent step IDs, sources, or results.\n\n"
+                f"User Goal: {goal}\n\n"
+                f"Step Details:\n{combined_steps}\n\n"
+                f"Guidance: {status_guidance}\n\n"
+                "Deliver a clear, professional, well-formatted response addressing the original request."
+            )
+            ai_resp = await llm.ainvoke(prompt)
+            raw_answer = str(ai_resp.content)
+        except Exception as e:
+            logger.warning(f"Synthesis LLM call failed ({e}). Using compiled step outputs.")
+            if has_failures:
+                raw_answer = (
+                    f"**Task Partially Completed**: '{goal}'. Some steps failed. "
+                    "No synthesis was available; raw step outputs follow.\n\n" + combined_steps
+                )
+            else:
+                raw_answer = f"**Goal Completed**: {goal}\n\n" + combined_steps
 
     # Sanitize output via Guardrails
     guardrails = get_guardrails()
     sanitized_answer = guardrails.sanitize_output(raw_answer)
 
-    # Fire background task to consolidate session into long-term memory with strong reference tracking
+    # Only consolidate into long-term memory if the run was verified and did
+    # not completely fail.
     thread_id = state.thread_id or "session_unknown"
-    track_background_task(
-        consolidate_session_memory(
-            thread_id=thread_id,
-            goal=goal,
-            final_answer=sanitized_answer,
-            metadata={"step_count": len(state.plan.steps)},
-        ),
-        task_name=f"consolidate_memory_{thread_id}",
-    )
+    if not is_all_failed and not state.degraded:
+        track_background_task(
+            consolidate_session_memory(
+                thread_id=thread_id,
+                goal=goal,
+                final_answer=sanitized_answer,
+                metadata={
+                    "step_count": len(state.plan.steps),
+                    "status": "partial" if has_failures else "completed",
+                },
+            ),
+            task_name=f"consolidate_memory_{thread_id}",
+        )
 
     return {
         "final_answer": sanitized_answer,

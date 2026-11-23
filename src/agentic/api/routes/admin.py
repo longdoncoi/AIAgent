@@ -1,9 +1,10 @@
 """Admin endpoints for dynamic configuration hot-reload and checkpoint maintenance."""
 
+import asyncio
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from src.agentic.api.deps import require_role
 from src.agentic.cache.rag_cache import get_rag_cache
@@ -26,25 +27,24 @@ async def reload_configs_endpoint(
     logger.info(f"Admin '{user_id}' requested system configuration hot-reload.")
 
     # 1. Reload policies
-    policy_mgr = reload_policy_manager()
+    reload_policy_manager()
     reload_mcp_client_manager()
 
     # 2. Reset gateway circuit breaker & models
     reload_gateway_config()
 
-    # 3. Clear transient RAG cache
-    get_rag_cache().clear()
+    # 3. Clear transient RAG cache (blocking Redis I/O off the event loop)
+    await asyncio.to_thread(get_rag_cache().clear)
 
     return {
         "status": "ok",
         "message": "Policies, Model Gateway routing, and RAG cache reloaded successfully.",
-        "loaded_tools_count": str(len(policy_mgr.policy_data.get("tools", {}))),
     }
 
 
 @router.post("/cleanup-checkpoints")
 async def cleanup_checkpoints_endpoint(
-    max_idle_seconds: int = 86400 * 30,
+    max_idle_seconds: int = Query(86400 * 30, ge=3600, le=86400 * 365),
     current_user: dict[str, Any] = Depends(require_role(["admin"])),
 ) -> dict[str, Any]:
     """Evicts expired or inactive thread checkpoints from persistent stores."""

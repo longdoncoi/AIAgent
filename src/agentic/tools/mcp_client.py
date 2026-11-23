@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from src.agentic.core.config import get_settings
 from src.agentic.observability.metrics import TOOL_EXECUTION_TOTAL
 from src.agentic.observability.tracing import get_tracer
+from src.agentic.safety.approvals import verify_approval_grant
 from src.agentic.safety.guardrails import get_guardrails
 from src.agentic.safety.policy import get_policy_manager
 from src.agentic.tools.execution_context import get_tool_execution_context
@@ -153,10 +154,31 @@ class MCPClientManager:
         policy = get_policy_manager()
         if not policy.is_tool_allowed(effective_agent, tool_name):
             raise PermissionError(f"Tool '{tool_name}' is not allowed for this agent.")
-        if policy.is_approval_required(tool_name) and not (
-            context is not None and context.hitl_approved
-        ):
-            raise PermissionError(f"Tool '{tool_name}' requires step-scoped HITL approval.")
+
+        # Approval-gated tools require a *server-issued* signed grant. A boolean
+        # propagated from the caller (A2A metadata) is never sufficient.
+        if policy.is_approval_required(tool_name):
+            grant = (
+                verify_approval_grant(
+                    context.approval_token,
+                    step_id=context.step_id,
+                    fingerprint=context.step_fingerprint or "",
+                    owner_id=context.owner_id,
+                    agent_name=effective_agent,
+                    tool_name=tool_name,
+                    arguments=kwargs,
+                )
+                if context is not None
+                else None
+            )
+            if grant is None:
+                TOOL_EXECUTION_TOTAL.labels(tool_name=tool_name, status="denied").inc()
+                logger.warning(
+                    "Denied approval-gated tool '%s' for step '%s': no valid signed HITL grant",
+                    tool_name,
+                    context.step_id if context is not None else "<none>",
+                )
+                raise PermissionError(f"Tool '{tool_name}' requires step-scoped HITL approval.")
 
         tracer = get_tracer()
         with tracer.start_as_current_span(f"mcp.tool.{tool_name}"):
@@ -184,10 +206,14 @@ class MCPClientManager:
             args_schema=self._schemas[tool_name],
         )
 
-    def get_tool(self, tool_name: str) -> BaseTool | None:
+    def get_tool(self, tool_name: str, agent_name: str = "coding_agent") -> BaseTool | None:
+        """Build a tool only if the target agent's policy allowlist permits it."""
         if tool_name not in self._schemas:
             return None
-        return self._build_tool("coding_agent", tool_name)
+        if not self.policy_mgr.is_tool_allowed(agent_name, tool_name):
+            logger.warning("Tool '%s' is not allowed for agent '%s'", tool_name, agent_name)
+            return None
+        return self._build_tool(agent_name, tool_name)
 
     def get_tools_for_agent(self, agent_name: str) -> list[BaseTool]:
         return [

@@ -62,6 +62,10 @@ async def test_thread_id_cannot_be_claimed_by_another_principal() -> None:
 
 @pytest.mark.asyncio
 async def test_high_risk_tool_requires_step_scoped_approval() -> None:
+    from unittest.mock import patch
+
+    from src.agentic.safety.approvals import issue_approval_grant
+
     manager = MCPClientManager()
 
     async def harmless_write(**kwargs: object) -> str:
@@ -71,13 +75,43 @@ async def test_high_risk_tool_requires_step_scoped_approval() -> None:
     tool = manager.get_tool("repo_write_file")
     assert tool is not None
 
-    with pytest.raises(PermissionError, match="requires step-scoped HITL approval"):
-        await tool.ainvoke({"file_path": "safe.txt", "content": "hello"})
+    # Force the local implementation: no MCP server is running in unit tests.
+    with patch.object(manager.settings, "use_remote_mcp", False):
+        with pytest.raises(PermissionError, match="requires step-scoped HITL approval"):
+            await tool.ainvoke({"file_path": "safe.txt", "content": "hello"})
 
-    token = set_tool_execution_context(
-        ToolExecutionContext(agent_name="coding_agent", step_id="step_1", hitl_approved=True)
-    )
-    try:
-        assert await tool.ainvoke({"file_path": "safe.txt", "content": "hello"}) == "ok"
-    finally:
-        reset_tool_execution_context(token)
+        # A caller-supplied boolean can no longer authorize the tool.
+        forged = set_tool_execution_context(
+            ToolExecutionContext(
+                agent_name="coding_agent",
+                step_id="step_1",
+                approval_token="forged.token",
+                step_fingerprint="fp",
+            )
+        )
+        try:
+            with pytest.raises(PermissionError, match="requires step-scoped HITL approval"):
+                await tool.ainvoke({"file_path": "safe.txt", "content": "hello"})
+        finally:
+            reset_tool_execution_context(forged)
+
+        grant = issue_approval_grant(
+            step_id="step_1",
+            fingerprint="fp",
+            owner_id="alice",
+            agent_name="coding_agent",
+            tools=["repo_write_file"],
+        )
+        token = set_tool_execution_context(
+            ToolExecutionContext(
+                agent_name="coding_agent",
+                step_id="step_1",
+                approval_token=grant,
+                owner_id="alice",
+                step_fingerprint="fp",
+            )
+        )
+        try:
+            assert await tool.ainvoke({"file_path": "safe.txt", "content": "hello"}) == "ok"
+        finally:
+            reset_tool_execution_context(token)

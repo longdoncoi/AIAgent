@@ -52,7 +52,7 @@ async def readyz() -> Response:
             await asyncio.to_thread(probe_postgres)
             checks["database"] = "ok (postgres)"
         except Exception as e:
-            checks["database"] = f"down ({e.__class__.__name__})"
+            checks["database"] = "down" if settings.environment == "production" else f"down ({e.__class__.__name__})"
             if settings.environment == "production":
                 is_healthy = False
     else:
@@ -82,6 +82,16 @@ async def readyz() -> Response:
     if not llm_ok and settings.require_model_gateway_ready:
         is_healthy = False
 
+    # 3b. Embedding service — a missing endpoint must never silently degrade
+    # retrieval to constant mock vectors in production.
+    parsed_embed = urlparse(settings.llama_embed_base_url)
+    embed_host = parsed_embed.hostname or "localhost"
+    embed_port = parsed_embed.port or 8081
+    embed_ok = await _acheck_tcp_port(embed_host, embed_port, timeout=0.3)
+    checks["embedding_service"] = "ok" if embed_ok else "offline"
+    if settings.require_embedding_service and not embed_ok:
+        is_healthy = False
+
     # 4. Vector Store (Qdrant)
     qdrant_ok = await _acheck_tcp_port(
         settings.qdrant_host, settings.qdrant_port, timeout=0.3
@@ -105,6 +115,8 @@ async def readyz() -> Response:
 
 @router.get("/metrics")
 async def metrics() -> Response:
-    """Prometheus metrics endpoint."""
+    """Prometheus metrics endpoint (honours ENABLE_PROMETHEUS)."""
+    if not get_settings().enable_prometheus:
+        return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": "Not Found"})
     data = generate_latest()
     return Response(content=data, media_type=CONTENT_TYPE_LATEST)

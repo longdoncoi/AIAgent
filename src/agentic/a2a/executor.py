@@ -3,6 +3,7 @@
 import hmac
 import json
 import logging
+import uuid
 from collections.abc import AsyncIterator
 from typing import Any, Literal
 
@@ -13,8 +14,9 @@ from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapProp
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from src.agentic.a2a.cards import AgentCard
+from src.agentic.a2a.cards import AgentCard, add_agent_card_discovery_route
 from src.agentic.core.config import get_settings
+from src.agentic.safety.guardrails import get_guardrails
 from src.agentic.tools.execution_context import (
     ToolExecutionContext,
     reset_tool_execution_context,
@@ -53,25 +55,39 @@ class A2AAgentExecutor:
         self.card = card
         self.graph = graph
 
+    def _execution_context(self, request: A2ATaskRequest) -> ToolExecutionContext:
+        """Derive authorization from a signed grant, never from caller booleans."""
+        metadata = request.metadata
+        if "hitl_approved" in metadata:
+            logger.warning("Ignoring caller-supplied 'hitl_approved' flag in A2A metadata")
+        return ToolExecutionContext(
+            agent_name=self.card.name,
+            step_id=request.task_id,
+            approval_token=str(metadata["approval_token"]) if metadata.get("approval_token") else None,
+            owner_id=str(metadata["owner_id"]) if metadata.get("owner_id") else None,
+            step_fingerprint=str(metadata["step_fingerprint"])
+            if metadata.get("step_fingerprint")
+            else None,
+        )
+
+    def _safe_message(self, request: A2ATaskRequest) -> HumanMessage:
+        """Sanitize every untrusted field before it enters the sub-agent prompt."""
+        guardrails = get_guardrails()
+        parts = [guardrails.sanitize_input(request.payload.instruction)]
+        if request.payload.context:
+            safe_context = guardrails.sanitize_context(request.payload.context)
+            if safe_context:
+                parts.append(
+                    "\nAdditional Context: "
+                    + json.dumps(safe_context, ensure_ascii=False, default=str)
+                )
+        return HumanMessage(content="".join(parts))
+
     async def execute(self, request: A2ATaskRequest) -> A2ATaskResponse:
         """Executes a single step via the agent's internal LangGraph graph."""
-        context_token = set_tool_execution_context(
-            ToolExecutionContext(
-                agent_name=self.card.name,
-                step_id=request.task_id,
-                hitl_approved=bool(request.metadata.get("hitl_approved", False)),
-                owner_id=str(request.metadata.get("owner_id"))
-                if request.metadata.get("owner_id")
-                else None,
-            )
-        )
+        context_token = set_tool_execution_context(self._execution_context(request))
         try:
-            instruction = request.payload.instruction
-            context_str = ""
-            if request.payload.context:
-                context_str = f"\nAdditional Context: {request.payload.context}"
-
-            initial_state = {"messages": [HumanMessage(content=instruction + context_str)]}
+            initial_state = {"messages": [self._safe_message(request)]}
 
             result_state = await self.graph.ainvoke(initial_state)
 
@@ -92,36 +108,29 @@ class A2AAgentExecutor:
                 output=output or "Task finished with empty response.",
             )
         except Exception as e:
-            logger.error(f"Error executing A2A task in {self.card.name}: {e}", exc_info=True)
+            error_id = uuid.uuid4().hex[:12]
+            logger.error(
+                "Error executing A2A task in %s [error_id=%s]: %s",
+                self.card.name,
+                error_id,
+                e,
+                exc_info=True,
+            )
             return A2ATaskResponse(
                 task_id=request.task_id,
                 status="failed",
                 output="",
-                error=str(e),
+                error=f"execution_failed (error_id={error_id})",
             )
         finally:
             reset_tool_execution_context(context_token)
 
     async def execute_stream(self, request: A2ATaskRequest) -> AsyncIterator[dict[str, Any]]:
         """Streams tokens and execution lifecycle events from the sub-agent graph."""
-        instruction = request.payload.instruction
-        context_str = ""
-        if request.payload.context:
-            context_str = f"\nAdditional Context: {request.payload.context}"
-
-        initial_state = {"messages": [HumanMessage(content=instruction + context_str)]}
+        initial_state = {"messages": [self._safe_message(request)]}
 
         accumulated_output: list[str] = []
-        context_token = set_tool_execution_context(
-            ToolExecutionContext(
-                agent_name=self.card.name,
-                step_id=request.task_id,
-                hitl_approved=bool(request.metadata.get("hitl_approved", False)),
-                owner_id=str(request.metadata.get("owner_id"))
-                if request.metadata.get("owner_id")
-                else None,
-            )
-        )
+        context_token = set_tool_execution_context(self._execution_context(request))
         try:
             yield {
                 "event": "start",
@@ -159,12 +168,19 @@ class A2AAgentExecutor:
                 "output": "".join(accumulated_output),
             }
         except Exception as e:
-            logger.error(f"Error in streaming A2A task in {self.card.name}: {e}", exc_info=True)
+            error_id = uuid.uuid4().hex[:12]
+            logger.error(
+                "Error in streaming A2A task in %s [error_id=%s]: %s",
+                self.card.name,
+                error_id,
+                e,
+                exc_info=True,
+            )
             yield {
                 "event": "error",
                 "task_id": request.task_id,
                 "agent": self.card.name,
-                "error": str(e),
+                "error": f"execution_failed (error_id={error_id})",
             }
         finally:
             reset_tool_execution_context(context_token)
@@ -175,6 +191,8 @@ def create_a2a_server(card: AgentCard, graph: Any) -> FastAPI:
     app = FastAPI(title=f"A2A - {card.name}", version=card.version)
     executor = A2AAgentExecutor(card=card, graph=graph)
     settings = get_settings()
+    # A2A-standard discovery endpoint (card at /.well-known/agent.json).
+    add_agent_card_discovery_route(app, card)
 
     @app.get("/health")
     async def health() -> dict[str, str]:
