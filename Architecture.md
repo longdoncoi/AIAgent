@@ -38,7 +38,7 @@ Cross-cutting: L8 safety · L9 observability/evals · L10 Kubernetes/Temporal/Gi
 | --- | --- | --- |
 | L1 API | `src/agentic/api/` | REST/SSE, auth principal, health, approval |
 | L2 Supervisor | `src/agentic/orchestrator/` | `AgentState`, `Plan`, `Step`, graph transitions |
-| L3 Agents/A2A | `src/agentic/agents/`, `src/agentic/a2a/` | `AgentCard`, A2A task/stream |
+| L3 Agents/A2A | `src/agentic/agents/`, `src/agentic/a2a/` | A2A v1 `AgentCard`, JSON-RPC/SSE, persistent task state |
 | L4 Tools | `src/agentic/tools/`, `configs/policies.yaml` | MCP schemas, allowlist, risk/capability |
 | L5 Knowledge | `src/agentic/rag/` | ingestion, tenant-filtered retrieval, fusion/rerank |
 | L6 Memory | `src/agentic/memory/`, `migrations/` | checkpoint, ownership, long-term memory |
@@ -64,8 +64,10 @@ Chi tiết state/endpoint nằm ở [agent specification](.workflows/specificati
 ## 4. State, security and failure semantics
 
 - Production graph lifecycle owns `AsyncPostgresSaver`; Redis serialized payloads require HMAC validation.
+- A2A discovery dùng `/.well-known/agent-card.json`, RPC dùng JSON-RPC/SSE tại `/a2a`; production lưu task trong PostgreSQL `a2a_tasks`, vì vậy đổi replica không làm mất task lifecycle.
 - Thread ownership is resolved server-side; client-provided identifiers không tự cấp quyền đọc checkpoint.
 - High-risk approval applies to one pending step, not the whole run. Capability expiry/replay checks are enforced at A2A and MCP boundaries.
+- A2A/MCP network calls yêu cầu S2S token và capability có chữ ký khóa theo owner/run/step/agent; web-search provider lỗi phải trả lỗi, tuyệt đối không tạo kết quả giả.
 - Cache/retrieval keys include tenant and every result-affecting input. Shared documents require explicit metadata.
 - Timeout/retry/circuit breaking must be bounded and observable. Fallback may preserve availability only when it preserves security and data consistency.
 - CDC/ingestion resolves paths below the configured data root and keeps upsert/delete, persisted index and retriever lifecycle consistent.

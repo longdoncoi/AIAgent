@@ -225,7 +225,11 @@ def test_k8s_sandbox_isolation_checks() -> None:
 
 @pytest.mark.asyncio
 async def test_a2a_client_retry_and_backpressure() -> None:
-    from unittest.mock import AsyncMock, MagicMock
+    from unittest.mock import patch
+
+    from a2a.client.errors import A2AClientError
+    from a2a.helpers import new_text_artifact_update_event
+    from a2a.types import StreamResponse
 
     from src.agentic.a2a.client import A2AClient
 
@@ -239,33 +243,34 @@ async def test_a2a_client_retry_and_backpressure() -> None:
         }
     )
 
-    # 1. Simulate 503 transient error followed by 200 OK
-    resp_503 = MagicMock()
-    resp_503.status_code = 503
+    # 1. Simulate a transient A2A transport error followed by a valid artifact.
+    attempts = 0
 
-    resp_200 = MagicMock()
-    resp_200.status_code = 200
-    resp_200.json.return_value = {
-        "task_id": "step_retry",
-        "status": "completed",
-        "output": "Recovered after retry",
-        "error": None,
-    }
+    async def flaky_remote(*args, **kwargs):
+        nonlocal attempts
+        del args, kwargs
+        attempts += 1
+        if attempts == 1:
+            raise A2AClientError("transient failure")
+        yield StreamResponse(
+            artifact_update=new_text_artifact_update_event(
+                "task-1",
+                "context-1",
+                "answer",
+                "Recovered after retry",
+                last_chunk=True,
+            )
+        )
 
-    mock_http = MagicMock()
-    mock_http.is_closed = False
-    mock_http.post = AsyncMock(side_effect=[resp_503, resp_200])
-
-    client._http_client = mock_http
-
-    res = await client.call_agent(
-        target_agent="chat",
-        step_id="step_retry",
-        instruction="Hello with retry",
-    )
+    with patch.object(client, "_remote_stream", new=flaky_remote):
+        res = await client.call_agent(
+            target_agent="chat",
+            step_id="step_retry",
+            instruction="Hello with retry",
+        )
     assert res.status == "completed"
     assert res.output == "Recovered after retry"
-    assert mock_http.post.call_count == 2
+    assert attempts == 2
 
     # 2. Verify semaphore bounds concurrency
     assert client._concurrency_semaphore._value >= 0
@@ -300,4 +305,3 @@ def test_qdrant_sharding_and_replication_parameters() -> None:
         assert kwargs["shard_number"] == 4
         assert kwargs["replication_factor"] == 2
         assert kwargs["write_consistency_factor"] == 2
-

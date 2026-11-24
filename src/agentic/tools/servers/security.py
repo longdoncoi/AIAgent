@@ -65,7 +65,7 @@ class MCPServiceAuthMiddleware:
             run_id = headers.get(b"x-run-id", b"").decode("utf-8")
             capability = headers.get(b"x-approval-capability", b"").decode("utf-8") or None
             if self.settings.require_authentication and not all(
-                (agent_name, step_id, owner_id, run_id)
+                (agent_name, step_id, owner_id, run_id, capability)
             ):
                 await _reject(send, 400, "Missing execution identity headers")
                 return
@@ -77,16 +77,16 @@ class MCPServiceAuthMiddleware:
                     owner_id=owner_id,
                     agent_name=agent_name,
                 )
-                if capability and claims is None:
-                    await _reject(send, 403, "Invalid approval capability")
+                if self.settings.require_authentication and claims is None:
+                    await _reject(send, 403, "Invalid step-scoped capability")
                     return
                 context_token = set_tool_execution_context(
                     ToolExecutionContext(
                         agent_name=agent_name,
                         step_id=step_id,
                         hitl_approved=bool(claims and claims.allowed_tools),
-                        owner_id=owner_id or None,
-                        run_id=run_id or None,
+                        owner_id=claims.owner_id if claims else None,
+                        run_id=claims.run_id if claims else None,
                         approval_capability=capability if claims else None,
                         allowed_tools=claims.allowed_tools if claims else (),
                     )

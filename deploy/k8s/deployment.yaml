@@ -138,13 +138,13 @@ spec:
               memory: "2Gi"
           livenessProbe:
             httpGet:
-              path: /a2a/card
+              path: /.well-known/agent-card.json
               port: 9100
             initialDelaySeconds: 10
             periodSeconds: 15
           readinessProbe:
             httpGet:
-              path: /a2a/card
+              path: /.well-known/agent-card.json
               port: 9100
             initialDelaySeconds: 5
             periodSeconds: 5
@@ -226,13 +226,13 @@ spec:
               memory: "4Gi"
           livenessProbe:
             httpGet:
-              path: /a2a/card
+              path: /.well-known/agent-card.json
               port: 9101
             initialDelaySeconds: 10
             periodSeconds: 15
           readinessProbe:
             httpGet:
-              path: /a2a/card
+              path: /.well-known/agent-card.json
               port: 9101
             initialDelaySeconds: 5
             periodSeconds: 5
@@ -314,13 +314,13 @@ spec:
               memory: "4Gi"
           livenessProbe:
             httpGet:
-              path: /a2a/card
+              path: /.well-known/agent-card.json
               port: 9102
             initialDelaySeconds: 10
             periodSeconds: 15
           readinessProbe:
             httpGet:
-              path: /a2a/card
+              path: /.well-known/agent-card.json
               port: 9102
             initialDelaySeconds: 5
             periodSeconds: 5

@@ -75,7 +75,12 @@ async def test_high_risk_tool_requires_step_scoped_approval() -> None:
         await tool.ainvoke({"file_path": "safe.txt", "content": "hello"})
 
     token = set_tool_execution_context(
-        ToolExecutionContext(agent_name="coding_agent", step_id="step_1", hitl_approved=True)
+        ToolExecutionContext(
+            agent_name="coding_agent",
+            step_id="step_1",
+            hitl_approved=True,
+            allowed_tools=("repo_write_file",),
+        )
     )
     try:
         assert await tool.ainvoke({"file_path": "safe.txt", "content": "hello"}) == "ok"

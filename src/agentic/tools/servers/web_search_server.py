@@ -1,6 +1,8 @@
 """FastMCP / MCPServer for Web Search (Port 9003)."""
 
 import argparse
+import html
+import re
 
 import httpx
 
@@ -12,37 +14,37 @@ except ImportError:
 mcp = FastMCP("web_search_server", instructions="Search the web for up-to-date information.")
 
 
+class WebSearchUnavailableError(RuntimeError):
+    """Raised when the configured external search provider cannot return real results."""
+
+
 async def search_web_core(query: str, max_results: int = 5) -> str:
-    """Searches the web using DuckDuckGo HTML / instant API or fallback mock."""
+    """Search DuckDuckGo HTML and fail closed when no verifiable result is available."""
+    normalized_query = query.strip()
+    if not normalized_query:
+        raise ValueError("Search query must not be empty.")
+    if not 1 <= max_results <= 10:
+        raise ValueError("max_results must be between 1 and 10.")
     try:
         url = "https://html.duckduckgo.com/html/"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            resp = await client.post(url, data={"q": query}, headers=headers)
-            if resp.status_code == 200:
-                # Basic parsing or mock extraction
-                text = resp.text
-                if "result__snippet" in text:
-                    # Simple heuristic snippet extraction
-                    import re
+            response = await client.post(url, data={"q": normalized_query}, headers=headers)
+            response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise WebSearchUnavailableError("External web search provider is unavailable.") from exc
 
-                    snippets = re.findall(r'<a class="result__snippet[^>]*>(.*?)</a>', text)
-                    if snippets:
-                        results = []
-                        for i, snip in enumerate(snippets[:max_results], 1):
-                            clean = re.sub(r"<[^>]+>", "", snip).strip()
-                            results.append(f"{i}. {clean}")
-                        return f"Search results for '{query}':\n" + "\n".join(results)
-    except Exception:
-        pass
-
-    # Clean fallback response for testing or offline environments
-    return (
-        f"Search results for '{query}':\n"
-        f"1. [Documentation & Overview] High-level overview and specifications regarding '{query}'.\n"
-        f"2. [Best Practices Guide] Recommended patterns and architectural guidelines for '{query}'.\n"
-        f"3. [Community Discussions] Recent updates and developer insights related to '{query}'."
+    snippets = re.findall(
+        r'<a class="result__snippet[^>]*>(.*?)</a>', response.text, flags=re.IGNORECASE
     )
+    results = [
+        html.unescape(re.sub(r"<[^>]+>", "", snippet)).strip() for snippet in snippets[:max_results]
+    ]
+    results = [result for result in results if result]
+    if not results:
+        raise WebSearchUnavailableError("External web search returned no parseable results.")
+    numbered = "\n".join(f"{index}. {result}" for index, result in enumerate(results, 1))
+    return f"Search results for '{normalized_query}':\n{numbered}"
 
 
 @mcp.tool()

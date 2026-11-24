@@ -10,6 +10,7 @@ resources:
   - sandbox-network-policy.yaml
   - sandbox-rbac.yaml
   - deployment.yaml
+  - db-migration-job.yaml
   - configmap-secrets.yaml
   - external-secret.yaml
   - network-policy.yaml

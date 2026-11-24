@@ -111,6 +111,7 @@ class MCPClientManager:
 
     def _wrap_async_tool(self, name: str, func: AsyncTool) -> AsyncTool:
         """Backward-compatible instrumentation helper; registry tools use `_invoke`."""
+
         async def wrapped(**kwargs: Any) -> str:
             try:
                 get_guardrails().validate_tool_input(name, kwargs)
@@ -131,21 +132,30 @@ class MCPClientManager:
             return self.settings.mcp_code_exec_url
         return self.settings.mcp_web_search_url
 
-    async def _remote_call(
-        self, tool_name: str, arguments: dict[str, Any], context: Any
-    ) -> str:
+    async def _remote_call(self, tool_name: str, arguments: dict[str, Any], context: Any) -> str:
         from mcp import ClientSession
         from mcp.client.sse import sse_client
 
+        if not all(
+            (
+                context.agent_name,
+                context.step_id,
+                context.owner_id,
+                context.run_id,
+                context.approval_capability,
+            )
+        ):
+            raise PermissionError(
+                "Remote MCP calls require signed owner, run, step, and agent bindings."
+            )
         headers = {
             "X-Internal-Service-Token": self.settings.s2s_internal_token,
             "X-Agent-Name": context.agent_name,
             "X-Step-Id": context.step_id,
-            "X-Owner-Id": context.owner_id or "",
-            "X-Run-Id": context.run_id or "",
+            "X-Owner-Id": context.owner_id,
+            "X-Run-Id": context.run_id,
+            "X-Approval-Capability": context.approval_capability,
         }
-        if context.approval_capability:
-            headers["X-Approval-Capability"] = context.approval_capability
         async with sse_client(
             self._server_url(tool_name), headers=headers, timeout=5.0, sse_read_timeout=65.0
         ) as streams:
@@ -164,7 +174,7 @@ class MCPClientManager:
         if not policy.is_tool_allowed(effective_agent, tool_name):
             raise PermissionError(f"Tool '{tool_name}' is not allowed for this agent.")
         if policy.is_approval_required(tool_name) and not (
-            context is not None and context.hitl_approved
+            context is not None and context.hitl_approved and tool_name in context.allowed_tools
         ):
             raise PermissionError(f"Tool '{tool_name}' requires step-scoped HITL approval.")
 

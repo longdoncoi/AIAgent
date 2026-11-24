@@ -6,6 +6,7 @@
 5. Pod-to-Pod mTLS client configuration in A2AClient
 """
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -252,7 +253,7 @@ def test_selective_cache_invalidation_by_source_and_document() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cdc_delta_ingestion_selective_cache_invalidation() -> None:
+async def test_cdc_delta_ingestion_selective_cache_invalidation(tmp_path: Path) -> None:
     """Verifies ingest_delta_document_activity uses selective cache invalidation."""
     cache = get_rag_cache()
     cache.set(
@@ -269,7 +270,11 @@ async def test_cdc_delta_ingestion_selective_cache_invalidation() -> None:
         "content": "# Updated Knowledge Content\nNew policy guidelines.",
     }
 
-    res = await ingest_delta_document_activity(event_data)
+    isolated_settings = Settings(project_root=tmp_path)
+    with patch(
+        "src.agentic.workflows.rag_workflow.get_settings", return_value=isolated_settings
+    ):
+        res = await ingest_delta_document_activity(event_data)
     assert res["status"] == "completed"
     assert res["cache_invalidated"] is True
     # The updated document cache was selectively evicted

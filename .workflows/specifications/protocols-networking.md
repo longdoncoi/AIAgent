@@ -7,25 +7,27 @@
 
 ## 1. Giao Thức A2A (Agent-to-Agent)
 
-- Sử dụng chuẩn `a2a-sdk` bọc quanh LangGraph thông qua `A2A AgentExecutor` (`src/agentic/a2a/executor.py`).
-- **Giao thức**: JSON over HTTP/gRPC.
-- **Cấu trúc gói tin A2A Task**:
+- Sử dụng `a2a-sdk` 1.3.x và A2A protocol v1.0. LangGraph được bọc bởi official `AgentExecutor`, `DefaultRequestHandler` và `TaskStore` (`src/agentic/a2a/executor.py`).
+- **Discovery**: `GET /.well-known/agent-card.json`; card công bố `supportedInterfaces`, protocol binding `JSONRPC`, protocol version `1.0`, streaming, skills và security scheme.
+- **Transport**: A2A JSON-RPC/SSE tại `POST /a2a`. Các route `/a2a/tasks*` chỉ là compatibility API cho development/test và không được Supervisor dùng ở production.
+- **Cấu trúc message chính thức** (minh họa phần `params` của JSON-RPC `SendStreamingMessage`):
   ```json
   {
-    "task_id": "step_uuid_1234",
-    "caller": "supervisor",
-    "target_agent": "coding_agent",
-    "payload": {
-      "instruction": "Chạy unit test module auth và báo cáo lỗi",
-      "context": { "repo_path": "/workspace" }
+    "message": {
+      "role": "ROLE_USER",
+      "parts": [{ "text": "Chạy unit test module auth và báo cáo lỗi" }]
     },
     "metadata": {
+      "step_id": "step_uuid_1234",
       "run_id": "run_uuid_5678",
       "owner_id": "tenant_abc",
+      "context": { "repo_path": "/workspace" },
       "approval_capability": "base64url_payload.hmac_signature"
     }
   }
   ```
+- Protocol task ID do A2A server sinh; execution `step_id` nằm trong metadata và được khóa vào capability. Production lưu A2A task trong bảng PostgreSQL `a2a_tasks`; migration do Alembic quản lý, không tạo DDL khi process khởi động.
+- Mọi A2A RPC production phải có `X-Internal-Service-Token` cùng `X-Agent-Name`, `X-Step-ID`, `X-Owner-ID`, `X-Run-ID`, `X-Tool-Capability`. Thiếu hoặc sai bất kỳ binding nào bị từ chối trước khi graph chạy.
 
 ---
 
@@ -43,6 +45,7 @@
   - `repo_server.py` (Port 9002)
   - `web_search_server.py` (Port 9003)
 - `mcp_client.py` quản lý kết nối, tự động phát hiện tools và áp dụng **Allowlist** theo cấu hình `configs/policies.yaml`. Sub-agent nào chỉ được phép bind những tools được khai báo cho sub-agent đó.
+- Web-search không sinh kết quả giả khi provider lỗi hoặc HTML không parse được; tool trả lỗi có kiểu và fail closed để downstream không nhầm dữ liệu tổng hợp là bằng chứng thật.
 
 ---
 

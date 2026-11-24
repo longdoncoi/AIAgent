@@ -12,6 +12,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -21,6 +22,7 @@ from src.agentic.a2a.client import get_a2a_client
 from src.agentic.a2a.executor import A2AAgentExecutor, A2ATaskPayload, A2ATaskRequest
 from src.agentic.cache.prompt_cache import PromptCache
 from src.agentic.cache.rag_cache import RAGCache
+from src.agentic.core.config import Settings
 from src.agentic.memory.short_term import get_postgres_pool
 from src.agentic.workflows.rag_workflow import (
     ingest_delta_document_activity,
@@ -166,7 +168,11 @@ async def test_realtime_knowledge_cdc_activity(tmp_path: Path) -> None:
         "metadata": {"version": "v2.1", "author": "security_team"},
     }
 
-    res = await ingest_delta_document_activity(event)
+    isolated_settings = Settings(project_root=tmp_path)
+    with patch(
+        "src.agentic.workflows.rag_workflow.get_settings", return_value=isolated_settings
+    ):
+        res = await ingest_delta_document_activity(event)
     assert res["status"] == "completed"
     assert res["action"] == "upsert"
     assert res["doc_id"] == "delta_001"

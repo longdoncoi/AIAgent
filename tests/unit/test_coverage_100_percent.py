@@ -93,19 +93,25 @@ async def test_a2a_client_and_executor_full_coverage():
     client = A2AClient()
     tracer = get_tracer("test_a2a")
 
-    # 1. call_agent with active recording span and HTTP 500 fallback
-    mock_http = MagicMock()
-    mock_resp = MagicMock(status_code=500)
-    mock_http.post = AsyncMock(return_value=mock_resp)
+    # 1. Official A2A transport failure uses the development-only local fallback.
+    async def unavailable_remote(*args, **kwargs):
+        del args, kwargs
+        raise A2ACommunicationError(target_agent="chat", message="transport unavailable")
+        yield  # pragma: no cover
+
+    local_graph = MagicMock()
+    local_graph.ainvoke = AsyncMock(
+        return_value={"messages": [AIMessage(content="Local fallback response")]}
+    )
 
     with (
         tracer.start_as_current_span("parent_span"),
-        patch.object(client, "_get_http_client", return_value=mock_http),
-        patch.object(client, "_get_local_graph", return_value=MagicMock()),
+        patch.object(client, "_retrying_remote_stream", new=unavailable_remote),
+        patch.object(client, "_get_local_graph", return_value=local_graph),
         patch(
             "src.agentic.a2a.client.get_agent_card",
             return_value=AgentCard(
-                name="chat", description="", version="1.0.0", capabilities=[], endpoint=""
+                name="chat", description="Test agent", version="1.0.0", endpoint=""
             ),
         ),
     ):
@@ -128,7 +134,7 @@ async def test_a2a_client_and_executor_full_coverage():
 
     # 3. create_a2a_server /a2a/tasks/stream SSE endpoint execution
     card = AgentCard(
-        name="stream_agent", description="", version="1.0.0", capabilities=[], endpoint=""
+        name="stream_agent", description="Test stream agent", version="1.0.0", endpoint=""
     )
     mock_sub_graph = MagicMock()
     mock_sub_graph.ainvoke = AsyncMock(

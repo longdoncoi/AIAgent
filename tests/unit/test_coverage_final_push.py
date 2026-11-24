@@ -46,7 +46,13 @@ from src.agentic.tools.servers import code_exec_server, repo_server, web_search_
 
 def test_a2a_executor_stream_target_mismatch():
     """Test /a2a/tasks/stream target agent mismatch raises 400 (line 206)."""
-    card = AgentCard(name="my_agent", description="", version="1.0.0", capabilities=[], endpoint="")
+    card = AgentCard(
+        name="my_agent",
+        description="Test agent",
+        version="1.0.0",
+        endpoint="http://test/a2a",
+        skills=["test"],
+    )
     app = create_a2a_server(card, MagicMock())
     client = TestClient(app)
 
@@ -56,7 +62,7 @@ def test_a2a_executor_stream_target_mismatch():
             "task_id": "1",
             "caller": "sup",
             "target_agent": "wrong_agent",
-            "payload": {"instruction": ""},
+            "payload": {"instruction": "test"},
         },
     )
     assert resp.status_code == 400
@@ -775,4 +781,3 @@ async def test_k8s_api_config_and_run_pod(tmp_path: Path):
         )
         assert out == "pod output log"
         assert code == 0
-

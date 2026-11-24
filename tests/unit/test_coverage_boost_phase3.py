@@ -491,17 +491,19 @@ async def test_a2a_client_lazy_loads_and_errors():
             )
         assert "AgentCard for 'ghost_agent' not found" in str(exc_card.value)
 
-    # Test HTTP 200 success branch
-    mock_http = MagicMock()
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = {
-        "task_id": "s1",
-        "status": "completed",
-        "output": "Remote response",
-    }
-    mock_http.post = AsyncMock(return_value=mock_resp)
-    with patch.object(client, "_get_http_client", return_value=mock_http):
+    # Test official A2A artifact response branch.
+    from a2a.helpers import new_text_artifact_update_event
+    from a2a.types import StreamResponse
+
+    async def remote_response(*args, **kwargs):
+        del args, kwargs
+        yield StreamResponse(
+            artifact_update=new_text_artifact_update_event(
+                "task-1", "context-1", "answer", "Remote response", last_chunk=True
+            )
+        )
+
+    with patch.object(client, "_retrying_remote_stream", new=remote_response):
         res = await client.call_agent(
             target_agent="chat",
             step_id="s1",
@@ -871,7 +873,13 @@ async def test_dispatch_and_finalize_extended_branches():
             steps=[Step(id="1", description="s1", agent="chat", input_query="q", output="ok")],
         )
     )
-    with patch("src.agentic.orchestrator.nodes.finalize.get_llm", return_value=mock_llm):
+    with (
+        patch("src.agentic.orchestrator.nodes.finalize.get_llm", return_value=mock_llm),
+        patch(
+            "src.agentic.orchestrator.nodes.finalize.consolidate_session_memory",
+            new=AsyncMock(),
+        ),
+    ):
         res = await finalize_node(state)
         assert res["final_answer"] == "Final synthesized plan answer"
 

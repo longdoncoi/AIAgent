@@ -12,6 +12,7 @@ Covers:
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -219,13 +220,24 @@ def test_repo_server_search_symbol(tmp_path):
 # ==============================================================================
 @pytest.mark.asyncio
 async def test_web_search_mock():
-    with patch("httpx.AsyncClient.post", side_effect=Exception("Network down")):
-        res = await search_web_core("LangGraph multi-agent architecture")
-        assert "Search results for 'LangGraph multi-agent architecture':" in res
-        assert "[Documentation & Overview]" in res
+    from src.agentic.tools.servers.web_search_server import WebSearchUnavailableError
 
-    wrap_res = await web_search("DeepSeek-R1 inference", max_results=2)
+    with (
+        patch(
+            "httpx.AsyncClient.post",
+            side_effect=httpx.ConnectError("Network down"),
+        ),
+        pytest.raises(WebSearchUnavailableError, match="provider is unavailable"),
+    ):
+        await search_web_core("LangGraph multi-agent architecture")
+
+    response = MagicMock(status_code=200)
+    response.raise_for_status.return_value = None
+    response.text = '<a class="result__snippet">Verified DeepSeek result</a>'
+    with patch("httpx.AsyncClient.post", return_value=response):
+        wrap_res = await web_search("DeepSeek-R1 inference", max_results=2)
     assert "Search results for 'DeepSeek-R1 inference':" in wrap_res
+    assert "Verified DeepSeek result" in wrap_res
 
 
 # ==============================================================================
@@ -865,9 +877,7 @@ async def test_docker_and_k8s_sandbox_execution_branches():
     mock_proc_to.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
     mock_proc_to.kill = MagicMock(return_value=None)
     mock_proc_to.wait = AsyncMock(return_value=0)
-    with patch(
-        "asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc_to
-    ):
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc_to):
         res_to = await _execute_in_docker("import time; time.sleep(10)", is_python=True, timeout=1)
         assert "timed out in container" in res_to
 

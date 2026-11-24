@@ -52,6 +52,7 @@
 
 - **Thư mục**: `src/agentic/agents/chat/` (`graph.py`, `server.py`)
 - **A2A Endpoint**: Port `9100` (`http://localhost:9100/a2a`)
+- **A2A Discovery**: `GET http://localhost:9100/.well-known/agent-card.json`; JSON-RPC/SSE v1 tại `POST /a2a`.
 - **AgentCard Definition (`src/agentic/a2a/cards.py`)**:
   - `name`: `"chat_agent"`
   - `description`: "Chuyên xử lý đàm thoại thông thường, tóm tắt nội dung, giải thích khái niệm, định hình câu hỏi."
@@ -67,6 +68,7 @@
 
 - **Thư mục**: `src/agentic/agents/rag/` (`graph.py`, `server.py`)
 - **A2A Endpoint**: Port `9101` (`http://localhost:9101/a2a`)
+- **A2A Discovery**: `GET http://localhost:9101/.well-known/agent-card.json`; JSON-RPC/SSE v1 tại `POST /a2a`.
 - **AgentCard Definition**:
   - `name`: `"rag_agent"`
   - `description`: "Chuyên truy vấn và giải đáp dựa trên cơ sở tri thức nội bộ, tài liệu quy định, chính sách, tài liệu kỹ thuật."
@@ -83,6 +85,7 @@
 
 - **Thư mục**: `src/agentic/agents/coding/` (`graph.py`, `server.py`)
 - **A2A Endpoint**: Port `9102` (`http://localhost:9102/a2a`)
+- **A2A Discovery**: `GET http://localhost:9102/.well-known/agent-card.json`; JSON-RPC/SSE v1 tại `POST /a2a`.
 - **AgentCard Definition**:
   - `name`: `"coding_agent"`
   - `description`: "Chuyên phân tích cấu trúc mã nguồn, viết mã, chạy script kiểm thử trong sandbox và gỡ lỗi (debug)."

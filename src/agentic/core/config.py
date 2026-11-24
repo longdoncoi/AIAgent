@@ -227,9 +227,9 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "Production Inviolable Violated: require_authentication must be True in production environment."
                 )
-            if not self.use_postgres_checkpoint and not self.use_redis_checkpoint:
+            if not self.use_postgres_checkpoint:
                 raise ValueError(
-                    "Production Inviolable Violated: use_postgres_checkpoint must be True (or use_redis_checkpoint must be True) in production to prevent state loss across replicas."
+                    "Production Inviolable Violated: use_postgres_checkpoint must be True in production so LangGraph and A2A task state survive replica changes."
                 )
             if self.allow_legacy_unsigned_checkpoints:
                 raise ValueError(

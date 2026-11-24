@@ -23,7 +23,7 @@ Trụ cột này đánh giá sự tuân thủ nghiêm ngặt các nguyên tắc 
 | :---: | :---: | :---: | :--- | :--- | :--- |
 | **1.1** | `[ ]` | **P0** | **Quy tắc phân tầng một chiều (Dependency Rule)**: Tầng trên chỉ gọi tầng dưới qua interface. Kernel `src/agentic/core/` tuyệt đối độc lập, không import bất kỳ module nào thuộc `api`, `orchestrator`, `agents`, `rag`, `tools`, `memory`. | [src/agentic/core/](../../src/agentic/core/) | Chạy kiểm tra tĩnh AST/Import:<br>`python -c "import src.agentic.core as c; print('Core imports OK')"` |
 | **1.2** | `[ ]` | **P0** | **Phi trạng thái của Microservices (Stateless Services)**: Mọi Agent Pod (`api`, `chat`, `rag`, `coding`) không lưu state cục bộ trong biến toàn cục hay bộ nhớ tiến trình. Mọi trạng thái phiên đều được lưu ra Postgres/Redis ngoại vi. | `src/agentic/orchestrator/state.py` | Kiểm tra scale ngang 2+ replicas không bị lệch hoặc mất state giữa các request cùng `thread_id`. |
-| **1.3** | `[ ]` | **P0** | **Chuẩn hóa Giao thức A2A (Agent-to-Agent)**: Giao tiếp giữa Supervisor và Sub-Agents qua HTTP/gRPC A2A Protocol đúng cổng (`9100`: Chat, `9101`: RAG, `9102`: Coding). `AgentCard` được khai báo đầy đủ danh mục capabilities. | [src/agentic/a2a/cards.py](../../src/agentic/a2a/cards.py)<br>[src/agentic/a2a/client.py](../../src/agentic/a2a/client.py) | Gửi A2A Ping:<br>`curl -f -X GET http://localhost:9100/a2a/card`<br>`curl -f -X GET http://localhost:9101/a2a/card`<br>`curl -f -X GET http://localhost:9102/a2a/card` |
+| **1.3** | `[ ]` | **P0** | **Chuẩn hóa Giao thức A2A (Agent-to-Agent)**: Giao tiếp giữa Supervisor và Sub-Agents qua A2A v1 JSON-RPC/SSE đúng cổng (`9100`: Chat, `9101`: RAG, `9102`: Coding). `AgentCard` công bố interface, version, streaming, skills và security scheme. | [src/agentic/a2a/cards.py](../../src/agentic/a2a/cards.py)<br>[src/agentic/a2a/client.py](../../src/agentic/a2a/client.py) | Gửi A2A discovery:<br>`curl -f http://localhost:9100/.well-known/agent-card.json`<br>`curl -f http://localhost:9101/.well-known/agent-card.json`<br>`curl -f http://localhost:9102/.well-known/agent-card.json` |
 | **1.4** | `[ ]` | **P0** | **Chuẩn hóa Giao thức MCP & Phân quyền Allowlist**: Công cụ FastMCP chạy độc lập trên các cổng (`9001`: code exec, `9002`: repo, `9003`: web search). Phân quyền Allowlist nghiêm ngặt tại `policies.yaml` (Sub-agent không thể gọi tool ngoài danh sách cấp phép). | [configs/policies.yaml](../../configs/policies.yaml)<br>[src/agentic/tools/mcp_client.py](../../src/agentic/tools/mcp_client.py) | Chạy integration test kiểm tra chặn tool trái phép:<br>`pytest tests/unit/test_production_hardening.py -k test_tool_allowlist_enforcement` |
 | **1.5** | `[ ]` | **P1** | **Xử lý Bất đồng bộ Non-blocking (Async RAG Offloading)**: Các tác vụ nặng về CPU/Disk I/O của LlamaIndex, BM25, Cross-Encoder phải được bọc trong `asyncio.to_thread()`, không làm block event loop chính của FastAPI. | [src/agentic/rag/tools.py](../../src/agentic/rag/tools.py) | Kiểm tra mã nguồn: Hàm `search_policy` trong `tools.py` phải gọi `await asyncio.to_thread(...)`. |
 | **1.6** | `[ ]` | **P1** | **Connection Pooling Tải Cao (A2A Client Pooling)**: Sử dụng singleton `httpx.AsyncClient` với cấu hình pool tối ưu (`max_keepalive_connections=50`, `max_connections=200`, `keepalive_expiry=30.0`), triệt tiêu chi phí handshake TCP/SSL. | [src/agentic/a2a/client.py](../../src/agentic/a2a/client.py) | Kiểm tra lifecycle shutdown có gọi `await client.aclose()` để giải phóng socket sạch sẽ. |
@@ -55,14 +55,15 @@ print('AST Import Check: PASSED - Core is 100% independent.')
 ### Bước 2: Kiểm thử A2A Endpoints & Thẻ AgentCard
 ```bash
 # Xác nhận các endpoint A2A phản hồi mã 200:
-curl -s http://localhost:9100/a2a/card | jq .
-curl -s http://localhost:9101/a2a/card | jq .
-curl -s http://localhost:9102/a2a/card | jq .
+curl -s http://localhost:9100/.well-known/agent-card.json | jq .
+curl -s http://localhost:9101/.well-known/agent-card.json | jq .
+curl -s http://localhost:9102/.well-known/agent-card.json | jq .
 ```
 
 ### Bước 3: Chạy Unit Tests Trọng Tâm
 ```bash
-pytest tests/unit/test_core.py tests/unit/test_production_hardening.py -v -k "test_tool_allowlist_enforcement or test_a2a_connection_pool"
+pytest tests/integration/test_protocol_boundaries.py -v
+pytest tests/unit -v -k "a2a or tool_allowlist"
 ```
 
 ### Bước 4: Kiểm Thử Luồng End-to-End API L1 & SSE Token Streaming

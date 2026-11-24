@@ -807,50 +807,36 @@ async def test_a2a_client_streaming_and_fallback():
     with pytest.raises(A2ACommunicationError):
         await client.call_agent("unknown_nonexistent_agent", "step_01", "instruction")
 
-    # 2. HTTP 200 Streaming SSE parsing
-    from contextlib import asynccontextmanager
+    # 2. Official A2A streaming artifact parsing
+    from a2a.helpers import new_text_artifact_update_event
+    from a2a.types import StreamResponse
 
-    @asynccontextmanager
-    async def mock_stream_cm(*args, **kwargs):
-        class MockStreamResponse:
-            status_code = 200
+    async def official_stream(*args, **kwargs):
+        del args, kwargs
+        yield StreamResponse(
+            artifact_update=new_text_artifact_update_event(
+                "task-1", "context-1", "answer", "Hello ", append=False
+            )
+        )
+        yield StreamResponse(
+            artifact_update=new_text_artifact_update_event(
+                "task-1", "context-1", "answer", "enterprise!", append=True, last_chunk=True
+            )
+        )
 
-            async def aiter_lines(self):
-                yield 'data: {"token": "Hello "}'
-                yield 'data: {"token": "enterprise!"}'
-                yield "data: [DONE]"
-
-        yield MockStreamResponse()
-
-    mock_http_client = MagicMock()
-    mock_http_client.is_closed = False
-    mock_http_client.stream = mock_stream_cm
-    mock_http_client.aclose = AsyncMock()
-
-    with patch.object(client, "_get_http_client", return_value=mock_http_client):
+    with patch.object(client, "_retrying_remote_stream", new=official_stream):
         tokens = []
         async for ev in client.call_agent_stream("chat_agent", "step_01", "instruction"):
             tokens.append(ev.get("token", ""))
         assert "Hello " in tokens
 
-    # 3. HTTP non-200 streaming fallback to local runner
-    @asynccontextmanager
-    async def mock_failed_cm(*args, **kwargs):
-        class MockFailedResponse:
-            status_code = 500
+    # 3. Protocol transport failure falls back to local runner in development.
+    async def failed_stream(*args, **kwargs):
+        del args, kwargs
+        raise A2ACommunicationError(target_agent="chat_agent", message="unavailable")
+        yield  # pragma: no cover
 
-            async def aiter_lines(self):
-                if False:
-                    yield ""
-
-        yield MockFailedResponse()
-
-    mock_failed_client = MagicMock()
-    mock_failed_client.is_closed = False
-    mock_failed_client.stream = mock_failed_cm
-    mock_failed_client.aclose = AsyncMock()
-
-    with patch.object(client, "_get_http_client", return_value=mock_failed_client):
+    with patch.object(client, "_retrying_remote_stream", new=failed_stream):
         mock_local_graph = MagicMock()
 
         async def _empty_events(*args, **kwargs):
@@ -1066,7 +1052,11 @@ async def test_finalize_node_guardrail_masking():
         thread_id="thr_final_001",
     )
 
-    final_res = await finalize_node(state)
+    with patch(
+        "src.agentic.orchestrator.nodes.finalize.consolidate_session_memory",
+        new=AsyncMock(),
+    ):
+        final_res = await finalize_node(state)
     assert "001234567890" not in final_res["final_answer"]
 
     # Background task tracker & drain
