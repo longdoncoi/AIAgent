@@ -26,10 +26,11 @@
 - Tất cả GitHub Actions đã nâng lên phiên bản Node 24 hiện hành và vẫn pin bằng commit SHA bất biến; loại bỏ cảnh báo runner cưỡng bức nâng Node 20.
 - Publish/CD chỉ chạy cho release tag sau strict gate; tải PRR artifact của đúng workflow/commit thay vì tin bản tracked có thể cũ.
 - Release sign-off dùng giao thức hai commit không tự-tham-chiếu: Hội đồng ký source commit `C`; tag trỏ commit attestation `A` chỉ chứa `release-board.json`; CI xác minh `A` có đúng một parent `C` và không có path thay đổi khác.
+- Dockerfiles dùng named stage `uv` cho image UV đã pin digest; không nội suy ARG trong `COPY --from`, vốn bị BuildKit từ chối.
 
 ## Xác minh mới nhất
 
-- Current committed HEAD là `1e5e546318b4000b58e559b8143b03aa1644fcaa`; các sửa release workflow hiện còn ở working tree. `evidence/prr/latest.json` tracked thuộc commit cũ và **không** được coi là attestation cho thay đổi này; CI phải tái sinh artifact sau commit.
+- Current committed HEAD là `259c7b352f713ed23959ffd1c8d055e6e23fb6d2`; Dockerfile fix đang ở nhánh `codex/go-live-container-fix`. `evidence/prr/latest.json` tracked không được coi là attestation cho working tree; CI phải tái sinh artifact sau commit.
 - `ruff check .`: PASS.
 - `mypy src/` strict: PASS, 82 source files.
 - Full CI-equivalent suite: `383 passed, 1 skipped in 212.85s`; skip là kiểm thử symlink đặc quyền trên Windows.
@@ -40,7 +41,7 @@
 - YAML parse và `kubectl kustomize deploy/k8s`: PASS.
 - `uv lock --check`: PASS.
 - Production-only `pip-audit` theo lockfile: không phát hiện vulnerability đã biết.
-- Latest GitHub run `45452472308` tại HEAD hiện tại: lint/audit và test/eval PASS; validate-deploy FAIL do gọi Python hệ thống thiếu `yaml`. Nguyên nhân đã sửa cục bộ bằng `uv run --no-sync`; cần commit/push và CI remote xanh để xác nhận.
+- GitHub run `45511577877` tại HEAD hiện tại: lint/audit, test/eval và validate-deploy PASS; cả 3 container build FAIL do BuildKit không hỗ trợ `${UV_VERSION}` trực tiếp trong `COPY --from`. Named-stage fix đã có regression cục bộ; cần PR CI xanh để xác nhận build/Trivy thật.
 - GitHub runtime audit ngày 2026-11-25: repo/staging/production đều có 0 secret và 0 variable; `production` chỉ có 1 required reviewer, `staging` không có reviewer; `main` không có branch protection khả dụng.
 - Runtime preflight ngày 2026-11-24: Docker CLI có nhưng daemon không chạy; `kubectl` không có current context/cluster; không có service production lắng nghe trên các cổng phụ thuộc; các biến kết nối/secret production đều vắng mặt.
 - Strict `python evals/release_gate.py`: FAIL đúng thiết kế với `LLM gateway unreachable — no real generation or LLM judging possible`.

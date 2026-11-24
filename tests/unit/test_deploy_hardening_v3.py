@@ -355,6 +355,9 @@ def test_dockerfiles_are_pinned_frozen_and_healthchecked(name: str) -> None:
     body = "\n".join(directives)
     assert not re.search(r"^FROM python:3\.12-slim\b", body, re.MULTILINE)
     assert "ghcr.io/astral-sh/uv:latest" not in body
+    assert re.search(r"^FROM ghcr\.io/astral-sh/uv:\$\{UV_VERSION\} AS uv$", body, re.MULTILINE)
+    assert "COPY --from=uv /uv /usr/local/bin/uv" in body
+    assert "COPY --from=ghcr.io/astral-sh/uv:" not in body
     assert not re.search(r"^RUN .*apt-get upgrade", body, re.MULTILINE)
     assert "uv sync --frozen" in body
     assert "--extra neural" in body

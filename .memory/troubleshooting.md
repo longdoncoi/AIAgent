@@ -67,3 +67,9 @@
 - Triệu chứng: assertion trạng thái `OPEN` thỉnh thoảng thấy `HALF_OPEN` khi chạy xdist, đặc biệt lúc logging chậm.
 - Nguyên nhân: test đặt recovery window 100 ms rồi sleep; độ trễ scheduler/logging có thể vượt cửa sổ trước assertion.
 - Khắc phục: dùng recovery window 60 giây và dịch `last_failure_time` vượt ngưỡng để kiểm tra transition, không sleep và không patch đồng hồ toàn cục.
+
+## BuildKit không nội suy ARG trong COPY --from
+
+- Triệu chứng: cả ba image fail với `invalid reference format` tại `COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION}`.
+- Nguyên nhân: `COPY --from` chỉ nhận tên stage hoặc image reference tĩnh; Dockerfile frontend không mở rộng build ARG tại vị trí này.
+- Khắc phục: khai báo `FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv`, sau đó dùng `COPY --from=uv`; regression kiểm tra named stage tồn tại và cấm lại mẫu cũ.
