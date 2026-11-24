@@ -566,8 +566,13 @@ def test_mcp_servers_main_stdio_mode():
 
 @pytest.mark.asyncio
 async def test_code_exec_timeout_and_exceptions():
-    # Real timeout test (1 second timeout on 5 second sleep)
-    res_to = await execute_python_code("import time; time.sleep(5)", timeout=1)
+    # Real timeout test (1 second timeout on 5 second sleep). Force the host
+    # path: on developer machines the docker CLI may exist while the daemon is
+    # down, which would exercise an unrelated connection-error branch.
+    with patch(
+        "src.agentic.tools.servers.code_exec_server._is_docker_available", return_value=False
+    ):
+        res_to = await execute_python_code("import time; time.sleep(5)", timeout=1)
     assert "timed out" in res_to and "1 seconds" in res_to
 
     # General Exception branch
