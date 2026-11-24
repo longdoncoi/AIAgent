@@ -43,6 +43,8 @@ dependencies = [
     "pyyaml>=6.0.2",
     "python-multipart>=0.0.12",
     "langsmith>=0.1.0",
+    # Ed25519 approval capabilities (explicit runtime dependency).
+    "cryptography>=43.0.0",
 ]
 
 [project.optional-dependencies]
@@ -53,8 +55,11 @@ dev = [
     "pytest-xdist>=3.6.1",
     "ruff>=0.6.9",
     "mypy>=1.11.2",
-    "ragas>=0.2.0",
     "datasets>=2.19.0",
+]
+eval = [
+    # Isolated release-evaluation tooling; never shipped in runtime images.
+    "ragas>=0.2.0",
 ]
 # Optional neural retrieval stack. Release gates require it; the default
 # installation intentionally stays light and uses honestly-labelled heuristics.
@@ -106,5 +111,4 @@ filterwarnings = [
 [dependency-groups]
 dev = [
     "datasets>=2.19.0",
-    "ragas>=0.2.0",
 ]

@@ -1,22 +1,10 @@
-"""Signed, short-lived HITL approval grants (capability tokens).
+"""Short-lived, attenuated HITL approval capabilities.
 
-The previous design propagated a caller-controlled boolean
-(``metadata["hitl_approved"]``) across the A2A boundary. Any caller able to
-reach ``/a2a/tasks`` could therefore authorize ``code_exec_bash`` or
-``repo_write_file`` without a human decision.
-
-An :class:`ApprovalGrant` is instead minted **by the supervisor** after a
-real HITL decision and is authenticated with an HMAC key derived from the
-deployment secret. It is bound to:
-
-* the exact step (``step_id`` + ``fingerprint``),
-* the owning principal (``owner_id``),
-* the sub-agent allowed to use it (``agent_name``),
-* the set of approval-gated tools authorised for that step,
-* a short expiration window.
-
-Verification is fail-closed: a missing, malformed, expired, or mismatched
-grant always denies execution.
+Only the supervisor holds the Ed25519 private key and may mint a step grant.
+Agents receive the public key plus a signed step capability.  They can narrow
+that capability to one exact tool invocation, but cannot widen its tool set,
+identity bindings, or expiry.  MCP servers verify both layers with public
+material and atomically consume the call nonce.
 """
 
 from __future__ import annotations
@@ -32,6 +20,11 @@ import time
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
 from pydantic import BaseModel, Field
 
 from src.agentic.core.config import Settings, get_settings
@@ -40,15 +33,16 @@ from src.agentic.observability.metrics import APPROVAL_GRANTS_TOTAL
 
 logger = logging.getLogger(__name__)
 
-_GRANT_VERSION = 2
-_DOMAIN = b"agentic-approval-grant-v2\x00"
+_GRANT_VERSION = 3
+_STEP_DOMAIN = b"agentic-approval-step-v3\x00"
+_CALL_DOMAIN = b"agentic-approval-call-v3\x00"
 _NONCE_PREFIX = "agentic:approval:nonce:"
 _local_used_nonces: dict[str, int] = {}
 _local_nonce_lock = threading.Lock()
 
 
 class ApprovalGrantPayload(BaseModel):
-    """Signed claims carried by an approval grant."""
+    """Authenticated claims carried by a step or call capability."""
 
     v: int = _GRANT_VERSION
     step_id: str
@@ -65,9 +59,11 @@ class ApprovalGrantPayload(BaseModel):
 
 @dataclass(frozen=True)
 class ApprovalGrant:
-    """A verified approval grant, safe to trust at the tool boundary."""
+    """A verified grant with the cryptographic root needed for attenuation."""
 
     payload: ApprovalGrantPayload
+    token: str
+    root_signature: bytes
 
     @property
     def step_id(self) -> str:
@@ -78,10 +74,52 @@ class ApprovalGrant:
         return self.payload.owner_id
 
 
-def _approval_key(settings: Settings) -> bytes:
-    """Dedicated HITL key; never derived from the shared S2S transport token."""
-    material = _DOMAIN + settings.approval_key.encode("utf-8")
-    return hashlib.sha256(material).digest()
+def _b64encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _b64decode(text: str) -> bytes:
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def _decode_raw_key(value: str, *, name: str) -> bytes:
+    encoded = value.removeprefix("base64:").strip()
+    try:
+        raw = _b64decode(encoded)
+    except Exception as exc:
+        raise ValueError(f"{name} must be URL-safe base64") from exc
+    if len(raw) != 32:
+        raise ValueError(f"{name} must encode exactly 32 bytes")
+    return raw
+
+
+def _development_private_seed(settings: Settings) -> bytes:
+    """Stable local-only key so development and unit tests stay ergonomic."""
+    return hashlib.sha256(
+        _STEP_DOMAIN + settings.approval_key.encode("utf-8")
+    ).digest()
+
+
+def _private_key(settings: Settings) -> Ed25519PrivateKey:
+    if settings.approval_private_key:
+        seed = _decode_raw_key(
+            settings.approval_private_key, name="approval_private_key"
+        )
+        return Ed25519PrivateKey.from_private_bytes(seed)
+    if settings.is_production:
+        raise ValueError("approval_private_key is unavailable in this workload")
+    return Ed25519PrivateKey.from_private_bytes(_development_private_seed(settings))
+
+
+def _public_key(settings: Settings) -> Ed25519PublicKey:
+    if settings.approval_public_key:
+        raw = _decode_raw_key(
+            settings.approval_public_key, name="approval_public_key"
+        )
+        return Ed25519PublicKey.from_public_bytes(raw)
+    if settings.approval_private_key or not settings.is_production:
+        return _private_key(settings).public_key()
+    raise ValueError("approval_public_key is unavailable in this workload")
 
 
 def _consume_nonce(nonce: str, expires_at: int, settings: Settings) -> bool:
@@ -99,7 +137,7 @@ def _consume_nonce(nonce: str, expires_at: int, settings: Settings) -> bool:
             return False
     now = int(time.time())
     with _local_nonce_lock:
-        for key in [k for k, exp in _local_used_nonces.items() if exp <= now]:
+        for key in [key for key, exp in _local_used_nonces.items() if exp <= now]:
             _local_used_nonces.pop(key, None)
         if nonce in _local_used_nonces:
             return False
@@ -107,18 +145,13 @@ def _consume_nonce(nonce: str, expires_at: int, settings: Settings) -> bool:
         return True
 
 
-def _b64encode(raw: bytes) -> str:
-    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
-
-
-def _b64decode(text: str) -> bytes:
-    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
-
-
 def canonical_args_digest(tool_name: str, arguments: dict[str, Any]) -> str:
-    """Stable digest of a tool call, used for optional argument-level binding."""
+    """Return a stable digest binding a capability to one exact invocation."""
     canonical = json.dumps(
-        {"tool": tool_name, "args": arguments}, sort_keys=True, separators=(",", ":"), default=str
+        {"tool": tool_name, "args": arguments},
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -135,10 +168,12 @@ def issue_approval_grant(
     purpose: Literal["step", "call"] = "step",
     settings: Settings | None = None,
 ) -> str:
-    """Mint a signed grant. Must only be called by the supervisor/HITL node."""
+    """Mint an Ed25519 step capability; callable only by the supervisor."""
     cfg = settings or get_settings()
-    if purpose == "call" and args_digest is None:
-        raise ValueError("A call-scoped approval grant must bind an args_digest")
+    if purpose != "step":
+        if args_digest is None:
+            raise ValueError("A call-scoped approval grant must bind an args_digest")
+        raise ValueError("Call grants must attenuate a verified step grant")
     now = int(time.time())
     payload = ApprovalGrantPayload(
         step_id=step_id,
@@ -147,15 +182,14 @@ def issue_approval_grant(
         agent_name=agent_name,
         tools=sorted(set(tools or [])),
         iat=now,
-        exp=now + (ttl_seconds if ttl_seconds is not None else cfg.approval_grant_ttl_seconds),
-        nonce=secrets.token_hex(8),
-        purpose=purpose,
-        args_digest=args_digest,
+        exp=now
+        + (ttl_seconds if ttl_seconds is not None else cfg.approval_grant_ttl_seconds),
+        nonce=secrets.token_hex(16),
     )
     body = _b64encode(payload.model_dump_json().encode("utf-8"))
-    signature = _b64encode(hmac.new(_approval_key(cfg), body.encode("ascii"), hashlib.sha256).digest())
+    signature = _private_key(cfg).sign(_STEP_DOMAIN + body.encode("ascii"))
     APPROVAL_GRANTS_TOTAL.labels(outcome="issued").inc()
-    return f"{body}.{signature}"
+    return f"{body}.{_b64encode(signature)}"
 
 
 def issue_call_grant(
@@ -166,18 +200,79 @@ def issue_call_grant(
     ttl_seconds: int | None = None,
     settings: Settings | None = None,
 ) -> str:
-    """Issue a single-use grant bound to the exact tool call arguments."""
-    return issue_approval_grant(
-        step_id=step_grant.step_id,
-        fingerprint=step_grant.payload.fingerprint,
-        owner_id=step_grant.owner_id,
-        agent_name=step_grant.payload.agent_name,
-        tools=[tool_name],
-        args_digest=canonical_args_digest(tool_name, arguments),
-        purpose="call",
-        ttl_seconds=ttl_seconds,
-        settings=settings,
+    """Attenuate a verified step grant to one exact, single-use tool call."""
+    cfg = settings or get_settings()
+    root = step_grant.payload
+    now = int(time.time())
+    if root.purpose != "step" or root.exp <= now:
+        raise ValueError("Cannot attenuate an expired or non-step grant")
+    if tool_name not in root.tools:
+        raise ValueError(f"Tool {tool_name!r} is not covered by the step grant")
+    requested_exp = now + (
+        ttl_seconds if ttl_seconds is not None else cfg.approval_grant_ttl_seconds
     )
+    payload = ApprovalGrantPayload(
+        step_id=root.step_id,
+        fingerprint=root.fingerprint,
+        owner_id=root.owner_id,
+        agent_name=root.agent_name,
+        tools=[tool_name],
+        iat=now,
+        exp=min(root.exp, requested_exp),
+        nonce=secrets.token_hex(16),
+        purpose="call",
+        args_digest=canonical_args_digest(tool_name, arguments),
+    )
+    body = _b64encode(payload.model_dump_json().encode("utf-8"))
+    signature = hmac.new(
+        step_grant.root_signature,
+        _CALL_DOMAIN + body.encode("ascii"),
+        hashlib.sha256,
+    ).digest()
+    APPROVAL_GRANTS_TOTAL.labels(outcome="attenuated").inc()
+    return f"{step_grant.token}.{body}.{_b64encode(signature)}"
+
+
+def _verify_step_layer(
+    body: str, signature_text: str, settings: Settings
+) -> tuple[ApprovalGrantPayload, bytes]:
+    signature = _b64decode(signature_text)
+    _public_key(settings).verify(signature, _STEP_DOMAIN + body.encode("ascii"))
+    payload = ApprovalGrantPayload.model_validate_json(_b64decode(body))
+    if payload.v != _GRANT_VERSION or payload.purpose != "step":
+        raise ValueError("invalid step grant version or purpose")
+    return payload, signature
+
+
+def _verify_call_layer(
+    *,
+    root: ApprovalGrantPayload,
+    root_signature: bytes,
+    body: str,
+    signature_text: str,
+) -> ApprovalGrantPayload:
+    supplied = _b64decode(signature_text)
+    expected = hmac.new(
+        root_signature, _CALL_DOMAIN + body.encode("ascii"), hashlib.sha256
+    ).digest()
+    if not hmac.compare_digest(supplied, expected):
+        raise InvalidSignature("invalid attenuated call signature")
+    payload = ApprovalGrantPayload.model_validate_json(_b64decode(body))
+    immutable_bindings = (
+        payload.v == _GRANT_VERSION,
+        payload.purpose == "call",
+        payload.step_id == root.step_id,
+        payload.fingerprint == root.fingerprint,
+        payload.owner_id == root.owner_id,
+        payload.agent_name == root.agent_name,
+        payload.iat >= root.iat,
+        payload.exp <= root.exp,
+        set(payload.tools).issubset(root.tools),
+        len(payload.tools) == 1,
+    )
+    if not all(immutable_bindings):
+        raise ValueError("call grant widens or changes its parent capability")
+    return payload
 
 
 def verify_approval_grant(
@@ -191,30 +286,32 @@ def verify_approval_grant(
     arguments: dict[str, Any] | None = None,
     settings: Settings | None = None,
 ) -> ApprovalGrant | None:
-    """Verify a grant and all its bindings. Returns ``None`` on any failure."""
-    if not token or not isinstance(token, str) or "." not in token:
+    """Verify all capability layers and caller bindings; fail closed."""
+    if not token or not isinstance(token, str):
         return None
     cfg = settings or get_settings()
     try:
-        body, signature = token.rsplit(".", 1)
-        expected = _b64encode(
-            hmac.new(_approval_key(cfg), body.encode("ascii"), hashlib.sha256).digest()
+        parts = token.split(".")
+        if len(parts) not in {2, 4}:
+            return None
+        step_body, step_signature_text = parts[:2]
+        root, root_signature = _verify_step_layer(
+            step_body, step_signature_text, cfg
         )
-        if not hmac.compare_digest(signature, expected):
-            logger.warning("Rejected approval grant with invalid signature")
-            return None
+        payload = root
+        if len(parts) == 4:
+            payload = _verify_call_layer(
+                root=root,
+                root_signature=root_signature,
+                body=parts[2],
+                signature_text=parts[3],
+            )
 
-        payload = ApprovalGrantPayload.model_validate_json(_b64decode(body))
-        if payload.v != _GRANT_VERSION:
-            return None
         now = int(time.time())
         if payload.exp <= now or payload.iat > now + 60:
-            logger.warning("Rejected expired or future approval grant for step %s", payload.step_id)
+            logger.warning("Rejected expired or future grant for step %s", payload.step_id)
             return None
-        if payload.step_id != step_id:
-            return None
-        if payload.fingerprint != fingerprint:
-            logger.warning("Approval fingerprint mismatch for step %s", step_id)
+        if payload.step_id != step_id or payload.fingerprint != fingerprint:
             return None
         if payload.agent_name not in (agent_name, agent_name.replace("_agent", "")):
             return None
@@ -223,30 +320,58 @@ def verify_approval_grant(
             or owner_id in {"anonymous_user", "unknown"}
             or not hmac.compare_digest(payload.owner_id, owner_id)
         ):
-            logger.warning("Approval owner mismatch for step %s", step_id)
             return None
-        if tool_name is not None:
-            allowed = {name.replace("_agent", "") for name in payload.tools}
-            if tool_name not in payload.tools and tool_name not in allowed:
-                logger.warning("Tool %s not covered by approval grant for step %s", tool_name, step_id)
-                return None
+        if tool_name is not None and tool_name not in payload.tools:
+            return None
         if payload.purpose == "call":
-            if payload.args_digest is None or arguments is None:
-                logger.warning("Call-scoped grant without argument binding rejected for step %s", step_id)
+            if payload.args_digest is None or arguments is None or tool_name is None:
                 return None
-            if not hmac.compare_digest(
-                payload.args_digest, canonical_args_digest(tool_name or "", arguments)
-            ):
+            expected_digest = canonical_args_digest(tool_name, arguments)
+            if not hmac.compare_digest(payload.args_digest, expected_digest):
                 return None
             if not _consume_nonce(payload.nonce, payload.exp, cfg):
                 logger.warning("Replayed approval grant rejected for step %s", step_id)
                 return None
-        elif arguments is not None and payload.args_digest is not None:
-            if not hmac.compare_digest(payload.args_digest, canonical_args_digest(tool_name or "", arguments)):
-                return None
-    except Exception as exc:  # malformed token must never grant access
+        elif arguments is not None:
+            return None
+    except (InvalidSignature, ValueError, TypeError, json.JSONDecodeError) as exc:
         logger.warning("Rejected malformed approval grant: %s", exc)
         APPROVAL_GRANTS_TOTAL.labels(outcome="rejected").inc()
         return None
     APPROVAL_GRANTS_TOTAL.labels(outcome="verified").inc()
-    return ApprovalGrant(payload=payload)
+    return ApprovalGrant(
+        payload=payload,
+        token=f"{step_body}.{step_signature_text}",
+        root_signature=root_signature,
+    )
+
+
+def verify_tool_call_grant(
+    token: str | None,
+    *,
+    tool_name: str,
+    arguments: dict[str, Any],
+    settings: Settings | None = None,
+) -> ApprovalGrant | None:
+    """Verify and consume an attenuated call capability at the MCP boundary."""
+    if not token or not isinstance(token, str):
+        return None
+    parts = token.split(".")
+    if len(parts) != 4:
+        return None
+    try:
+        untrusted = ApprovalGrantPayload.model_validate_json(_b64decode(parts[2]))
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return None
+    if untrusted.purpose != "call" or not untrusted.args_digest:
+        return None
+    return verify_approval_grant(
+        token,
+        step_id=untrusted.step_id,
+        fingerprint=untrusted.fingerprint,
+        owner_id=untrusted.owner_id,
+        agent_name=untrusted.agent_name,
+        tool_name=tool_name,
+        arguments=arguments,
+        settings=settings,
+    )

@@ -51,6 +51,11 @@ class ThreadRegistry:
         return f"thread:{digest}"
 
     async def _client(self) -> Any | None:
+        # Unit tests must be hermetic even when a Redis service happens to be
+        # present on the CI runner. Dedicated integration tests inject a client
+        # explicitly when Redis behaviour is under test.
+        if self.settings.environment == "test":
+            return None
         if self._redis is not None:
             return self._redis
         try:
@@ -68,21 +73,48 @@ class ThreadRegistry:
             logger.debug("Using process-local thread registry: %s", exc)
             return None
 
+    async def _handle_redis_failure(
+        self, operation: str, client: Any, exc: Exception
+    ) -> None:
+        """Drop a failed client and fail closed for distributed production state."""
+        if self._redis is client:
+            self._redis = None
+        try:
+            await client.aclose()
+        except Exception:
+            logger.debug("Failed to close Redis client after %s error", operation, exc_info=True)
+        if self.settings.environment == "production":
+            raise ThreadRegistryUnavailable(
+                f"Distributed thread {operation} registry is unavailable."
+            ) from exc
+        logger.warning(
+            "Redis thread %s failed; using process-local registry outside production: %s",
+            operation,
+            exc,
+        )
+
     async def claim(self, thread_id: str, owner_id: str) -> str:
         """Atomically claim a thread or verify that the current caller owns it."""
         client = await self._client()
         key = self._key(thread_id)
         if client is not None:
-            created = await client.set(key, owner_id, nx=True, ex=86400 * 30)
-            current = owner_id if created else await client.get(key)
-            if isinstance(current, bytes):
-                current = current.decode("utf-8")
-            if current != owner_id:
-                raise ThreadOwnershipError("Thread belongs to another principal.")
-            await client.expire(key, 86400 * 30)
-            await client.sadd(self._owner_index_key(owner_id), thread_id)
-            await client.expire(self._owner_index_key(owner_id), 86400 * 30)
-        else:
+            try:
+                created = await client.set(key, owner_id, nx=True, ex=86400 * 30)
+                current = owner_id if created else await client.get(key)
+                if isinstance(current, bytes):
+                    current = current.decode("utf-8")
+                if current != owner_id:
+                    raise ThreadOwnershipError("Thread belongs to another principal.")
+                await client.expire(key, 86400 * 30)
+                await client.sadd(self._owner_index_key(owner_id), thread_id)
+                await client.expire(self._owner_index_key(owner_id), 86400 * 30)
+                return self.scoped_thread_id(thread_id, owner_id)
+            except ThreadOwnershipError:
+                raise
+            except Exception as exc:
+                await self._handle_redis_failure("claim", client, exc)
+
+        if client is None or self.settings.environment != "production":
             async with self._lock:
                 current = self._owners.setdefault(thread_id, owner_id)
                 if current != owner_id:
@@ -100,8 +132,7 @@ class ThreadRegistry:
                     m.decode("utf-8") if isinstance(m, bytes) else str(m) for m in members
                 ]
             except Exception as exc:
-                logger.warning("Could not read thread-owner reverse index: %s", exc)
-                return []
+                await self._handle_redis_failure("owner index", client, exc)
         async with self._lock:
             return sorted(self._owner_threads.get(owner_id, set()))
 
@@ -109,17 +140,21 @@ class ThreadRegistry:
         """Resolve the owner for an administrative HITL resume operation."""
         client = await self._client()
         if client is not None:
-            value = await client.get(self._key(thread_id))
-            if isinstance(value, bytes):
-                return value.decode("utf-8")
-            return str(value) if value is not None else None
+            try:
+                value = await client.get(self._key(thread_id))
+                if isinstance(value, bytes):
+                    return value.decode("utf-8")
+                return str(value) if value is not None else None
+            except Exception as exc:
+                await self._handle_redis_failure("owner", client, exc)
         async with self._lock:
             return self._owners.get(thread_id)
 
     async def aclose(self) -> None:
-        if self._redis is not None:
-            await self._redis.aclose()
-            self._redis = None
+        client = self._redis
+        self._redis = None
+        if client is not None:
+            await client.aclose()
 
 
 @lru_cache

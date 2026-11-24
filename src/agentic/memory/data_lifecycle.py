@@ -21,16 +21,17 @@ import asyncio
 import hashlib
 import logging
 import re
+import shutil
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
 from src.agentic.core.config import get_settings
+from src.agentic.core.execution_context import cost_allocation_tags
 from src.agentic.memory.long_term import MemoryEntry, get_long_term_store
 from src.agentic.memory.short_term import get_postgres_pool
 from src.agentic.memory.thread_registry import get_thread_registry
-from src.agentic.tools.execution_context import get_tool_execution_context
 
 logger = logging.getLogger(__name__)
 _AUDIT_LOGGER = logging.getLogger("agentic.audit.data_lifecycle")
@@ -55,6 +56,10 @@ _THREAD_ENUMERATION_SQL = (
     "SELECT DISTINCT thread_id FROM checkpoints "
     "WHERE metadata->>'user_id' = %s OR metadata->>'owner_id' = %s"
 )
+_STALE_THREAD_SUBQUERY = (
+    "SELECT thread_id FROM checkpoints GROUP BY thread_id "
+    "HAVING MAX(created_at) < NOW() - (%s * INTERVAL '1 second')"
+)
 
 _CHECKPOINT_KEY_PREFIX = "agentic:checkpoint"
 _THREAD_OWNER_PREFIX = "agentic:thread-owner:"
@@ -64,6 +69,10 @@ _IDENTIFIER = re.compile(r"^[A-Za-z0-9_.:@\-]{1,255}$")
 
 class PurgePermissionError(PermissionError):
     """Raised when the requested thread is owned by a different principal."""
+
+
+class PurgeBackendUnavailable(RuntimeError):
+    """Raised when ownership cannot be proven before destructive deletion."""
 
 
 @dataclass
@@ -80,6 +89,9 @@ class PurgeReport:
     long_term_entries_deleted: int = 0
     long_term_entry_ids: list[str] = field(default_factory=list)
     rag_cache_entries_invalidated: int = 0
+    qdrant_points_deleted: int = 0
+    knowledge_graph_nodes_deleted: int = 0
+    raw_files_deleted: int = 0
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -105,6 +117,9 @@ class PurgeReport:
             "long_term_entries_deleted": self.long_term_entries_deleted,
             "long_term_entry_ids": list(self.long_term_entry_ids),
             "rag_cache_entries_invalidated": self.rag_cache_entries_invalidated,
+            "qdrant_points_deleted": self.qdrant_points_deleted,
+            "knowledge_graph_nodes_deleted": self.knowledge_graph_nodes_deleted,
+            "raw_files_deleted": self.raw_files_deleted,
             "errors": list(self.errors),
         }
 
@@ -119,6 +134,49 @@ def _validate_identifier(value: str, label: str) -> str:
 def _escape_redis_glob(value: str) -> str:
     """Escape glob metacharacters so a thread id cannot widen a SCAN pattern."""
     return _GLOB_SPECIAL.sub(r"\\\1", value)
+
+
+def cleanup_stale_postgres_checkpoints(
+    max_idle_seconds: int,
+    *,
+    pool: Any | None = None,
+    dry_run: bool = False,
+) -> int:
+    """Delete all checkpoint rows for threads inactive beyond the retention window.
+
+    The stale set is derived exclusively from the server-managed ``created_at``
+    column. Table names and SQL are static; only the bounded retention value is
+    parameterised. If PostgreSQL is unavailable the operation fails closed.
+    """
+    if not 3600 <= max_idle_seconds <= 86400 * 365:
+        raise ValueError("max_idle_seconds must be between 3600 and 31536000")
+    active_pool = pool or get_postgres_pool()
+    if active_pool is None:
+        raise PurgeBackendUnavailable("PostgreSQL checkpoint backend is unavailable")
+
+    with active_pool.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT COUNT(*) FROM ({_STALE_THREAD_SUBQUERY}) AS stale_threads",
+            (max_idle_seconds,),
+        )
+        row = cur.fetchone()
+        stale_threads = int(row[0] if row else 0)
+        if dry_run or stale_threads == 0:
+            return stale_threads
+
+        # Dependants first. LangGraph's checkpoint tables intentionally do not
+        # rely on cascade constraints across every supported schema version.
+        for table in ("checkpoint_writes", "checkpoint_blobs", "checkpoints"):
+            cur.execute(
+                f"DELETE FROM {table} WHERE thread_id IN ({_STALE_THREAD_SUBQUERY})",
+                (max_idle_seconds,),
+            )
+    _AUDIT_LOGGER.info(
+        "CHECKPOINT_RETENTION_PURGE stale_threads=%s max_idle_seconds=%s",
+        stale_threads,
+        max_idle_seconds,
+    )
+    return stale_threads
 
 
 @contextmanager
@@ -251,8 +309,12 @@ async def _resolve_target_threads(
             owner = await registry.owner(validated_thread_id)
         except Exception as exc:  # registry outage must not delete foreign data
             logger.warning("Could not verify thread owner during purge: %s", exc)
-            owner = None
-        if owner is not None and str(owner) != user_id:
+            raise PurgeBackendUnavailable(
+                "Thread ownership registry is unavailable; purge refused."
+            ) from exc
+        if owner is None:
+            raise PurgePermissionError("Thread ownership is unclaimed; purge refused.")
+        if str(owner) != user_id:
             raise PurgePermissionError("Thread is owned by another principal.")
         targets.add(str(registry.scoped_thread_id(validated_thread_id, user_id)))
         # Some legacy checkpoints were written with the unscoped public id.
@@ -265,7 +327,9 @@ async def _resolve_target_threads(
             owned = await registry.threads_for_owner(user_id)
         except Exception as exc:
             logger.warning("Could not enumerate owned threads for purge: %s", exc)
-            owned = []
+            raise PurgeBackendUnavailable(
+                "Thread ownership registry is unavailable; purge refused."
+            ) from exc
         for public_id in owned:
             if public_id:
                 targets.add(str(registry.scoped_thread_id(public_id, user_id)))
@@ -290,6 +354,8 @@ async def purge_user_data(
     redis_client: Any | None = None,
     long_term_store: Any | None = None,
     rag_cache: Any | None = None,
+    qdrant_client: Any | None = None,
+    knowledge_graph_store: Any | None = None,
 ) -> PurgeReport:
     """Delete every persistable trace of ``user_id`` (optionally one thread).
 
@@ -321,7 +387,7 @@ async def purge_user_data(
 
     try:
         target_threads, public_thread_id = await _resolve_target_threads(user_id, thread_id, entries)
-    except PurgePermissionError:
+    except (PurgePermissionError, PurgeBackendUnavailable):
         raise
     except Exception as exc:
         report.errors.append(f"thread_resolution: {exc}")
@@ -378,6 +444,77 @@ async def purge_user_data(
             report.errors.append(f"rag_cache: {exc}")
             logger.warning("RAG cache purge was best-effort and failed: %s", exc)
 
+    # 5. Tenant-scoped RAG vectors / knowledge graph -------------------------
+    # A thread-only purge must not erase documents shared by the user's other
+    # threads. A user-wide RTBF request removes the whole tenant partition.
+    if thread_id is None:
+        settings = get_settings()
+        if settings.enable_qdrant or qdrant_client is not None:
+            try:
+                from qdrant_client import QdrantClient, models
+
+                client = qdrant_client or QdrantClient(
+                    host=settings.qdrant_host,
+                    port=settings.qdrant_port,
+                    api_key=settings.qdrant_api_key,
+                    timeout=5,
+                )
+                tenant_filter = models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="tenant_id", match=models.MatchValue(value=user_id)
+                        )
+                    ]
+                )
+                count_result = client.count(
+                    collection_name=settings.qdrant_collection_name,
+                    count_filter=tenant_filter,
+                    exact=True,
+                )
+                report.qdrant_points_deleted = int(getattr(count_result, "count", 0))
+                if not dry_run and report.qdrant_points_deleted:
+                    client.delete(
+                        collection_name=settings.qdrant_collection_name,
+                        points_selector=models.FilterSelector(filter=tenant_filter),
+                        wait=True,
+                    )
+            except Exception as exc:
+                report.errors.append(f"qdrant: {exc}")
+                logger.exception("Data purge failed for Qdrant tenant partition.")
+
+        if settings.enable_knowledge_graph or knowledge_graph_store is not None:
+            try:
+                if knowledge_graph_store is None:
+                    from src.agentic.rag.kg import get_knowledge_graph_store
+
+                    knowledge_graph_store = get_knowledge_graph_store()
+                if dry_run:
+                    report.knowledge_graph_nodes_deleted = int(
+                        knowledge_graph_store.count_tenant(user_id)
+                    )
+                else:
+                    report.knowledge_graph_nodes_deleted = int(
+                        knowledge_graph_store.delete_tenant(user_id)
+                    )
+            except Exception as exc:
+                report.errors.append(f"knowledge_graph: {exc}")
+                logger.exception("Data purge failed for knowledge graph tenant partition.")
+
+        # Tenant-owned raw uploads are confined below data/raw/tenants. Resolve
+        # both paths before recursive deletion to prove the target cannot escape.
+        try:
+            tenant_root = (settings.project_root / "data" / "raw" / "tenants").resolve()
+            tenant_dir = (tenant_root / user_id).resolve()
+            if tenant_dir.parent != tenant_root:
+                raise RuntimeError("Unsafe tenant raw-data path.")
+            if tenant_dir.exists():
+                report.raw_files_deleted = sum(1 for item in tenant_dir.rglob("*") if item.is_file())
+                if not dry_run:
+                    shutil.rmtree(tenant_dir)
+        except Exception as exc:
+            report.errors.append(f"raw_data: {exc}")
+            logger.exception("Data purge failed for tenant raw files.")
+
     _AUDIT_LOGGER.info(
         "DATA_PURGE user_id=%s thread_id=%s dry_run=%s status=%s report=%s",
         user_id,
@@ -404,21 +541,4 @@ def cost_tags_from_context() -> dict[str, str]:
     defensive: new context fields are read via ``getattr`` so the execution
     context can be extended without a coordinated change here.
     """
-    settings = get_settings()
-    tags: dict[str, str] = {
-        "client_id": "anonymous",
-        "department": "unknown",
-        "env": str(settings.environment),
-    }
-    context = get_tool_execution_context()
-    if context is not None:
-        for attr, tag in (
-            ("client_id", "client_id"),
-            ("owner_id", "client_id"),
-            ("department", "department"),
-            ("agent_name", "agent"),
-        ):
-            value = getattr(context, attr, None)
-            if value:
-                tags[tag] = str(value)[:64]
-    return tags
+    return cost_allocation_tags(str(get_settings().environment))

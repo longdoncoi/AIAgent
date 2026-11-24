@@ -264,13 +264,18 @@ class RAGCache:
         effective_ttl = ttl if ttl is not None else self.settings.rag_cache_ttl_seconds
         expire_at = time.time() + effective_ttl
 
+        effective_metadata = dict(metadata or {})
+        # Store the authoritative scope alongside the value so RTBF can
+        # selectively erase every cache record belonging to one tenant.
+        effective_metadata["_scope"] = str(kwargs.get("scope", ""))
+
         # 1. Set in L1 In-Memory Cache
         with self._lock:
             if key in self._cache:
                 self._cache.move_to_end(key)
             elif len(self._cache) >= self.max_entries:
                 self._cache.popitem(last=False)
-            self._cache[key] = (expire_at, result, metadata or {})
+            self._cache[key] = (expire_at, result, effective_metadata)
 
         # 2. Set in L2 Distributed Redis Cache. Never persist raw retrieved
         #    document text or PII into the shared Redis instance.
@@ -280,7 +285,7 @@ class RAGCache:
                 payload = self._redact_payload(
                     {
                         "result": result,
-                        "metadata": metadata or {},
+                        "metadata": effective_metadata,
                         "generation": self._current_generation(),
                     }
                 )
@@ -650,7 +655,7 @@ class RAGCache:
 
     @staticmethod
     def _source_matches(
-        norm_source: str, metadata: Any, result: Any, query: Any = ""
+        norm_source: str, metadata: Any, result: Any, query: Any = "", scope: Any = ""
     ) -> bool:
         """True when an L1/semantic entry references the given source."""
         if not norm_source:
@@ -663,6 +668,7 @@ class RAGCache:
             norm_source in meta_text
             or norm_source in str(result).lower()
             or norm_source in str(query).lower()
+            or norm_source in str(scope).lower()
         )
 
     def _collect_invalidation_targets(
@@ -682,6 +688,7 @@ class RAGCache:
                     entry.get("metadata", {}),
                     entry.get("result", ""),
                     entry.get("query", ""),
+                    entry.get("scope", ""),
                 ):
                     semantic_indexes.append(idx)
 

@@ -45,7 +45,19 @@ Input Stream ──► [Input Guardrail: PII, Jailbreak, Injection]
 
 ---
 
-## 3. Tài Liệu Kiểm Định & Tham Chiếu Liên Quan
+## 3. Capability Phê Duyệt & Ranh Giới Khóa
+
+### 3.1 Luồng xác minh
+
+1. Chỉ Supervisor/API nhận `APPROVAL_PRIVATE_KEY` và ký step capability Ed25519 sau quyết định HITL.
+2. L3 Agent nhận `APPROVAL_PUBLIC_KEY`, xác minh owner/step/fingerprint/tool/TTL rồi attenuate capability thành đúng một tool call với digest arguments và nonce riêng. Agent không có vật liệu ký grant gốc.
+3. L4 MCP nhận `APPROVAL_PUBLIC_KEY`, xác minh cả chữ ký step lẫn chuỗi attenuation, từ chối capability mở rộng quyền, sai arguments, hết hạn hoặc replay nonce.
+4. Production `SERVICE_ROLE` fail startup nếu API thiếu private key, verifier thiếu public key, hoặc private key bị cấp nhầm cho agent/MCP/maintenance.
+5. Kubernetes dùng Secret riêng cho API, từng Chat/RAG/Coding agent, MCP, maintenance và database; tuyệt đối không khôi phục shared `agentic-secrets`.
+
+---
+
+## 4. Tài Liệu Kiểm Định & Tham Chiếu Liên Quan
 
 - **Kiểm định an toàn, bảo mật & phòng thủ chiều sâu**: [REVIEW_SECURITY, GUARDRAILS & HITL.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_SECURITY,%20GUARDRAILS%20&%20HITL.md)
 - **Kiểm định tuân thủ pháp lý, quyền riêng tư & đạo đức AI**: [REVIEW_COMPLIANCE, PRIVACY & AI ETHICS.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_COMPLIANCE,%20PRIVACY%20&%20AI%20ETHICS.md)

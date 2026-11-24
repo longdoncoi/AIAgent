@@ -12,12 +12,16 @@ from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
 from src.agentic.core.config import get_settings
+from src.agentic.core.execution_context import get_tool_execution_context
 from src.agentic.observability.metrics import TOOL_EXECUTION_TOTAL
 from src.agentic.observability.tracing import get_tracer
-from src.agentic.safety.approvals import issue_call_grant, verify_approval_grant
+from src.agentic.safety.approvals import (
+    issue_call_grant,
+    verify_approval_grant,
+    verify_tool_call_grant,
+)
 from src.agentic.safety.guardrails import get_guardrails
 from src.agentic.safety.policy import get_policy_manager
-from src.agentic.tools.execution_context import get_tool_execution_context
 from src.agentic.tools.servers.code_exec_server import execute_bash_command, execute_python_code
 from src.agentic.tools.servers.repo_server import (
     list_files_core,
@@ -132,11 +136,20 @@ class MCPClientManager:
             return self.settings.mcp_code_exec_url
         return self.settings.mcp_web_search_url
 
-    async def _remote_call(self, tool_name: str, arguments: dict[str, Any]) -> str:
+    async def _remote_call(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        approval_token: str | None = None,
+    ) -> str:
         from mcp import ClientSession
         from mcp.client.sse import sse_client
 
         headers = {"X-Internal-Service-Token": self.settings.s2s_internal_token}
+        if approval_token:
+            # The MCP server is the authoritative enforcement boundary.  The
+            # short-lived token is bound to this exact tool + argument set.
+            headers["X-Approval-Grant"] = approval_token
         async with sse_client(
             self._server_url(tool_name), headers=headers, timeout=5.0, sse_read_timeout=65.0
         ) as streams:
@@ -157,8 +170,9 @@ class MCPClientManager:
 
         # Approval-gated tools require a *server-issued* signed grant. A boolean
         # propagated from the caller (A2A metadata) is never sufficient.
+        call_token: str | None = None
         if policy.is_approval_required(tool_name):
-            grant = None
+            step_grant = None
             if context is not None:
                 step_grant = verify_approval_grant(
                     context.approval_token,
@@ -172,16 +186,7 @@ class MCPClientManager:
                     call_token = issue_call_grant(
                         step_grant=step_grant, tool_name=tool_name, arguments=kwargs
                     )
-                    grant = verify_approval_grant(
-                        call_token,
-                        step_id=context.step_id,
-                        fingerprint=context.step_fingerprint or "",
-                        owner_id=context.owner_id,
-                        agent_name=effective_agent,
-                        tool_name=tool_name,
-                        arguments=kwargs,
-                    )
-            if grant is None:
+            if step_grant is None or call_token is None:
                 TOOL_EXECUTION_TOTAL.labels(tool_name=tool_name, status="denied").inc()
                 logger.warning(
                     "Denied approval-gated tool '%s' for step '%s': no valid signed HITL grant",
@@ -195,8 +200,16 @@ class MCPClientManager:
             try:
                 get_guardrails().validate_tool_input(tool_name, kwargs)
                 if self.settings.use_remote_mcp:
-                    result = await self._remote_call(tool_name, kwargs)
+                    result = await self._remote_call(tool_name, kwargs, call_token)
                 else:
+                    # Development-only local execution still uses the same
+                    # authoritative call-grant verification semantics.
+                    if policy.is_approval_required(tool_name) and verify_tool_call_grant(
+                        call_token, tool_name=tool_name, arguments=kwargs
+                    ) is None:
+                        raise PermissionError(
+                            f"Tool '{tool_name}' requires a valid call-scoped HITL approval."
+                        )
                     result = await self._local[tool_name](**kwargs)
                 TOOL_EXECUTION_TOTAL.labels(tool_name=tool_name, status="success").inc()
                 return result

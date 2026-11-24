@@ -184,7 +184,6 @@ class SlidingWindowRateLimiter:
             valid_times.append(now)
             self.requests[client_key] = valid_times
             return True, 0
-
     def is_token_allowed(self, client_key: str, tokens: int) -> tuple[bool, int]:
         """Checks if token consumption is within token_limit_per_minute."""
         if not self.enable_token_limit:
@@ -224,7 +223,18 @@ class SlidingWindowRateLimiter:
             return True, 0
 
 
+class FailClosedRateLimiter:
+    """Sentinel used when the authoritative production limiter is unavailable."""
+
+    def is_allowed(self, client_key: str, cost: int = 1) -> tuple[bool, int]:
+        raise RateLimiterUnavailable("Authoritative Redis rate limiter is unavailable")
+
+    def is_token_allowed(self, client_key: str, tokens: int) -> tuple[bool, int]:
+        raise RateLimiterUnavailable("Authoritative Redis rate limiter is unavailable")
+
+
 _settings = get_settings()
+_rate_limiter: SlidingWindowRateLimiter | FailClosedRateLimiter
 try:
     _rate_limiter = SlidingWindowRateLimiter(
         limit_per_minute=_settings.rate_limit_per_minute,
@@ -237,13 +247,17 @@ except RateLimiterUnavailable:
     # Only reachable if an operator enabled Redis but the service is down.
     # Degrade to a local limiter with a loud warning rather than crashing at
     # import; production readiness checks must catch this configuration.
-    logger.error("Redis rate limiter unavailable at startup; using in-memory limiter")
-    _rate_limiter = SlidingWindowRateLimiter(
-        limit_per_minute=_settings.rate_limit_per_minute,
-        token_limit_per_minute=_settings.token_rate_limit_per_minute,
-        enable_redis=False,
-        enable_token_limit=_settings.enable_token_rate_limit,
-    )
+    if _settings.is_production:
+        logger.critical("Redis rate limiter unavailable at startup; failing closed")
+        _rate_limiter = FailClosedRateLimiter()
+    else:
+        logger.error("Redis rate limiter unavailable at startup; using in-memory limiter")
+        _rate_limiter = SlidingWindowRateLimiter(
+            limit_per_minute=_settings.rate_limit_per_minute,
+            token_limit_per_minute=_settings.token_rate_limit_per_minute,
+            enable_redis=False,
+            enable_token_limit=_settings.enable_token_rate_limit,
+        )
 
 _TRUSTED_PROXIES: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = tuple(
     ipaddress.ip_network(cidr, strict=False)
@@ -432,11 +446,19 @@ class RequestIDAndMetricsMiddleware(BaseHTTPMiddleware):
                 response.background = self._compose_background(
                     response.background,
                     BackgroundTask(
-                        REQUEST_DURATION.labels(component="api", status=status_label).observe,
-                        time.perf_counter() - start_time,
+                        self._observe_stream_duration,
+                        start_time,
+                        status_label,
                     ),
                 )
             return response
+
+    @staticmethod
+    def _observe_stream_duration(start_time: float, status_label: str) -> None:
+        """Observe streaming latency only after the response body has completed."""
+        REQUEST_DURATION.labels(component="api", status=status_label).observe(
+            time.perf_counter() - start_time
+        )
 
     @staticmethod
     def _set_correlation_headers(

@@ -1,18 +1,19 @@
-"""Hybrid Retriever combining keyword scoring, dense embeddings, and auto-merging.
-
-The lexical channel is a *keyword frequency heuristic* (``keyword_score``), not
-true BM25: no IDF corpus statistics are computed and ``rank_bm25`` is not
-installed. The name is kept honest in code and metrics.
-"""
+"""Hybrid Retriever combining BM25, dense embeddings, and auto-merging."""
 
 import logging
+import re
 import threading
 from pathlib import Path
 from typing import Any, cast
 
 from llama_index.core import StorageContext, load_index_from_storage
 from llama_index.core.schema import NodeWithScore, TextNode
-from llama_index.core.vector_stores import FilterOperator, MetadataFilter, MetadataFilters
+from llama_index.core.vector_stores import (
+    FilterCondition,
+    FilterOperator,
+    MetadataFilter,
+    MetadataFilters,
+)
 
 from src.agentic.core.config import get_settings
 from src.agentic.rag.embedding import configure_embedding_model, invalidate_embedding_provider_cache
@@ -141,36 +142,46 @@ class HybridRetriever:
             )
 
     def keyword_score(self, query: str, top_k: int = 5) -> list[NodeWithScore]:
-        """Lexical keyword-frequency scoring over the docstore (or raw files).
-
-        This is NOT BM25: it has no IDF weighting, no length normalization and
-        no ``rank_bm25`` dependency. It is a cheap heuristic channel that
-        complements dense retrieval; fusion weights are configured via
-        ``settings.rag_lexical_weight``.
-        """
-        terms = [t.lower() for t in query.split() if len(t) > 2]
-        scored_nodes: list[NodeWithScore] = []
-
+        """Rank the corpus with BM25Okapi; production fails closed if unavailable."""
+        query_terms = [term for term in re.findall(r"\w+", query.lower()) if len(term) > 2]
+        if not query_terms:
+            return []
+        nodes: list[TextNode] = []
         if self._docstore:
             for node in self._docstore.docs.values():
                 if isinstance(node, TextNode):
-                    text_lower = node.text.lower()
-                    score = sum(text_lower.count(term) for term in terms)
-                    if score > 0:
-                        scored_nodes.append(NodeWithScore(node=node, score=float(score)))
+                    nodes.append(node)
         else:
             for doc in load_documents_from_dir(self.raw_dir):
-                text_lower = doc.text.lower()
-                score = sum(text_lower.count(term) for term in terms)
-                if score > 0:
-                    node = TextNode(text=doc.text, metadata=doc.metadata)
-                    scored_nodes.append(NodeWithScore(node=node, score=float(score)))
+                nodes.append(TextNode(text=doc.text, metadata=doc.metadata))
+        if not nodes:
+            return []
+
+        tokenized = [re.findall(r"\w+", node.text.lower()) for node in nodes]
+        try:
+            from rank_bm25 import BM25Okapi
+
+            scores = BM25Okapi(tokenized).get_scores(query_terms)
+        except ImportError as exc:
+            if self.settings.require_neural_reranker:
+                raise RuntimeError("rank-bm25 is required in production") from exc
+            # Development-only compatibility path for lightweight installs.
+            scores = [
+                float(sum(tokens.count(term) for term in query_terms))
+                for tokens in tokenized
+            ]
+
+        scored_nodes = [
+            NodeWithScore(node=node, score=float(score))
+            for node, score in zip(nodes, scores, strict=True)
+            if float(score) > 0
+        ]
 
         scored_nodes.sort(key=lambda x: x.score or 0.0, reverse=True)
         return scored_nodes[:top_k]
 
     def _keyword_search(self, query: str, top_k: int = 5) -> list[NodeWithScore]:
-        """Backward-compatible alias for :meth:`keyword_score` (not BM25)."""
+        """Backward-compatible alias for :meth:`keyword_score`."""
         return self.keyword_score(query, top_k=top_k)
 
     def _build_metadata_filters(self, filters: dict[str, Any]) -> MetadataFilters | None:
@@ -181,6 +192,29 @@ class HybridRetriever:
         """
         filter_list: list[MetadataFilter | MetadataFilters] = []
         for key, expected in filters.items():
+            if key == "user_roles":
+                values = sorted({str(value) for value in expected} | {"*"})
+                filter_list.append(
+                    MetadataFilter(
+                        key="allowed_roles", value=values, operator=FilterOperator.ANY
+                    )
+                )
+                continue
+            if key == "department":
+                filter_list.append(
+                    MetadataFilter(
+                        key="department",
+                        value=[str(expected), "*"],
+                        operator=FilterOperator.IN,
+                    )
+                )
+                continue
+            if key == "acl_principals":
+                values = sorted({str(value) for value in expected} | {"public"})
+                filter_list.append(
+                    MetadataFilter(key="acl", value=values, operator=FilterOperator.ANY)
+                )
+                continue
             if key == "tenant_id" and not self.settings.require_embedding_service:
                 continue
             if isinstance(expected, (list, tuple, set)):
@@ -191,12 +225,37 @@ class HybridRetriever:
                 filter_list.append(
                     MetadataFilter(key=key, value=expected, operator=FilterOperator.EQ)
                 )
-        return MetadataFilters(filters=filter_list) if filter_list else None
+        return (
+            MetadataFilters(filters=filter_list, condition=FilterCondition.AND)
+            if filter_list
+            else None
+        )
 
     def _is_permitted(self, item: NodeWithScore, filters: dict[str, Any]) -> bool:
         """Fail-closed metadata check: documents without a tenant tag are dropped in production."""
         metadata = getattr(item.node, "metadata", {}) or {}
         for key, expected in filters.items():
+            if key == "user_roles":
+                allowed = metadata.get("allowed_roles")
+                if not isinstance(allowed, (list, tuple, set)):
+                    return False if self.settings.require_embedding_service else True
+                if "*" not in allowed and not set(map(str, expected)).intersection(map(str, allowed)):
+                    return False
+                continue
+            if key == "department":
+                actual_department = metadata.get("department")
+                if actual_department is None:
+                    return False if self.settings.require_embedding_service else True
+                if str(actual_department) not in {"*", str(expected)}:
+                    return False
+                continue
+            if key == "acl_principals":
+                acl = metadata.get("acl")
+                if not isinstance(acl, (list, tuple, set)):
+                    return False if self.settings.require_embedding_service else True
+                if not set(map(str, expected)).intersection(map(str, acl)):
+                    return False
+                continue
             actual = metadata.get(key)
             if key == "tenant_id" and actual is None:
                 # Legacy/shared documents must not be visible to any tenant in production.
@@ -305,7 +364,9 @@ class HybridRetriever:
                 from src.agentic.rag.kg import get_knowledge_graph_store
 
                 kg_store = get_knowledge_graph_store()
-                kg_results = kg_store.query_graph(query, top_k=top_k)
+                kg_results = kg_store.query_graph(
+                    query, top_k=top_k, filters=effective_filters
+                )
                 if effective_filters:
                     kg_results = [
                         item for item in kg_results if self._is_permitted(item, effective_filters)
@@ -470,7 +531,7 @@ def get_qdrant_vector_store(
 
         # Payload indexes make tenant/file filters fast AND enforced at the
         # storage boundary. Safe to create repeatedly (Qdrant is idempotent).
-        for field_name in ("tenant_id", "file_name"):
+        for field_name in ("tenant_id", "file_name", "department", "allowed_roles", "acl"):
             try:
                 q_client.create_payload_index(
                     collection_name=target_collection,

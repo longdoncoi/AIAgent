@@ -67,7 +67,7 @@ def test_sqlite_long_term_store_persistence(tmp_path) -> None:
     # Search procedural
     results_proc = store.search("kubectl", category="procedural")
     assert len(results_proc) == 1
-    assert "deploy_k8s" in results_proc[0].id
+    assert results_proc[0].metadata["workflow_name"] == "deploy_k8s"
 
 
 def test_persistent_checkpointer_instance() -> None:
@@ -150,7 +150,7 @@ def test_production_inviolable_validators() -> None:
         environment="production",
         jwt_secret_key="custom-secure-prod-key-12345",
         s2s_internal_token="custom-secure-s2s-token-12345",
-        approval_signing_key="custom-secure-approval-key-12345",
+        approval_private_key="AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
         litellm_api_key="sk-prod-real-key-12345",
         neo4j_password="real-neo4j-password-12345",
         postgres_uri="postgresql://agentic_user:real-password@pgbouncer-svc:6432/agentic_db",

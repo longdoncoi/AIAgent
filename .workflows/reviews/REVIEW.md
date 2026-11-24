@@ -61,28 +61,35 @@ Bên cạnh 14 trụ cột kỹ thuật, quy trình kiểm định và vận hà
 
 - Artifact máy tạo: **[evidence/prr/latest.json](file:///f:/PROJECTS/AIAgent/evidence/prr/latest.json)** — chứa `commit_sha`, `timestamp_utc`, exit code và output của từng lệnh `ruff`, `mypy`, `pytest --collect-only`, `eval --mode smoke`, parse YAML K8s.
 - Lệnh sinh artifact: `python scripts/generate_prr_evidence.py` (hoặc `make prr-evidence`). Script **không** chạy full pytest; verdict luôn là `AUTO-EVIDENCE PENDING REVIEW BOARD`.
-- CI upload artifact này dưới tên `prr-evidence-<sha>`. Pipeline **không** tự động deploy nếu thiếu artifact sign-off (xem `evidence/signoff/release-board.json` và bước `Verify Release Sign-off` trong `.github/workflows/ci.yml`).
+- CI upload artifact này dưới tên `prr-evidence-<sha>` và job phát hành tải lại đúng artifact của workflow hiện tại; bản `evidence/prr/latest.json` đang được track trong Git không được dùng thay thế. Pipeline **không** tự động deploy nếu thiếu artifact sign-off (xem `evidence/signoff/release-board.json` và bước `Verify Release Sign-off` trong `.github/workflows/ci.yml`).
 - Release gate chất lượng là lệnh riêng `make eval-release` (`evals/release_gate.py`), **không** phải smoke eval. Chỉ release gate mới được phép đưa ra kết luận "Ready for Production", và nó từ chối mọi proxy/heuristic.
 
 ### 6.2 Các Tiêu Chí Chưa Có Code (Truthful Gaps)
 
-Các tiêu chí dưới đây được ghi rõ **NOT IMPLEMENTED** trong tệp review tương ứng thay vì để trống — Hội đồng cần nhìn đúng thực trạng:
+Các hạng mục dưới đây được ghi rõ trạng thái triển khai và phần bằng chứng vận hành còn thiếu thay vì để trống — Hội đồng cần nhìn đúng thực trạng:
 
 | Tiêu chí | Tệp review | Trạng thái thực tế |
 | :--- | :--- | :--- |
-| Xóa dữ liệu theo yêu cầu (Right to be Forgotten) | `REVIEW_COMPLIANCE, PRIVACY & AI ETHICS.md` (12.1) | **IMPLEMENTED (code + test)** — `src/agentic/memory/data_lifecycle.py`, `POST /api/v1/admin/users/{user_id}/purge`, `scripts/delete_user_data.py`. Cần diễn tập staging. |
-| Citations có cấu trúc (`doc_id`, `page`, `source`) | `REVIEW_COMPLIANCE, PRIVACY & AI ETHICS.md` (12.4) | **IMPLEMENTED (code + test)** — `search_policy` phát block `[CITATIONS]`; `validate_citations()` được gọi trong reflector. |
-| RBAC tài liệu theo `user_roles` / `department` | `REVIEW_DATA GOVERNANCE & RAG RBAC.md` (14.1) | **PARTIAL** — tenant/ACL từ execution context đã áp dụng. CẦN filter theo `user_roles`/`department` từ JWT claim. Chưa tính đạt P0. |
+| Xóa dữ liệu theo yêu cầu (Right to be Forgotten) | `REVIEW_COMPLIANCE, PRIVACY & AI ETHICS.md` (12.1) | **IMPLEMENTED (code + test), chờ diễn tập staging** — purge fail-closed theo owner trên checkpoint/Redis/LTM, đồng thời xóa Qdrant, Knowledge Graph, cache và raw files theo tenant. |
+| Citations có cấu trúc (`doc_id`, `page`, `source`) | `REVIEW_COMPLIANCE, PRIVACY & AI ETHICS.md` (12.4) | **IMPLEMENTED (code + test), chờ release eval** — `search_policy` phát block `[CITATIONS]`; Finalize node chỉ tổng hợp citation đã xác minh và từ chối trả lời RAG thiếu nguồn. |
+| RBAC tài liệu theo `user_roles` / `department` | `REVIEW_DATA GOVERNANCE & RAG RBAC.md` (14.1) | **IMPLEMENTED (code + test), chờ kiểm chứng staging** — claim JWT được pin vào execution context ký A2A; Qdrant pushdown và lớp lọc phòng thủ áp dụng tenant, role, department, ACL; caller không thể override bằng tool arguments. |
+| Phân tách approval signer và workload secrets | `REVIEW_SECURITY, GUARDRAILS & HITL.md` (4.3/4.6) | **IMPLEMENTED (code + manifest + regression), chờ probing staging** — Supervisor/API giữ Ed25519 private key; L3/L4 chỉ giữ public key và attenuate/verify capability. ExternalSecret tách riêng API / Chat / RAG / Coding / MCP / maintenance / database; production role verifier fail startup nếu nhận private key. |
 | Ngân sách token cứng theo tenant + cảnh báo đột biến | `REVIEW_FINOPS & COST GOVERNANCE.md` (13.1, 13.5) | **CONFIGURED — cần kiểm chứng runtime**. Cost-tag `client_id/department/env` đã phát metric `agent_cost_allocation_total`. |
 | WAL PITR với RPO = 0 | `REVIEW_SRE & DISASTER RECOVERY.md` (10.2) | **PARTIAL / honest gap** — chỉ có logical backup CronJob (`deploy/k8s/backup.yaml`). PITR RPO=0 cần WAL archiving + S3/GCS do nhà cung cấp DB quản lý. |
 
 ### 6.2.1 Bản Ghi Đợt Gia Cố P0 (2026-11-24)
 
 Đợt gia cố đã xử lý các blocker Critical (có regression test trong `tests/unit/test_*_v3.py`):
-ENVIRONMENT fail-open; HITL grant forgeable + wildcard owner + replay; nhánh `approval_granted`
-fail-open; SSE/A2A output chưa sanitize; guardrail double-encoding; tenant override qua tool
-argument; cache invalidation không xóa L2; MCP probe/pgBouncer/Ingress/OTLP blockers; release
-gate không nằm trong CI; sign-off gate chỉ kiểm tra file tồn tại.
+ENVIRONMENT fail-open; HITL grant forgeable + wildcard owner + replay; xác minh grant một lần tại
+ranh giới MCP và ràng buộc exact arguments; nhánh `approval_granted` fail-open; SSE/A2A output chưa
+sanitize; guardrail double-encoding; tenant/RBAC override qua tool argument; cô lập LTM theo tenant;
+RTBF mở rộng qua vector/KG/cache/raw files; cache invalidation không xóa L2; symlink escape trong repo
+tool; rate limiter production fail-open; MCP probe/pgBouncer/Ingress/OTLP blockers; release gate không
+nằm trong CI; sign-off gate chỉ kiểm tra file tồn tại; action/base image chưa pin immutable digest.
+
+Kết quả code-level tại workspace ngày 2026-11-25: Ruff và mypy strict đạt; `383 passed, 1 skipped`,
+coverage gần nhất `87.70%`; audit dependency production theo lockfile không phát hiện CVE đã biết. Strict release gate vẫn
+**FAIL** vì không có LiteLLM/LLM judge thật đang reachable trong môi trường kiểm định này.
 
 > **CẦN HIỂU RÕ**: đây là bằng chứng **code-level**. Nó KHÔNG thay cho việc chạy
 > `python evals/release_gate.py` với LLM judge/neural model thật, diễn tập DR/load test trên
@@ -105,4 +112,4 @@ gate không nằm trong CI; sign-off gate chỉ kiểm tra file tồn tại.
 | 8 | Principal SRE / DevOps (R/A) | Principal SRE | ____________ | ____________ | ____________ |
 | 9 | Product Owner (I) | Product Manager | ____________ | ____________ | ____________ |
 
-*Chuyển tiếp: sau khi đủ 9 chữ ký, lưu biên bản vào `evidence/signoff/release-board.json` để CI cho phép auto-push GitOps.*
+*Chuyển tiếp theo giao thức hai commit: Hội đồng ký source commit `C`; tạo commit attestation `A` chỉ thêm/sửa `evidence/signoff/release-board.json` với `commit_sha=C`; sau đó mới tạo release tag trỏ vào `A`. CI bắt buộc `parent(A)=C`, diff của `A` chỉ có đúng tệp biên bản, và PRR artifact phải thuộc `A`. Nếu có bất kỳ thay đổi code/config nào sau `C`, phải hủy attestation và tái thẩm định từ commit nguồn mới.*

@@ -49,3 +49,21 @@
 
 - Triệu chứng: `file_path` có thể thoát `data/raw`; `_load_storage()` không index nội dung mới.
 - Khắc phục: `resolve/relative_to`, hỗ trợ delete, rebuild persisted index trong worker thread rồi reset retriever singleton.
+
+## Release attestation tự-tham-chiếu SHA
+
+- Triệu chứng: CI yêu cầu `evidence/signoff/release-board.json.commit_sha == github.sha` trong khi chính tệp biên bản phải được commit vào SHA đó; không thể tạo artifact trung thực thỏa điều kiện.
+- Nguyên nhân: một Git commit không thể chứa trước SHA của chính nó; đồng thời job publish từng đọc PRR tracked trong checkout thay vì artifact vừa sinh ở workflow hiện tại.
+- Khắc phục: dùng giao thức hai commit. Hội đồng ký source commit `C`; commit `A` chỉ chứa biên bản có `commit_sha=C`; tag trỏ vào `A`. CI tải `prr-evidence-<SHA-A>`, xác minh `parent(A)=C` và diff `C..A` chỉ có `evidence/signoff/release-board.json` trước mọi thao tác push.
+
+## Unit test ghi vào SQLite tracked
+
+- Triệu chứng: chạy full suite làm thay đổi `data/memory/long_term_store.db` dù source không đổi.
+- Nguyên nhân: một test khởi tạo `LongTermStore(force_sqlite=True)` mà không truyền `storage_dir`, nên dùng đường dẫn project mặc định.
+- Khắc phục: mọi unit test SQLite phải dùng `tmp_path`; regression AST quét toàn bộ `tests/unit/test_*.py` và từ chối `force_sqlite=True` thiếu `storage_dir`.
+
+## Circuit breaker test phụ thuộc tốc độ runner
+
+- Triệu chứng: assertion trạng thái `OPEN` thỉnh thoảng thấy `HALF_OPEN` khi chạy xdist, đặc biệt lúc logging chậm.
+- Nguyên nhân: test đặt recovery window 100 ms rồi sleep; độ trễ scheduler/logging có thể vượt cửa sổ trước assertion.
+- Khắc phục: dùng recovery window 60 giây và dịch `last_failure_time` vượt ngưỡng để kiểm tra transition, không sleep và không patch đồng hồ toàn cục.

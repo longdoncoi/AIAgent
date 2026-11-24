@@ -44,6 +44,9 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
         return {
             "user_id": "anonymous_user",
             "role": "admin" if settings.environment == "test" else "guest",
+            "roles": ["admin"] if settings.environment == "test" else ["guest"],
+            "department": "public",
+            "client_id": "anonymous",
             "token": "",
         }
 
@@ -59,7 +62,14 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
     # Strictly restrict testing tokens to test/development environments (strictly blocked in production)
     if settings.environment in ("development", "test"):
         if token in ["admin_token", "test_token", "secret"]:
-            return {"user_id": "test_admin", "role": "admin", "token": token}
+            return {
+                "user_id": "test_admin",
+                "role": "admin",
+                "roles": ["admin"],
+                "department": "engineering",
+                "client_id": "test",
+                "token": token,
+            }
 
     try:
         # Validate the full claim set at every trust boundary. A token without
@@ -73,13 +83,42 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
             options=cast(Any, {"require": ["exp", "iat", "sub", "aud", "iss"]}),
         )
         user_id = str(payload.get("sub") or payload.get("user_id") or "authenticated_user")
-        role = str(payload.get("role", "user"))
-        if role not in {"admin", "supervisor", "operator", "user", "guest"}:
+        role = str(payload.get("role", "user")).lower()
+        raw_roles = payload.get("roles", [role])
+        if isinstance(raw_roles, str):
+            raw_roles = [raw_roles]
+        if not isinstance(raw_roles, list):
+            raise HTTPException(status_code=403, detail="Invalid roles claim.")
+        roles = sorted({str(item).lower() for item in raw_roles} | {role})
+        allowed_roles = {"admin", "supervisor", "operator", "user", "guest"}
+        if role not in allowed_roles or not set(roles).issubset(allowed_roles):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Unrecognized role claim: {role}",
+                detail="Unrecognized role claim.",
             )
-        return {"user_id": user_id, "role": role, "token": token}
+        department = str(payload.get("department") or "public").strip().lower()
+        # Cost allocation must use a bounded tenant/application identifier, not
+        # fall back to the per-user subject (which would create unbounded metric
+        # cardinality and misattribute spend).
+        client_id = str(
+            payload.get("client_id")
+            or payload.get("tenant_id")
+            or payload.get("azp")
+            or "unattributed"
+        ).strip().lower()
+        if not department or len(department) > 128 or not department.replace("-", "").replace("_", "").isalnum():
+            raise HTTPException(status_code=403, detail="Invalid department claim.")
+        normalized_client_id = client_id.replace("-", "").replace("_", "").replace(".", "")
+        if not client_id or len(client_id) > 128 or not normalized_client_id.isalnum():
+            raise HTTPException(status_code=403, detail="Invalid client_id claim.")
+        return {
+            "user_id": user_id,
+            "role": role,
+            "roles": roles,
+            "department": department,
+            "client_id": client_id,
+            "token": token,
+        }
     except jwt.PyJWTError as e:
         # Never downgrade an invalid token into an authenticated identity.
         logger.warning("Rejected invalid JWT: %s", e)

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import base64
+import json
+import os
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,6 +17,7 @@ from src.agentic.safety.approvals import (
     issue_approval_grant,
     issue_call_grant,
     verify_approval_grant,
+    verify_tool_call_grant,
 )
 from src.agentic.safety.guardrails import GuardrailManager
 
@@ -22,7 +26,7 @@ def _prod_overrides() -> dict[str, object]:
     return {
         "jwt_secret_key": "custom-secure-prod-key-12345",
         "s2s_internal_token": "custom-secure-s2s-token-12345",
-        "approval_signing_key": "dedicated-approval-key-12345",
+        "approval_private_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
         "litellm_api_key": "sk-real-prod-key-12345",
         "neo4j_password": "real-neo4j-password-12345",
         "postgres_uri": "postgresql://u:real-password@pgbouncer-svc:6432/agentic_db",
@@ -48,8 +52,8 @@ def test_unknown_environment_is_rejected(value: str) -> None:
 
 def test_production_requires_dedicated_approval_key() -> None:
     overrides = _prod_overrides()
-    overrides["approval_signing_key"] = None
-    with pytest.raises(ValueError, match="approval_signing_key"):
+    overrides["approval_private_key"] = None
+    with pytest.raises(ValueError, match="approval_private_key"):
         Settings(environment="production", **overrides)
 
 
@@ -67,10 +71,18 @@ def test_production_rejects_placeholder_secrets() -> None:
 
 def test_approval_key_is_not_derived_from_s2s_token() -> None:
     base = _prod_overrides()
-    rest = {k: v for k, v in base.items() if k != "approval_signing_key"}
-    a = Settings(environment="production", approval_signing_key="key-a", **rest)
-    b = Settings(environment="production", approval_signing_key="key-b", **rest)
-    assert a.approval_key != b.approval_key
+    rest = {k: v for k, v in base.items() if k != "approval_private_key"}
+    a = Settings(
+        environment="production",
+        approval_private_key="AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+        **rest,
+    )
+    b = Settings(
+        environment="production",
+        approval_private_key="AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+        **rest,
+    )
+    assert a.approval_private_key != b.approval_private_key
 
 
 def test_owner_is_binding_not_wildcard() -> None:
@@ -103,6 +115,158 @@ def test_call_grant_is_argument_bound_and_single_use() -> None:
     assert verify_approval_grant(call, arguments=args, **common) is not None
     assert verify_approval_grant(call, arguments=args, **common) is None
     assert verify_approval_grant(call, arguments={"command": "curl evil"}, **common) is None
+
+
+def test_server_boundary_verifier_rejects_step_token_and_argument_tampering() -> None:
+    step_token = issue_approval_grant(
+        step_id="s-boundary",
+        fingerprint="fp",
+        owner_id="alice",
+        agent_name="coding_agent",
+        tools=["code_exec_bash"],
+    )
+    step = verify_approval_grant(
+        step_token,
+        step_id="s-boundary",
+        fingerprint="fp",
+        owner_id="alice",
+        agent_name="coding_agent",
+    )
+    assert step is not None
+    args = {"command": "pytest -q"}
+    assert verify_tool_call_grant(
+        step_token, tool_name="code_exec_bash", arguments=args
+    ) is None
+    call_token = issue_call_grant(
+        step_grant=step, tool_name="code_exec_bash", arguments=args
+    )
+    assert verify_tool_call_grant(
+        call_token, tool_name="code_exec_bash", arguments={"command": "curl evil"}
+    ) is None
+    assert verify_tool_call_grant(
+        call_token, tool_name="code_exec_bash", arguments=args
+    ) is not None
+
+
+def test_asymmetric_grant_works_across_least_privilege_workloads() -> None:
+    private_key = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+    public_key = "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+    common = {
+        "environment": "production",
+        "s2s_internal_token": "custom-secure-s2s-token-12345",
+        "require_authentication": True,
+        "enable_knowledge_graph": False,
+    }
+    api_settings = Settings(
+        **common,
+        service_role="api",
+        jwt_secret_key="custom-secure-prod-key-12345",
+        approval_private_key=private_key,
+        litellm_api_key="sk-real-prod-key-12345",
+        postgres_uri="postgresql://u:password@pgbouncer-svc:6432/db",
+        use_postgres_checkpoint=True,
+    )
+    agent_settings = Settings(
+        **common,
+        service_role="agent",
+        approval_public_key=public_key,
+        litellm_api_key="sk-real-prod-key-12345",
+    )
+    mcp_settings = Settings(
+        **common,
+        service_role="mcp",
+        approval_public_key=public_key,
+    )
+
+    step_token = issue_approval_grant(
+        step_id="cross-role",
+        fingerprint="fp",
+        owner_id="alice",
+        agent_name="coding_agent",
+        tools=["code_exec_bash"],
+        settings=api_settings,
+    )
+    step = verify_approval_grant(
+        step_token,
+        step_id="cross-role",
+        fingerprint="fp",
+        owner_id="alice",
+        agent_name="coding_agent",
+        settings=agent_settings,
+    )
+    assert step is not None
+    with pytest.raises(ValueError, match="not covered"):
+        issue_call_grant(
+            step_grant=step,
+            tool_name="repo_write_file",
+            arguments={"file_path": "x", "content": "y"},
+            settings=agent_settings,
+        )
+    with pytest.raises(ValueError, match="approval_private_key"):
+        issue_approval_grant(
+            step_id="forged",
+            fingerprint="fp",
+            owner_id="alice",
+            agent_name="coding_agent",
+            settings=agent_settings,
+        )
+
+    args = {"command": "pytest -q"}
+    call_token = issue_call_grant(
+        step_grant=step,
+        tool_name="code_exec_bash",
+        arguments=args,
+        settings=agent_settings,
+    )
+    redis = MagicMock()
+    redis.set.return_value = True
+    with patch("src.agentic.safety.approvals.get_redis_client", return_value=redis):
+        assert verify_tool_call_grant(
+            call_token,
+            tool_name="code_exec_bash",
+            arguments=args,
+            settings=mcp_settings,
+        ) is not None
+
+
+def test_verifier_workload_rejects_private_approval_key() -> None:
+    with pytest.raises(ValueError, match="forbidden outside"):
+        Settings(
+            environment="production",
+            service_role="agent",
+            s2s_internal_token="custom-secure-s2s-token-12345",
+            require_authentication=True,
+            enable_knowledge_graph=False,
+            approval_private_key="AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+            approval_public_key="A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+            litellm_api_key="sk-real-prod-key-12345",
+        )
+
+
+@pytest.mark.asyncio
+async def test_mcp_boundary_denies_direct_high_risk_call_without_grant() -> None:
+    from src.agentic.tools.servers.security import MCPServiceAuthMiddleware
+
+    middleware = MCPServiceAuthMiddleware(MagicMock())
+    sent: list[dict[str, object]] = []
+
+    async def send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    body = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "repo_write_file",
+                "arguments": {"file_path": "x.txt", "content": "unsafe"},
+            },
+        }
+    ).encode()
+    allowed = await middleware._authorize_tool_call({}, body, send)
+    assert allowed is False
+    assert sent[0]["status"] == 403
 
 
 def test_call_grant_requires_args_digest() -> None:
@@ -155,6 +319,34 @@ def test_normalised_text_is_returned() -> None:
 def test_nested_tool_arguments_are_validated() -> None:
     with pytest.raises(Exception):
         GuardrailManager().validate_tool_input("tool", {"outer": {"inner": ["../../etc/passwd"]}})
+
+
+def test_repo_server_does_not_follow_symlink_outside_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.agentic.tools.servers.repo_server import (
+        list_files_core,
+        read_file_core,
+        search_symbol_core,
+    )
+
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    (outside / "secret.txt").write_text("EXTERNAL_SECRET_MARKER", encoding="utf-8")
+    link = workspace / "escape"
+    try:
+        os.symlink(outside, link, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink creation unavailable on this platform: {exc}")
+
+    monkeypatch.setenv("WORKSPACE_ROOT", str(workspace))
+    assert "Security Violation" in read_file_core("escape/secret.txt")
+    search_result = search_symbol_core("EXTERNAL_SECRET_MARKER")
+    assert search_result == "No matches found for 'EXTERNAL_SECRET_MARKER'."
+    assert "secret.txt:" not in search_result
+    assert "escape" not in list_files_core(".", max_depth=3)
 
 
 @pytest.mark.asyncio

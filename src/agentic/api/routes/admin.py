@@ -9,8 +9,14 @@ from pydantic import BaseModel, Field
 
 from src.agentic.api.deps import require_role
 from src.agentic.cache.rag_cache import get_rag_cache
+from src.agentic.core.config import get_settings
 from src.agentic.llm.gateway import reload_gateway_config
-from src.agentic.memory.data_lifecycle import PurgePermissionError, purge_user_data
+from src.agentic.memory.data_lifecycle import (
+    PurgeBackendUnavailable,
+    PurgePermissionError,
+    cleanup_stale_postgres_checkpoints,
+    purge_user_data,
+)
 from src.agentic.memory.redis_saver import RedisSaver
 from src.agentic.memory.short_term import get_checkpointer
 from src.agentic.safety.policy import reload_policy_manager
@@ -63,11 +69,22 @@ async def cleanup_checkpoints_endpoint(
     logger.info(f"Admin '{user_id}' requested checkpoint cleanup (max_idle={max_idle_seconds}s).")
 
     checkpointer = get_checkpointer()
+    settings = get_settings()
     cleaned = 0
     if isinstance(checkpointer, RedisSaver):
         cleaned = await checkpointer.acleanup_inactive_threads(
             max_idle_seconds=max_idle_seconds
         )
+    elif settings.use_postgres_checkpoint or settings.is_production:
+        try:
+            cleaned = await asyncio.to_thread(
+                cleanup_stale_postgres_checkpoints, max_idle_seconds
+            )
+        except PurgeBackendUnavailable as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
 
     return {
         "status": "ok",
@@ -119,6 +136,10 @@ async def purge_user_data_endpoint(
         report = await purge_user_data(user_id, requested.thread_id, dry_run=preview)
     except PurgePermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except PurgeBackendUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return report.to_dict()

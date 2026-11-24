@@ -1,5 +1,6 @@
 """Application configuration using Pydantic Settings."""
 
+import base64
 import hashlib
 from functools import lru_cache
 from pathlib import Path
@@ -9,6 +10,7 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["development", "test", "staging", "production"]
+ServiceRole = Literal["all", "api", "agent", "mcp", "maintenance"]
 
 
 class Settings(BaseSettings):
@@ -27,6 +29,8 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
     environment: Environment = "development"
+    # Workload-aware validation prevents broad, shared production Secrets.
+    service_role: ServiceRole = "all"
     log_level: str = "INFO"
     debug: bool = True
     allowed_origins: list[str] = Field(
@@ -99,8 +103,11 @@ class Settings(BaseSettings):
     require_authentication: bool = False
     enable_docker_sandbox: bool = True
     s2s_internal_token: str = "agentic-internal-s2s-token-2026"
-    # Dedicated HITL signing key, never derived from the shared S2S credential.
+    # Legacy development-only seed. Production uses an asymmetric keypair:
+    # private key only in the API/supervisor, public key in agents and MCP.
     approval_signing_key: str | None = None
+    approval_private_key: str | None = None
+    approval_public_key: str | None = None
     approval_grant_ttl_seconds: int = 60
     jwt_audience: str = "agentic-api"
     jwt_issuer: str = "agentic-platform"
@@ -177,7 +184,9 @@ class Settings(BaseSettings):
     ragas_context_recall_threshold: float = 0.75
 
     # Observability & LangSmith
-    enable_tracing: bool = True
+    # Development/test tracing is opt-in to avoid retrying a nonexistent local
+    # collector. Production forces this on and K8s supplies the OTLP endpoint.
+    enable_tracing: bool = False
     langchain_tracing_v2: bool = False
     langchain_api_key: str | None = None
     langchain_project: str = "agentic-platform"
@@ -193,6 +202,21 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return value.strip().lower()
         return value
+
+    @field_validator("approval_private_key", "approval_public_key")
+    @classmethod
+    def validate_approval_key_encoding(cls, value: str | None) -> str | None:
+        """Reject malformed Ed25519 material during process startup."""
+        if value is None:
+            return None
+        encoded = value.removeprefix("base64:").strip()
+        try:
+            raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        except Exception as exc:
+            raise ValueError("approval Ed25519 keys must be URL-safe base64") from exc
+        if len(raw) != 32:
+            raise ValueError("approval Ed25519 keys must encode exactly 32 bytes")
+        return encoded
 
     @property
     def is_production(self) -> bool:
@@ -221,7 +245,7 @@ class Settings(BaseSettings):
 
     @property
     def approval_key(self) -> str:
-        """Dedicated HITL signing material; never derived from a transport token."""
+        """Return the deprecated local-only seed used by development tests."""
         if self.approval_signing_key:
             return self.approval_signing_key
         material = f"agentic-approval-dev-only\x00{self.jwt_secret_key}"
@@ -247,7 +271,12 @@ class Settings(BaseSettings):
                 "changeme",
                 "default",
             ]
-            if self.jwt_secret_key in insecure_keys:
+            api_roles = {"all", "api"}
+            authenticated_roles = {"all", "api", "agent", "mcp"}
+            model_roles = {"all", "api", "agent"}
+            database_roles = {"all", "api", "maintenance"}
+
+            if self.service_role in api_roles and self.jwt_secret_key in insecure_keys:
                 raise ValueError(
                     "Production Inviolable Violated: jwt_secret_key cannot be the default insecure placeholder in production."
                 )
@@ -257,15 +286,22 @@ class Settings(BaseSettings):
                 "changeme",
                 "default",
             ]
-            if self.s2s_internal_token in insecure_s2s:
+            if (
+                self.service_role in authenticated_roles
+                and self.s2s_internal_token in insecure_s2s
+            ):
                 raise ValueError(
                     "Production Inviolable Violated: s2s_internal_token cannot be the default insecure placeholder in production."
                 )
-            if not self.require_authentication:
+            if self.service_role in authenticated_roles and not self.require_authentication:
                 raise ValueError(
                     "Production Inviolable Violated: require_authentication must be True in production environment."
                 )
-            if not self.use_postgres_checkpoint and not self.use_redis_checkpoint:
+            if (
+                self.service_role in api_roles
+                and not self.use_postgres_checkpoint
+                and not self.use_redis_checkpoint
+            ):
                 raise ValueError(
                     "Production Inviolable Violated: use_postgres_checkpoint must be True (or use_redis_checkpoint must be True) in production to prevent state loss across replicas."
                 )
@@ -281,28 +317,54 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "Production Inviolable Violated: local A2A fallback must be disabled."
                 )
-            if not self.use_remote_mcp:
+            if self.service_role in {"all", "api", "agent"} and not self.use_remote_mcp:
                 raise ValueError(
                     "Production Inviolable Violated: MCP tools must use remote protocol servers."
                 )
-            if "*" in self.allowed_origins:
+            if self.service_role in api_roles and "*" in self.allowed_origins:
                 raise ValueError(
                     "Production Inviolable Violated: allowed_origins cannot contain wildcard '*' when allow_credentials is True in production."
                 )
-            if not self.approval_signing_key:
+            if self.service_role in api_roles and not self.approval_private_key:
                 raise ValueError(
-                    "Production Inviolable Violated: approval_signing_key must be explicitly configured in production."
+                    "Production Inviolable Violated: approval_private_key must be explicitly configured for the API/supervisor."
+                )
+            if self.service_role in {"agent", "mcp", "maintenance"} and self.approval_private_key:
+                raise ValueError(
+                    "Production Inviolable Violated: approval_private_key is forbidden outside the API/supervisor."
+                )
+            if self.service_role in {"agent", "mcp"} and not self.approval_public_key:
+                raise ValueError(
+                    "Production Inviolable Violated: approval_public_key must be explicitly configured for verifier workloads."
+                )
+            if (
+                self.enable_qdrant
+                and self.service_role in {"all", "api", "agent"}
+                and not self.qdrant_api_key
+            ):
+                raise ValueError(
+                    "Production Inviolable Violated: qdrant_api_key is required when Qdrant is enabled."
                 )
             placeholder_secrets = {
-                "litellm_api_key": (self.litellm_api_key, {"sk-dummy-key"}),
-                "neo4j_password": (self.neo4j_password, {"agentic_neo4j_password"}),
+                "litellm_api_key": (
+                    self.litellm_api_key,
+                    {"sk-dummy-key"},
+                    self.service_role in model_roles,
+                ),
+                "neo4j_password": (
+                    self.neo4j_password,
+                    {"agentic_neo4j_password"},
+                    self.enable_knowledge_graph
+                    and self.service_role in {"all", "agent"},
+                ),
                 "postgres_uri": (
                     self.postgres_uri,
                     {"postgresql://postgres:postgres@localhost:5432/agentic_db"},
+                    self.service_role in database_roles,
                 ),
             }
-            for name, (value, placeholders) in placeholder_secrets.items():
-                if value in placeholders:
+            for name, (value, placeholders, required) in placeholder_secrets.items():
+                if required and value in placeholders:
                     raise ValueError(
                         f"Production Inviolable Violated: {name} uses an insecure placeholder in production."
                     )

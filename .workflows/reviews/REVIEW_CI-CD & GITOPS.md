@@ -51,6 +51,13 @@ docker build -f deploy/docker/Dockerfile.api -t agentic-platform/api:audit-test 
 trivy image --severity CRITICAL,HIGH agentic-platform/api:audit-test
 ```
 
+### Bước 4: Tạo Attestation Không Tự-Tham-Chiếu
+
+1. Chốt source commit `C`, chạy đủ gate và lấy 9 chữ ký cho SHA đầy đủ của `C` cùng release tag dự kiến.
+2. Tạo commit `A` kế tiếp chỉ chứa `evidence/signoff/release-board.json`; trường `commit_sha` phải bằng `C`.
+3. Tạo release tag trỏ vào `A`. Job phát hành tải `prr-evidence-<SHA-A>` từ workflow hiện tại, kiểm tra `parent(A)=C` và từ chối nếu diff của `A` chứa bất kỳ path nào khác.
+4. Không amend `A`, không chèn code/config sau khi ký. Mọi thay đổi làm mất hiệu lực chữ ký và yêu cầu quay lại bước 1.
+
 ---
 
 ## 4. Danh Mục Giám Sát Sau Triển Khai (Post-Deployment Hypercare)

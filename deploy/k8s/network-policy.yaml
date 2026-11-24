@@ -37,7 +37,7 @@ spec:
         - {protocol: UDP, port: 53}
         - {protocol: TCP, port: 53}
 ---
-# Allow API to receive traffic on 8000 and reach sub-agents, MCP tools,
+# Allow API to receive traffic on 8000 and reach sub-agents,
 # pgBouncer and infrastructure services. Caller identity is enforced at the
 # mesh layer by Istio AuthorizationPolicy `allow-ingress-to-api`.
 apiVersion: networking.k8s.io/v1
@@ -59,16 +59,10 @@ spec:
         - podSelector:
             matchLabels:
               tier: l3-agent
-        - podSelector:
-            matchLabels:
-              tier: l4-tools
       ports:
         - {protocol: TCP, port: 9100}
         - {protocol: TCP, port: 9101}
         - {protocol: TCP, port: 9102}
-        - {protocol: TCP, port: 9001}
-        - {protocol: TCP, port: 9002}
-        - {protocol: TCP, port: 9003}
     # Database traffic terminates at pgBouncer (tier: database-pooler).
     - to:
         - podSelector:
@@ -88,7 +82,7 @@ spec:
         - {protocol: TCP, port: 4000}  # LiteLLM
         - {protocol: TCP, port: 4317}  # OTel Collector
 ---
-# Allow Sub-Agents to accept API calls and reach Model Gateway, MCP and telemetry.
+# Allow Sub-Agents to accept API calls and reach Model Gateway and telemetry.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -110,14 +104,6 @@ spec:
         - {protocol: TCP, port: 9102}
   egress:
     - to:
-        - podSelector:
-            matchLabels:
-              tier: l4-tools
-      ports:
-        - {protocol: TCP, port: 9001}
-        - {protocol: TCP, port: 9002}
-        - {protocol: TCP, port: 9003}
-    - to:
         - ipBlock:
             cidr: 10.0.0.0/8
             except: ["169.254.169.254/32"]
@@ -125,29 +111,66 @@ spec:
         - {protocol: TCP, port: 4000}  # LiteLLM
         - {protocol: TCP, port: 4317}  # OTel Collector
 ---
-# MCP servers only accept L3 agent / API traffic. Web search may reach HTTPS.
+# Least-privilege tool routes: chat -> web search, coding -> repo/code exec.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-mcp-tools
+  name: allow-chat-to-web-search
   namespace: agentic-platform
 spec:
   podSelector:
     matchLabels:
-      tier: l4-tools
+      app: agentic-chat-agent
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: agentic-mcp-web-search
+      ports:
+        - {protocol: TCP, port: 9003}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-coding-to-approved-tools
+  namespace: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: agentic-coding-agent
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: agentic-mcp-code-exec
+      ports:
+        - {protocol: TCP, port: 9001}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: agentic-mcp-repo
+      ports:
+        - {protocol: TCP, port: 9002}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-code-exec-ingress
+  namespace: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: agentic-mcp-code-exec
   policyTypes: [Ingress, Egress]
   ingress:
     - from:
         - podSelector:
             matchLabels:
-              tier: l3-agent
-        - podSelector:
-            matchLabels:
-              app: agentic-api
+              app: agentic-coding-agent
       ports:
         - {protocol: TCP, port: 9001}
-        - {protocol: TCP, port: 9002}
-        - {protocol: TCP, port: 9003}
   egress:
     - to:
         - ipBlock:
@@ -155,6 +178,56 @@ spec:
             except: ["169.254.169.254/32"]
       ports:
         - {protocol: TCP, port: 4317}  # OTel Collector
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-repo-ingress
+  namespace: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: agentic-mcp-repo
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: agentic-coding-agent
+      ports:
+        - {protocol: TCP, port: 9002}
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/8
+            except: ["169.254.169.254/32"]
+      ports:
+        - {protocol: TCP, port: 4317}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-web-search-ingress-egress
+  namespace: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: agentic-mcp-web-search
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: agentic-chat-agent
+      ports:
+        - {protocol: TCP, port: 9003}
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/8
+            except: ["169.254.169.254/32"]
+      ports:
+        - {protocol: TCP, port: 4317}
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
@@ -186,6 +259,9 @@ spec:
         - podSelector:
             matchLabels:
               app: agentic-db-backup
+        - podSelector:
+            matchLabels:
+              app: agentic-checkpoint-retention
       ports:
         - {protocol: TCP, port: 5432}
   egress:
@@ -277,3 +353,25 @@ spec:
             except: ["10.0.0.0/8", "169.254.169.254/32"]
       ports:
         - {protocol: TCP, port: 443}  # S3/GCS object storage backup target
+---
+# Scheduled checkpoint retention only needs PostgreSQL access.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-checkpoint-retention
+  namespace: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: agentic-checkpoint-retention
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: pgbouncer
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - {protocol: TCP, port: 5432}

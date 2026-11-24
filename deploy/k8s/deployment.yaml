@@ -47,11 +47,14 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000
+          env:
+            - name: SERVICE_ROLE
+              value: "api"
           envFrom:
             - configMapRef:
                 name: agentic-config
             - secretRef:
-                name: agentic-secrets
+                name: agentic-api-secrets
           resources:
             requests:
               cpu: "500m"
@@ -154,6 +157,10 @@ spec:
               type: RuntimeDefault
           image: ghcr.io/agentic-platform/agent:IMMUTABLE_SHA_REQUIRED
           env:
+            - name: SERVICE_ROLE
+              value: "agent"
+            - name: ENABLE_QDRANT
+              value: "false"
             - name: AGENT_MODULE
               value: "src.agentic.agents.chat.server"
             - name: AGENT_PORT
@@ -162,7 +169,7 @@ spec:
             - configMapRef:
                 name: agentic-config
             - secretRef:
-                name: agentic-secrets
+                name: agentic-chat-secrets
           ports:
             - containerPort: 9100
           resources:
@@ -261,6 +268,8 @@ spec:
               type: RuntimeDefault
           image: ghcr.io/agentic-platform/agent:IMMUTABLE_SHA_REQUIRED
           env:
+            - name: SERVICE_ROLE
+              value: "agent"
             - name: AGENT_MODULE
               value: "src.agentic.agents.rag.server"
             - name: AGENT_PORT
@@ -269,7 +278,7 @@ spec:
             - configMapRef:
                 name: agentic-config
             - secretRef:
-                name: agentic-secrets
+                name: agentic-rag-secrets
           ports:
             - containerPort: 9101
           resources:
@@ -368,6 +377,10 @@ spec:
               type: RuntimeDefault
           image: ghcr.io/agentic-platform/agent:IMMUTABLE_SHA_REQUIRED
           env:
+            - name: SERVICE_ROLE
+              value: "agent"
+            - name: ENABLE_QDRANT
+              value: "false"
             - name: AGENT_MODULE
               value: "src.agentic.agents.coding.server"
             - name: AGENT_PORT
@@ -376,7 +389,7 @@ spec:
             - configMapRef:
                 name: agentic-config
             - secretRef:
-                name: agentic-secrets
+                name: agentic-coding-secrets
           ports:
             - containerPort: 9102
           resources:
@@ -475,6 +488,8 @@ spec:
               type: RuntimeDefault
           image: ghcr.io/agentic-platform/mcp:IMMUTABLE_SHA_REQUIRED
           env:
+            - name: SERVICE_ROLE
+              value: "mcp"
             - name: MCP_SERVER_MODULE
               value: "src.agentic.tools.servers.code_exec_server"
             - name: MCP_PORT
@@ -483,7 +498,7 @@ spec:
             - configMapRef:
                 name: agentic-config
             - secretRef:
-                name: agentic-secrets
+                name: agentic-mcp-secrets
           ports:
             - containerPort: 9001
           # FastMCP servers have no HTTP /health route and require the internal
@@ -564,6 +579,8 @@ spec:
               type: RuntimeDefault
           image: ghcr.io/agentic-platform/mcp:IMMUTABLE_SHA_REQUIRED
           env:
+            - name: SERVICE_ROLE
+              value: "mcp"
             - name: MCP_SERVER_MODULE
               value: "src.agentic.tools.servers.repo_server"
             - name: MCP_PORT
@@ -572,7 +589,7 @@ spec:
             - configMapRef:
                 name: agentic-config
             - secretRef:
-                name: agentic-secrets
+                name: agentic-mcp-secrets
           ports:
             - containerPort: 9002
           livenessProbe:
@@ -646,6 +663,8 @@ spec:
               type: RuntimeDefault
           image: ghcr.io/agentic-platform/mcp:IMMUTABLE_SHA_REQUIRED
           env:
+            - name: SERVICE_ROLE
+              value: "mcp"
             - name: MCP_SERVER_MODULE
               value: "src.agentic.tools.servers.web_search_server"
             - name: MCP_PORT
@@ -654,7 +673,7 @@ spec:
             - configMapRef:
                 name: agentic-config
             - secretRef:
-                name: agentic-secrets
+                name: agentic-mcp-secrets
           ports:
             - containerPort: 9003
           livenessProbe:

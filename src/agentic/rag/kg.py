@@ -66,8 +66,10 @@ class KnowledgeGraphStore:
                 for node_data in data.get("nodes", []):
                     self.graph.add_node(node_data["id"], **node_data.get("attrs", {}))
                 for edge in data.get("edges", []):
+                    attrs = dict(edge.get("attrs") or {})
+                    attrs.setdefault("relation", edge.get("relation", "related_to"))
                     self.graph.add_edge(
-                        edge["u"], edge["v"], relation=edge.get("relation", "related_to")
+                        edge["u"], edge["v"], **attrs
                     )
                 logger.info(
                     f"Loaded {self.graph.number_of_nodes()} nodes and {self.graph.number_of_edges()} edges into Knowledge Graph."
@@ -81,7 +83,7 @@ class KnowledgeGraphStore:
             self.persist_path.parent.mkdir(parents=True, exist_ok=True)
             nodes = [{"id": n, "attrs": self.graph.nodes[n]} for n in self.graph.nodes()]
             edges = [
-                {"u": u, "v": v, "relation": self.graph.edges[u, v].get("relation", "related_to")}
+                {"u": u, "v": v, "attrs": dict(self.graph.edges[u, v])}
                 for u, v in self.graph.edges()
             ]
             with open(self.persist_path, "w", encoding="utf-8") as f:
@@ -100,10 +102,14 @@ class KnowledgeGraphStore:
         if not sub or not obj:
             return
 
-        # 1. Update in-memory NetworkX graph
-        self.graph.add_node(sub, type="Entity")
-        self.graph.add_node(obj, type="Entity")
-        self.graph.add_edge(sub, obj, relation=pred, **(metadata or {}))
+        security = dict(metadata or {})
+        tenant_id = str(security.get("tenant_id") or "")
+        sub_key = f"{tenant_id}::{sub}" if tenant_id else sub
+        obj_key = f"{tenant_id}::{obj}" if tenant_id else obj
+        # Tenant-qualified node ids prevent cross-organization edge merging.
+        self.graph.add_node(sub_key, type="Entity", name=sub, **security)
+        self.graph.add_node(obj_key, type="Entity", name=obj, **security)
+        self.graph.add_edge(sub_key, obj_key, relation=pred, **security)
 
         # 2. Update Neo4j if active
         if self._neo4j_driver is not None:
@@ -111,13 +117,14 @@ class KnowledgeGraphStore:
                 with self._neo4j_driver.session() as session:
                     session.run(
                         """
-                        MERGE (s:Entity {name: $sub})
-                        MERGE (o:Entity {name: $obj})
-                        MERGE (s)-[r:RELATION {type: $pred}]->(o)
+                        MERGE (s:Entity {name: $sub, tenant_id: $tenant_id})
+                        MERGE (o:Entity {name: $obj, tenant_id: $tenant_id})
+                        MERGE (s)-[r:RELATION {type: $pred, tenant_id: $tenant_id}]->(o)
                         """,
                         sub=sub,
                         obj=obj,
                         pred=pred,
+                        tenant_id=tenant_id,
                     )
             except Exception as e:
                 logger.debug(f"Neo4j write exception: {e}")
@@ -127,17 +134,23 @@ class KnowledgeGraphStore:
         if not triples:
             return
 
-        batch_rows: list[dict[str, str]] = []
+        batch_rows: list[dict[str, Any]] = []
         for t in triples:
             sub = t.subject.strip()
             obj = t.object_.strip()
             pred = t.predicate.strip().lower()
             if not sub or not obj:
                 continue
-            self.graph.add_node(sub, type="Entity")
-            self.graph.add_node(obj, type="Entity")
-            self.graph.add_edge(sub, obj, relation=pred, **t.metadata)
-            batch_rows.append({"sub": sub, "obj": obj, "pred": pred})
+            security = dict(t.metadata)
+            tenant_id = str(security.get("tenant_id") or "")
+            sub_key = f"{tenant_id}::{sub}" if tenant_id else sub
+            obj_key = f"{tenant_id}::{obj}" if tenant_id else obj
+            self.graph.add_node(sub_key, type="Entity", name=sub, **security)
+            self.graph.add_node(obj_key, type="Entity", name=obj, **security)
+            self.graph.add_edge(sub_key, obj_key, relation=pred, **security)
+            batch_rows.append(
+                {"sub": sub, "obj": obj, "pred": pred, "tenant_id": tenant_id}
+            )
 
         if self._neo4j_driver is not None and batch_rows:
             try:
@@ -147,9 +160,9 @@ class KnowledgeGraphStore:
                         session.run(
                             """
                             UNWIND $batch AS row
-                            MERGE (s:Entity {name: row.sub})
-                            MERGE (o:Entity {name: row.obj})
-                            MERGE (s)-[r:RELATION {type: row.pred}]->(o)
+                            MERGE (s:Entity {name: row.sub, tenant_id: row.tenant_id})
+                            MERGE (o:Entity {name: row.obj, tenant_id: row.tenant_id})
+                            MERGE (s)-[r:RELATION {type: row.pred, tenant_id: row.tenant_id}]->(o)
                             """,
                             batch=chunk,
                         )
@@ -191,35 +204,75 @@ class KnowledgeGraphStore:
 
         return triples
 
-    def index_text(self, text: str, source_doc: str = "document") -> int:
+    def index_text(
+        self,
+        text: str,
+        source_doc: str = "document",
+        metadata: dict[str, Any] | None = None,
+    ) -> int:
         """Extracts and adds triples from text to the Knowledge Graph using batch insertion."""
         triples = self.extract_triples_from_text(text)
         for t in triples:
             t.metadata["source"] = source_doc
+            t.metadata.update(metadata or {})
         self.add_triples_batch(triples)
         if triples:
             self.persist()
         return len(triples)
 
-    async def aindex_text(self, text: str, source_doc: str = "document") -> int:
+    async def aindex_text(
+        self,
+        text: str,
+        source_doc: str = "document",
+        metadata: dict[str, Any] | None = None,
+    ) -> int:
         """Asynchronously extracts and adds triples to Knowledge Graph without blocking loop."""
         import asyncio
 
-        return await asyncio.to_thread(self.index_text, text, source_doc)
+        return await asyncio.to_thread(self.index_text, text, source_doc, metadata)
 
-    async def aquery_graph(self, query: str, top_k: int = 5) -> list[NodeWithScore]:
+    async def aquery_graph(
+        self, query: str, top_k: int = 5, filters: dict[str, Any] | None = None
+    ) -> list[NodeWithScore]:
         """Asynchronously queries the Knowledge Graph."""
         import asyncio
 
-        return await asyncio.to_thread(self.query_graph, query, top_k)
+        return await asyncio.to_thread(self.query_graph, query, top_k, filters)
 
-    def query_graph(self, query: str, top_k: int = 5) -> list[NodeWithScore]:
+    @staticmethod
+    def _permitted(attrs: dict[str, Any], filters: dict[str, Any]) -> bool:
+        if not filters:
+            return True
+        if str(attrs.get("tenant_id") or "") != str(filters.get("tenant_id") or ""):
+            return False
+        allowed_roles = attrs.get("allowed_roles")
+        roles = filters.get("user_roles") or []
+        if not isinstance(allowed_roles, (list, tuple, set)) or (
+            "*" not in allowed_roles
+            and not set(map(str, roles)).intersection(map(str, allowed_roles))
+        ):
+            return False
+        department = str(attrs.get("department") or "")
+        if department not in {"*", str(filters.get("department") or "")}:
+            return False
+        acl = attrs.get("acl")
+        principals = filters.get("acl_principals") or []
+        return isinstance(acl, (list, tuple, set)) and bool(
+            set(map(str, acl)).intersection(map(str, principals))
+        )
+
+    def query_graph(
+        self, query: str, top_k: int = 5, filters: dict[str, Any] | None = None
+    ) -> list[NodeWithScore]:
         """Queries the graph for entities matching the query and returns connected knowledge subgraphs."""
         query_terms = [t.lower() for t in query.split() if len(t) > 2]
         matched_nodes: list[tuple[str, float]] = []
 
         for node in self.graph.nodes:
-            node_lower = str(node).lower()
+            attrs = dict(self.graph.nodes[node])
+            if filters and not self._permitted(attrs, filters):
+                continue
+            node_lower = str(attrs.get("name") or node).lower()
             score = sum(1.0 for term in query_terms if term in node_lower)
             if score > 0:
                 matched_nodes.append((node, score))
@@ -228,33 +281,70 @@ class KnowledgeGraphStore:
         results: list[NodeWithScore] = []
 
         for node_id, match_score in matched_nodes[:top_k]:
+            node_attrs = dict(self.graph.nodes[node_id])
+            display_name = str(node_attrs.get("name") or node_id)
             # Collect 1-hop subgraph relationships
             out_edges = list(self.graph.out_edges(node_id, data=True))
             in_edges = list(self.graph.in_edges(node_id, data=True))
 
             rel_descriptions: list[str] = []
             for _, target, data in out_edges[:5]:
+                if filters and not self._permitted(dict(data), filters):
+                    continue
+                target_name = str(self.graph.nodes[target].get("name") or target)
                 rel_descriptions.append(
-                    f"• {node_id} -> [{data.get('relation', 'related_to')}] -> {target}"
+                    f"• {display_name} -> [{data.get('relation', 'related_to')}] -> {target_name}"
                 )
             for source, _, data in in_edges[:5]:
+                if filters and not self._permitted(dict(data), filters):
+                    continue
+                source_name = str(self.graph.nodes[source].get("name") or source)
                 rel_descriptions.append(
-                    f"• {source} -> [{data.get('relation', 'related_to')}] -> {node_id}"
+                    f"• {source_name} -> [{data.get('relation', 'related_to')}] -> {display_name}"
                 )
 
             if rel_descriptions:
-                graph_text = f"Knowledge Graph Entity [{node_id}]:\n" + "\n".join(rel_descriptions)
+                graph_text = f"Knowledge Graph Entity [{display_name}]:\n" + "\n".join(rel_descriptions)
                 results.append(
                     NodeWithScore(
                         node=TextNode(
                             text=graph_text,
-                            metadata={"type": "knowledge_graph", "entity": node_id},
+                            metadata={
+                                **node_attrs,
+                                "type": "knowledge_graph",
+                                "entity": display_name,
+                            },
                         ),
                         score=match_score,
                     )
                 )
 
         return results
+
+    def delete_tenant(self, tenant_id: str) -> int:
+        """Delete all local and Neo4j graph data for one tenant."""
+        doomed = [
+            node
+            for node, attrs in self.graph.nodes(data=True)
+            if str(attrs.get("tenant_id") or "") == tenant_id
+        ]
+        self.graph.remove_nodes_from(doomed)
+        if self._neo4j_driver is not None:
+            with self._neo4j_driver.session() as session:
+                session.run(
+                    "MATCH (n:Entity {tenant_id: $tenant_id}) DETACH DELETE n",
+                    tenant_id=tenant_id,
+                )
+        self.persist()
+        return len(doomed)
+
+    def count_tenant(self, tenant_id: str) -> int:
+        """Count local tenant nodes for an RTBF dry run."""
+        return sum(
+            1
+            for _, attrs in self.graph.nodes(data=True)
+            if str(attrs.get("tenant_id") or "") == tenant_id
+        )
 
 
 _kg_instance: KnowledgeGraphStore | None = None

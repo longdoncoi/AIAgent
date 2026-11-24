@@ -8,9 +8,7 @@ on:
     branches: [ main ]
 
 permissions:
-  contents: write
-  packages: write
-  security-events: write
+  contents: read
 
 jobs:
   # ----------------------------------------------------------------------------
@@ -21,15 +19,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv Package Manager
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           enable-cache: true
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -50,9 +48,11 @@ jobs:
 
       - name: Production Dependency Vulnerability Scan (pip-audit)
         run: |
-          uv export --frozen --no-dev --no-hashes --no-emit-project \
+          # uv.lock already resolves and pins the complete transitive graph.
+          # Do not let pip-audit re-resolve it against a mutable package index.
+          uv export --frozen --no-dev --no-emit-project \
             --output-file "$RUNNER_TEMP/production-requirements.txt"
-          pip-audit --desc on \
+          pip-audit --desc on --no-deps --disable-pip \
             --requirement "$RUNNER_TEMP/production-requirements.txt"
 
   # ----------------------------------------------------------------------------
@@ -64,7 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:f2f98726820d0342055351c6e9d36e705f5bfffb3dd53ff556325114b08afb6d
         env:
           POSTGRES_DB: agentic_db
           POSTGRES_USER: agentic_user
@@ -77,7 +77,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       redis:
-        image: redis:7-alpine
+        image: redis:7-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
         ports:
           - 6379:6379
         options: >-
@@ -94,15 +94,15 @@ jobs:
       ALLOW_HOST_CODE_EXECUTION: "true"
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv Package Manager
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           enable-cache: true
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -140,7 +140,7 @@ jobs:
           CI: "true"
 
       - name: Upload PRR Evidence Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: prr-evidence-${{ github.sha }}
           path: evidence/prr/latest.json
@@ -155,26 +155,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
-      - name: Install PyYAML
-        run: python -m pip install --quiet pyyaml
+      - name: Install uv Package Manager
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+
+      - name: Install Locked Deployment-Test Runtime
+        run: uv sync --frozen --extra dev
 
       - name: Parse every deployment / workflow YAML
         run: |
-          python -c "import yaml,glob; [list(yaml.safe_load_all(open(f,encoding='utf-8'))) for f in glob.glob('deploy/**/*.yaml',recursive=True)+glob.glob('.github/workflows/*.yml')]"
+          uv run --no-sync python -c "import yaml,glob; [list(yaml.safe_load_all(open(f,encoding='utf-8'))) for f in glob.glob('deploy/**/*.yaml',recursive=True)+glob.glob('.github/workflows/*.yml')]"
 
       - name: Run deployment-hardening regression tests
-        run: python -m pytest tests/unit/test_deploy_hardening_v3.py -v
+        run: uv run --no-sync python -m pytest tests/unit/test_deploy_hardening_v3.py -v
 
       - name: Check namespace / ingress / image-pin invariants
         run: |
-          python - <<'PY'
+          uv run --no-sync python - <<'PY'
           import glob, re, sys
           import yaml
 
@@ -246,7 +249,7 @@ jobs:
 
       - name: Verify CI enforces the release gate and sign-off fields
         run: |
-          python - <<'PY'
+          uv run --no-sync python - <<'PY'
           from pathlib import Path
           ci = Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
           required = [
@@ -257,7 +260,7 @@ jobs:
               'verdict',
               'signature',
               'release_tag',
-              'environment: production-release',
+              'environment: production',
           ]
           missing = [x for x in required if x not in ci]
           if missing:
@@ -270,7 +273,7 @@ jobs:
   # ----------------------------------------------------------------------------
   build-and-scan:
     name: Container Build & Trivy Vulnerability Scan
-    needs: [test-and-eval]
+    needs: [test-and-eval, validate-deploy]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     strategy:
@@ -285,13 +288,13 @@ jobs:
             dockerfile: deploy/docker/Dockerfile.mcp
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Build Local Container Image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: ${{ matrix.component.dockerfile }}
@@ -301,12 +304,12 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Run Trivy Vulnerability Scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: '${{ matrix.component.name }}:local-test'
           format: 'table'
           exit-code: '1'
-          ignore-unfixed: true
+          ignore-unfixed: false
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
 
@@ -318,30 +321,43 @@ jobs:
     needs: [test-and-eval, validate-deploy]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    # Manual approval / sign-off enforced by production-release environment.
-    environment: production-release
+    # Manual approval is enforced by the protected GitHub production environment.
+    environment: production
+    env:
+      ENVIRONMENT: "staging"
+      LITELLM_BASE_URL: ${{ vars.LITELLM_BASE_URL }}
+      LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}
+      LLAMA_EMBED_BASE_URL: ${{ vars.LLAMA_EMBED_BASE_URL }}
+      ENABLE_QDRANT: "true"
+      QDRANT_HOST: ${{ vars.QDRANT_HOST }}
+      QDRANT_PORT: ${{ vars.QDRANT_PORT }}
+      QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+      REQUIRE_EMBEDDING_SERVICE: "true"
+      REQUIRE_NEURAL_RERANKER: "true"
+      REQUIRE_MODEL_GATEWAY_READY: "true"
+      RAG_DEFAULT_TENANT_ID: "release-eval"
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv Package Manager
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           enable-cache: true
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
-      - name: Install Release Dependencies (dev + neural + real DeepEval)
+      - name: Install Release Dependencies (dev + eval + neural + real DeepEval)
         run: |
-          uv pip install --system -e ".[dev,neural]"
+          uv pip install --system -e ".[dev,eval,neural]"
           uv pip install --system -e ".[deepeval]"
 
       - name: Run Strict Release Gate
-        # NO env overrides here: release_blockers() treats ENVIRONMENT=test and
-        # CI=true as hard blockers. Deliberately no continue-on-error either.
+        # Uses the job-level staging endpoints/secrets above. Deliberately no
+        # smoke/test override and no continue-on-error.
         run: python evals/release_gate.py
 
   # ----------------------------------------------------------------------------
@@ -349,28 +365,40 @@ jobs:
   # ----------------------------------------------------------------------------
   publish-and-deploy:
     name: Publish Images to GHCR & CD Sync
-    needs: [build-and-scan, release-gate]
-    # Fail closed: tag builds MUST pass the strict release gate before publish.
+    needs: [build-and-scan, validate-deploy, release-gate]
+    # Fail closed: only reviewed release tags may publish artifacts or mutate GitOps.
     if: >-
       always() &&
+      startsWith(github.ref, 'refs/tags/v') &&
       needs.build-and-scan.result == 'success' &&
-      ((github.ref == 'refs/heads/main' && needs.release-gate.result == 'skipped') ||
-       (startsWith(github.ref, 'refs/tags/v') && needs.release-gate.result == 'success'))
+      needs.validate-deploy.result == 'success' &&
+      needs.release-gate.result == 'success'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The signed source commit is the sole parent of the attestation commit.
+          fetch-depth: 2
+
+      - name: Download PRR Evidence for This Commit
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: prr-evidence-${{ github.sha }}
+          path: evidence/prr
 
       # ---- Sign-off verification runs BEFORE any image is pushed ------------
       - name: Verify Release Sign-off & PRR Attestation (fail closed)
         id: signoff
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           EXPECTED_SHA: ${{ github.sha }}
           EXPECTED_TAG: ${{ github.ref_name }}
         run: |
           python - <<'PY'
-          import json, os, pathlib, sys
+          import json, os, pathlib, subprocess, sys
 
           evidence_path = pathlib.Path('evidence/prr/latest.json')
           board_path = pathlib.Path('evidence/signoff/release-board.json')
@@ -389,6 +417,38 @@ jobs:
           expected_tag = os.environ['EXPECTED_TAG']
           errors = []
 
+          # Avoid the impossible requirement for a tracked file to contain the
+          # SHA of the commit that contains itself. Release tags point to an
+          # attestation-only commit; the board signs its sole parent.
+          head_sha = subprocess.check_output(
+              ['git', 'rev-parse', 'HEAD'], text=True
+          ).strip()
+          subject_sha = subprocess.check_output(
+              ['git', 'rev-parse', 'HEAD^'], text=True
+          ).strip()
+          commit_with_parents = subprocess.check_output(
+              ['git', 'rev-list', '--parents', '-n', '1', 'HEAD'], text=True
+          ).split()
+          changed_paths = {
+              path
+              for path in subprocess.check_output(
+                  ['git', 'diff-tree', '--no-commit-id', '--name-only', '-r',
+                   subject_sha, expected_sha],
+                  text=True,
+              ).splitlines()
+              if path
+          }
+          allowed_attestation_paths = {'evidence/signoff/release-board.json'}
+          if head_sha != expected_sha:
+              errors.append(f'checked-out HEAD {head_sha!r} != {expected_sha!r}')
+          if len(commit_with_parents) != 2 or commit_with_parents[1] != subject_sha:
+              errors.append('attestation commit must have exactly one parent')
+          if changed_paths != allowed_attestation_paths:
+              errors.append(
+                  'attestation commit must change only release-board.json; '
+                  f'changed paths: {sorted(changed_paths)!r}'
+              )
+
           # Auto-evidence is honest "PENDING" until a human signs; the board
           # attestation below is the authority for approval.
           if evidence.get('commit_sha') != expected_sha:
@@ -399,9 +459,9 @@ jobs:
           if evidence.get('verdict') not in allowed_evidence_verdicts:
               errors.append(f'PRR verdict {evidence.get("verdict")!r} is not a recognised value')
 
-          # Human sign-off must bind to this exact commit and release tag.
-          if board.get('commit_sha') != expected_sha:
-              errors.append(f'board commit_sha {board.get("commit_sha")!r} != {expected_sha!r}')
+          # Human sign-off binds to the immutable source parent and release tag.
+          if board.get('commit_sha') != subject_sha:
+              errors.append(f'board commit_sha {board.get("commit_sha")!r} != {subject_sha!r}')
           if board.get('release_tag') != expected_tag:
               errors.append(f'board release_tag {board.get("release_tag")!r} != {expected_tag!r}')
           if board.get('production_ready') is not True:
@@ -440,11 +500,25 @@ jobs:
           print('::notice::Release sign-off verified for', expected_tag, expected_sha)
           PY
 
+      # Validate the exact immutable image references before registry login or
+      # any push, so a broken manifest can never publish release artifacts.
+      - name: Validate Kubernetes Manifests & GitOps Definitions
+        run: |
+          curl -fsSL -o kubeconform.tar.gz https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          echo '95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73  kubeconform.tar.gz' | sha256sum --check --strict
+          tar -xzf kubeconform.tar.gz kubeconform
+          kubectl kustomize deploy/k8s | sed "s/sha-REPLACE_WITH_COMMIT_SHA/sha-${GITHUB_SHA}/g" > /tmp/agentic-manifests.yaml
+          if grep -Eq 'image:.*(:latest|IMMUTABLE_SHA_REQUIRED|REPLACE_WITH_COMMIT_SHA)' /tmp/agentic-manifests.yaml; then
+            echo "::error::Rendered manifests contain a mutable/placeholder image tag"
+            exit 1
+          fi
+          ./kubeconform -strict -summary -ignore-missing-schemas /tmp/agentic-manifests.yaml
+
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to GitHub Container Registry (GHCR)
-        uses: docker/login-action@v3
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -456,7 +530,7 @@ jobs:
 
       # Only immutable SHA / semver tags are pushed. `:latest` is never published.
       - name: Build and Push API Image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: deploy/docker/Dockerfile.api
@@ -466,7 +540,7 @@ jobs:
             ghcr.io/${{ env.REPO_LOWER }}/api:${{ github.ref_name }}-sha-${{ github.sha }}
 
       - name: Build and Push Agent Image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: deploy/docker/Dockerfile.agent
@@ -476,7 +550,7 @@ jobs:
             ghcr.io/${{ env.REPO_LOWER }}/agent:${{ github.ref_name }}-sha-${{ github.sha }}
 
       - name: Build and Push MCP Image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: deploy/docker/Dockerfile.mcp
@@ -484,17 +558,6 @@ jobs:
           tags: |
             ghcr.io/${{ env.REPO_LOWER }}/mcp:sha-${{ github.sha }}
             ghcr.io/${{ env.REPO_LOWER }}/mcp:${{ github.ref_name }}-sha-${{ github.sha }}
-
-      - name: Validate Kubernetes Manifests & GitOps Definitions
-        run: |
-          curl -fsSL -o kubeconform.tar.gz https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
-          tar -xzf kubeconform.tar.gz kubeconform
-          kubectl kustomize deploy/k8s > /tmp/agentic-manifests.yaml
-          if grep -Eq 'image:.*(:latest|IMMUTABLE_SHA_REQUIRED|REPLACE_WITH_COMMIT_SHA)' /tmp/agentic-manifests.yaml; then
-            echo "::error::Rendered manifests contain a mutable/placeholder image tag"
-            exit 1
-          fi
-          ./kubeconform -strict -summary -ignore-missing-schemas /tmp/agentic-manifests.yaml
 
       - name: GitOps Image Tag Auto-Update & ArgoCD Sync (requires sign-off)
         if: startsWith(github.ref, 'refs/tags/v')

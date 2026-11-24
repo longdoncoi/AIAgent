@@ -468,10 +468,12 @@ def test_long_term_store_production_and_metadata_fallbacks(tmp_path):
     with (
         patch.object(get_settings(), "environment", "production"),
         patch.object(get_settings(), "use_postgres_checkpoint", False),
+        patch.object(LongTermStore, "_try_init_postgres", return_value=None),
     ):
         with pytest.raises(RuntimeError) as exc:
             LongTermStore(storage_dir=tmp_path, force_sqlite=False)
-        assert "PostgreSQL LongTermStore is unavailable" in str(exc.value)
+        assert "PostgreSQL LongTermStore" in str(exc.value)
+        assert "SQLite storage is strictly prohibited" in str(exc.value)
 
     # 2. Search SQLite metadata JSON decoding exception fallback
     store = LongTermStore(storage_dir=tmp_path, force_sqlite=True)

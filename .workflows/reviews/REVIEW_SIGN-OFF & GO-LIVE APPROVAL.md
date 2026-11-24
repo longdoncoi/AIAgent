@@ -52,8 +52,11 @@ Hội đồng thẩm định thống nhất đánh dấu lựa chọn một tron
 
 ## 5. Điều Khoản Thi Hành & Lưu Trữ Hồ Sơ
 
-1. Sau khi hoàn tất đầy đủ chữ ký của 9 thành viên Hội đồng, tệp biên bản này được ký số và lưu trữ vĩnh viễn trong kho lưu trữ hồ sơ phát hành của dự án.
-2. Biên bản là điều kiện tiên quyết để DevOps kích hoạt Git Release Tag dạng `vX.Y.Z-prod` và mở khóa quy trình triển khai tự động qua ArgoCD/GitOps.
+1. Hội đồng đối soát và ký đúng source commit `C` cùng release tag dự kiến `vX.Y.Z-prod`; trường `commit_sha` trong biên bản máy đọc được phải là SHA đầy đủ của `C`.
+2. Sau khi đủ 9 chữ ký, DevOps tạo commit attestation `A` chỉ thêm/sửa `evidence/signoff/release-board.json`. Không được gộp code, manifest, dependency hoặc tài liệu khác vào `A`.
+3. Release tag `vX.Y.Z-prod` chỉ được tạo trỏ vào `A`. CI bắt buộc xác minh `parent(A)=C`, diff `C..A` chỉ có đúng tệp biên bản, `release_tag` khớp tag đang chạy và đủ 9 chữ ký hợp lệ.
+4. PRR evidence của `A` phải được tải từ artifact `prr-evidence-<SHA-A>` của chính workflow hiện tại. Vì `A` chỉ chứa biên bản, executable source vẫn đúng bằng `C` đã được Hội đồng ký.
+5. Nếu có bất kỳ thay đổi nào ngoài tệp biên bản sau `C`, release hiện tại bị hủy; phải tạo source commit mới, chạy lại toàn bộ gate và lấy lại chữ ký. Biên bản đã ký được lưu trữ vĩnh viễn trong hồ sơ phát hành.
 
 ---
 
@@ -61,6 +64,6 @@ Hội đồng thẩm định thống nhất đánh dấu lựa chọn một tron
 
 > **AUTO-EVIDENCE PENDING** — chờ đối soát và **ký bởi Release Board**. Không có nhãn `PASSED` được tự động gán cho tài liệu này.
 
-- Artifact: [evidence/prr/latest.json](file:///f:/PROJECTS/AIAgent/evidence/prr/latest.json) (`commit_sha`, `timestamp_utc`, exit code của `ruff` / `mypy` / `pytest --collect-only` / `eval --mode smoke` / parse YAML).
+- Artifact: [evidence/prr/latest.json](file:///f:/PROJECTS/AIAgent/evidence/prr/latest.json) (`commit_sha`, `timestamp_utc`, exit code của `ruff` / `mypy` / `pytest --collect-only` / `eval --mode smoke` / parse YAML). Khi phát hành, nguồn chuẩn là artifact CI của commit attestation `A`, không phải bản tracked có thể đã cũ trong checkout.
 - Sinh artifact: `python scripts/generate_prr_evidence.py`. Tất cả ô trạng thái `[]` ở các mục trên vẫn giữ nguyên cho đến khi Hội đồng đối soát artifact và ký duyệt.
 - Bảng chữ ký 9 đại diện: [REVIEW.md mục 6.3](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md#63-bảng-chữ-ký-phê-chuẩn-của-hội-đồng-đánh-giá).

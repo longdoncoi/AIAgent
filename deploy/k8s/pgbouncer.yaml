@@ -15,6 +15,7 @@ spec:
     metadata:
       labels:
         app: pgbouncer
+        tier: database-pooler
     spec:
       securityContext:
         runAsNonRoot: true
@@ -34,7 +35,7 @@ spec:
               drop: ["ALL"]
             seccompProfile:
               type: RuntimeDefault
-          image: edoburu/pgbouncer:v1.22.0
+          image: edoburu/pgbouncer:1.22.1-p0@sha256:7f39cf2f872c8d9a0bb0e6a5440c3bf5814036eccf284102870ab08e2603a2c7
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 5432
@@ -47,12 +48,12 @@ spec:
             - name: DB_USER
               valueFrom:
                 secretKeyRef:
-                  name: agentic-secrets
+                  name: agentic-database-secrets
                   key: POSTGRES_USER
             - name: DB_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: agentic-secrets
+                  name: agentic-database-secrets
                   key: POSTGRES_PASSWORD
             - name: POOL_MODE
               value: "transaction"
@@ -109,6 +110,6 @@ spec:
   selector:
     app: pgbouncer
   ports:
-    - port: 5432
+    - port: 6432
       targetPort: 5432
       name: postgres

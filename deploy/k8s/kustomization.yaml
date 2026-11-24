@@ -16,14 +16,17 @@ resources:
   - ingress.yaml
   - pgbouncer.yaml
   - backup.yaml          # owner-supplied backup workload (file to be restored)
+  - checkpoint-retention.yaml
   - pod-disruption-budgets.yaml
   - istio-security.yaml
   - otel-collector.yaml
   - monitoring.yaml
 
-commonLabels:
-  app.kubernetes.io/part-of: agentic-platform
-  app.kubernetes.io/managed-by: argocd
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: agentic-platform
+      app.kubernetes.io/managed-by: argocd
+    includeSelectors: true
 
 # Namespace is declared EXPLICITLY on every manifest. The legacy builtin
 # NamespaceTransformer referenced through `transformers:` is silently ignored

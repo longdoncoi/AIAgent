@@ -106,6 +106,9 @@ async def dispatch_node(state: AgentState) -> dict[str, Any]:
                         ),
                         "owner_id": owner_id,
                         "step_fingerprint": compute_step_fingerprint(step),
+                        "user_roles": list(state.metadata.get("user_roles") or []),
+                        "department": str(state.metadata.get("department") or "public"),
+                        "client_id": str(state.metadata.get("client_id") or owner_id),
                     },
                     timeout=60.0,
                 ):

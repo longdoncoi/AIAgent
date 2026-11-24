@@ -6,6 +6,7 @@ checks run in a plain unit-test job and fail closed on unsafe regressions.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 from typing import Any, Iterator
@@ -160,12 +161,35 @@ def test_pgbouncer_has_ingress_and_postgres_egress_allow_rules() -> None:
     assert any(5432 in [p.get("port") for p in rule.get("ports", [])]
                for rule in policy["spec"]["egress"])
 
+    deployment = _named("Deployment", "pgbouncer")
+    pod_labels = deployment["spec"]["template"]["metadata"]["labels"]
+    assert pod_labels["tier"] == "database-pooler"
+    service = _named("Service", "pgbouncer-svc")
+    assert service["spec"]["ports"][0]["port"] == 6432
+    assert service["spec"]["ports"][0]["targetPort"] == 5432
 
-def test_api_egress_allows_all_mcp_ports_and_has_scoped_destinations() -> None:
+
+def test_tool_egress_is_agent_specific_and_has_scoped_destinations() -> None:
     policy = _named("NetworkPolicy", "allow-agentic-api")
     egress = policy["spec"]["egress"]
-    ports = {p.get("port") for rule in egress for p in rule.get("ports", [])}
-    assert {9001, 9002, 9003}.issubset(ports)
+    api_ports = {p.get("port") for rule in egress for p in rule.get("ports", [])}
+    assert not {9001, 9002, 9003}.intersection(api_ports)
+
+    expected = {
+        "allow-chat-to-web-search": {9003},
+        "allow-coding-to-approved-tools": {9001, 9002},
+    }
+    for name, expected_ports in expected.items():
+        tool_policy = _named("NetworkPolicy", name)
+        actual_ports = {
+            p.get("port")
+            for rule in tool_policy["spec"]["egress"]
+            for p in rule.get("ports", [])
+        }
+        assert actual_ports == expected_ports
+        for rule in tool_policy["spec"]["egress"]:
+            assert "to" in rule
+
     for rule in egress:
         assert "to" in rule, "egress rules must constrain destinations, not just ports"
 
@@ -180,6 +204,30 @@ def test_db_backup_and_otel_egress_policies_present() -> None:
                for r in backup["spec"]["egress"])
     # The backup workload referenced by Kustomize must actually exist.
     assert (K8S / "backup.yaml").exists()
+
+
+def test_checkpoint_retention_is_scheduled_and_network_scoped() -> None:
+    cronjob = _named("CronJob", "agentic-checkpoint-retention")
+    container = cronjob["spec"]["jobTemplate"]["spec"]["template"]["spec"][
+        "containers"
+    ][0]
+    assert container["args"] == ["--max-idle-seconds", "2592000"]
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    assert container["resources"]["limits"]
+
+    policy = _named("NetworkPolicy", "allow-checkpoint-retention")
+    assert policy["spec"]["podSelector"]["matchLabels"]["app"] == (
+        "agentic-checkpoint-retention"
+    )
+    ports = {
+        port["port"]
+        for rule in policy["spec"]["egress"]
+        for port in rule.get("ports", [])
+    }
+    assert ports == {5432}
+
+    kust = yaml.safe_load((K8S / "kustomization.yaml").read_text(encoding="utf-8"))
+    assert "checkpoint-retention.yaml" in set(kust["resources"])
 
 
 # ---------------------------------------------------------------------------
@@ -232,15 +280,55 @@ def test_pending_hitl_alert_uses_gauge_not_nonexistent_counter() -> None:
 # ---------------------------------------------------------------------------
 # 7. Production configuration for fail-closed startup
 # ---------------------------------------------------------------------------
-def test_approval_signing_key_and_neo4j_password_come_from_external_secrets() -> None:
+def test_approval_keys_and_runtime_credentials_are_workload_scoped() -> None:
     external = (K8S / "external-secret.yaml").read_text(encoding="utf-8")
-    for key in ("APPROVAL_SIGNING_KEY", "NEO4J_PASSWORD", "LITELLM_API_KEY", "POSTGRES_URI"):
+    for key in (
+        "APPROVAL_PRIVATE_KEY",
+        "APPROVAL_PUBLIC_KEY",
+        "NEO4J_PASSWORD",
+        "LITELLM_API_KEY",
+        "POSTGRES_URI",
+    ):
         assert f"secretKey: {key}" in external
-    assert "property: approval_signing_key" in external
+    assert "property: approval_ed25519_private_key" in external
+    assert "property: approval_ed25519_public_key" in external
+    assert "name: agentic-secrets" not in external
     configmap = (K8S / "configmap-secrets.yaml").read_text(encoding="utf-8")
-    assert "APPROVAL_SIGNING_KEY" not in configmap
+    assert "APPROVAL_PRIVATE_KEY" not in configmap
+    assert "APPROVAL_PUBLIC_KEY" not in configmap
     assert "NEO4J_PASSWORD" not in configmap
     assert "LITELLM_API_KEY" not in configmap
+
+    api = _named("Deployment", "agentic-api")
+    api_container = api["spec"]["template"]["spec"]["containers"][0]
+    assert api_container["envFrom"][1]["secretRef"]["name"] == "agentic-api-secrets"
+    agent = _named("Deployment", "agentic-coding-agent")
+    agent_container = agent["spec"]["template"]["spec"]["containers"][0]
+    assert agent_container["envFrom"][1]["secretRef"]["name"] == "agentic-coding-secrets"
+    mcp = _named("Deployment", "agentic-mcp-code-exec")
+    mcp_container = mcp["spec"]["template"]["spec"]["containers"][0]
+    assert mcp_container["envFrom"][1]["secretRef"]["name"] == "agentic-mcp-secrets"
+
+    external_docs = _load_all(K8S / "external-secret.yaml")
+    targets = {
+        doc["spec"]["target"]["name"]: {
+            item["secretKey"] for item in doc["spec"].get("data", [])
+        }
+        for doc in external_docs
+        if doc["kind"] == "ExternalSecret"
+    }
+    assert "APPROVAL_PRIVATE_KEY" in targets["agentic-api-secrets"]
+    assert "APPROVAL_PRIVATE_KEY" not in targets["agentic-chat-secrets"]
+    assert "APPROVAL_PRIVATE_KEY" not in targets["agentic-rag-secrets"]
+    assert "APPROVAL_PRIVATE_KEY" not in targets["agentic-coding-secrets"]
+    assert "APPROVAL_PRIVATE_KEY" not in targets["agentic-mcp-secrets"]
+    assert "QDRANT_API_KEY" not in targets["agentic-chat-secrets"]
+    assert "QDRANT_API_KEY" in targets["agentic-rag-secrets"]
+    assert "QDRANT_API_KEY" not in targets["agentic-coding-secrets"]
+    assert "APPROVAL_PUBLIC_KEY" in targets["agentic-chat-secrets"]
+    assert "APPROVAL_PUBLIC_KEY" in targets["agentic-rag-secrets"]
+    assert "APPROVAL_PUBLIC_KEY" in targets["agentic-coding-secrets"]
+    assert "APPROVAL_PUBLIC_KEY" in targets["agentic-mcp-secrets"]
 
 
 def test_configmap_disables_kg_and_sets_narrow_trusted_proxies() -> None:
@@ -299,13 +387,51 @@ def test_ci_invokes_strict_release_gate_without_continue_on_error() -> None:
     text = CI.read_text(encoding="utf-8")
     assert "python evals/release_gate.py" in text
     assert "release-gate:" in text
-    assert "environment: production-release" in text
+    assert "environment: production" in text
+    assert "environment: production-release" not in text
     gate_block = text.split("name: Run Strict Release Gate", 1)[1].split("\n  # ---", 1)[0]
     assert not re.search(r"(?m)^\s*continue-on-error\s*:", gate_block)
     # ENVIRONMENT=test / CI=true are hard release blockers in release_blockers().
     assert not re.search(r"(?m)^\s*env:\s*$", gate_block), "release gate step must not set env"
     assert "ENVIRONMENT:" not in gate_block
     assert "CI:" not in gate_block
+
+
+def test_ci_deploy_validation_installs_locked_test_runtime() -> None:
+    text = CI.read_text(encoding="utf-8")
+    validate_block = text.split("validate-deploy:", 1)[1].split("\n  # ---", 1)[0]
+    assert "astral-sh/setup-uv@" in validate_block
+    assert "uv sync --frozen --extra dev" in validate_block
+    assert (
+        "uv run --no-sync python -m pytest tests/unit/test_deploy_hardening_v3.py -v"
+        in validate_block
+    )
+    assert validate_block.count("python - <<'PY'") == validate_block.count(
+        "uv run --no-sync python - <<'PY'"
+    ), "every deployment validation script must use the locked uv environment"
+
+
+def test_sqlite_unit_tests_use_isolated_storage() -> None:
+    offenders: list[str] = []
+    for path in sorted((ROOT / "tests" / "unit").glob("test_*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            function_name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if function_name != "LongTermStore":
+                continue
+            keyword_names = {keyword.arg for keyword in node.keywords}
+            force_sqlite = any(
+                keyword.arg == "force_sqlite"
+                and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value is True
+                for keyword in node.keywords
+            )
+            if force_sqlite and "storage_dir" not in keyword_names:
+                offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+
+    assert not offenders, f"SQLite unit tests write tracked project storage: {offenders}"
 
 
 def test_ci_signoff_validation_checks_commit_sha_and_signatures() -> None:
@@ -315,6 +441,69 @@ def test_ci_signoff_validation_checks_commit_sha_and_signatures() -> None:
         "release_tag", "required_signers", "signature", "sys.exit(1)",
     ):
         assert token in text, f"CI sign-off validation missing {token!r}"
+
+
+def test_ci_publish_downloads_prr_evidence_from_the_current_workflow() -> None:
+    text = CI.read_text(encoding="utf-8")
+    publish_block = text.split("publish-and-deploy:", 1)[1]
+    download_index = publish_block.index("name: Download PRR Evidence for This Commit")
+    signoff_index = publish_block.index(
+        "name: Verify Release Sign-off & PRR Attestation (fail closed)"
+    )
+
+    assert download_index < signoff_index
+    assert (
+        "uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333"
+        in publish_block
+    )
+    assert "name: prr-evidence-${{ github.sha }}" in publish_block
+    assert "path: evidence/prr" in publish_block
+
+
+def test_ci_actions_are_immutable_node24_compatible_pins() -> None:
+    text = CI.read_text(encoding="utf-8")
+    expected_actions = {
+        "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
+        "actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0",
+        "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2",
+        "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2",
+        "astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0",
+        "docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1",
+        "docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0",
+        "docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0",
+        "aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0",
+    }
+    for action in expected_actions:
+        assert action in text, f"CI action is not on the reviewed Node 24 pin: {action}"
+
+
+def test_ci_signoff_uses_a_non_self_referential_two_commit_attestation() -> None:
+    text = CI.read_text(encoding="utf-8")
+    publish_block = text.split("publish-and-deploy:", 1)[1]
+    checkout_block = publish_block.split("# ---- Sign-off verification", 1)[0]
+
+    assert "fetch-depth: 2" in checkout_block
+    assert "git', 'rev-parse', 'HEAD^'" in publish_block
+    assert "git', 'rev-list', '--parents', '-n', '1', 'HEAD'" in publish_block
+    assert "attestation commit must have exactly one parent" in publish_block
+    assert "git', 'diff-tree', '--no-commit-id', '--name-only', '-r'" in publish_block
+    assert "allowed_attestation_paths = {'evidence/signoff/release-board.json'}" in publish_block
+    assert "board.get('commit_sha') != subject_sha" in publish_block
+    assert "board.get('commit_sha') != expected_sha" not in publish_block
+
+
+def test_ci_publish_and_deploy_is_tag_only_with_mandatory_signoff() -> None:
+    text = CI.read_text(encoding="utf-8")
+    publish_block = text.split("publish-and-deploy:", 1)[1]
+    job_guard = publish_block.split("runs-on:", 1)[0]
+    assert "github.ref == 'refs/heads/main'" not in job_guard
+    assert "startsWith(github.ref, 'refs/tags/v')" in job_guard
+    assert "needs.release-gate.result == 'success'" in job_guard
+
+    signoff_header = publish_block.split(
+        "name: Verify Release Sign-off & PRR Attestation (fail closed)", 1
+    )[1].split("run: |", 1)[0]
+    assert "if:" not in signoff_header, "sign-off must be mandatory for every publish job"
 
 
 def test_ci_publishes_only_immutable_tags() -> None:

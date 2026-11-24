@@ -9,15 +9,18 @@ from pydantic import BaseModel, Field
 
 from src.agentic.cache.rag_cache import get_rag_cache
 from src.agentic.core.config import get_settings
+from src.agentic.core.execution_context import get_tool_execution_context
 from src.agentic.rag.reranker import CrossEncoderReranker
 from src.agentic.rag.retriever import get_hybrid_retriever
-from src.agentic.tools.execution_context import get_tool_execution_context
 
 # These filter keys carry authorization semantics. They are NEVER accepted
 # from the (LLM-controlled) tool argument: an attacker could otherwise pass
 # ``{"tenant_id": "victim"}`` and read another tenant's documents.
 AUTHORITATIVE_FILTER_KEYS: frozenset[str] = frozenset(
-    {"tenant_id", "owner_id", "acl", "acls", "tenant", "owner"}
+    {
+        "tenant_id", "owner_id", "acl", "acls", "tenant", "owner",
+        "user_roles", "allowed_roles", "department", "acl_principals",
+    }
 )
 
 CITATION_MARKER_START = "[CITATIONS]"
@@ -44,7 +47,7 @@ def _authoritative_tenant_id() -> str:
 
 
 def _build_effective_filters(filters: dict[str, Any] | None) -> dict[str, Any]:
-    """Strip caller-supplied auth keys and pin the verified tenant."""
+    """Strip caller-supplied auth keys and pin the verified authorization scope."""
     effective = {
         key: value
         for key, value in (filters or {}).items()
@@ -52,6 +55,26 @@ def _build_effective_filters(filters: dict[str, Any] | None) -> dict[str, Any]:
     }
     # Plain assignment (not setdefault): the authoritative value always wins.
     effective["tenant_id"] = _authoritative_tenant_id()
+    context = get_tool_execution_context()
+    if context is None:
+        if get_settings().is_production:
+            raise PermissionError("Verified RAG authorization context is required in production.")
+        effective["user_roles"] = ["guest"]
+        effective["department"] = "public"
+        effective["acl_principals"] = [effective["tenant_id"], "public"]
+    else:
+        roles = sorted(set(context.user_roles or ("guest",)))
+        department = str(context.department or "public").lower()
+        effective["user_roles"] = roles
+        effective["department"] = department
+        effective["acl_principals"] = sorted(
+            {
+                str(context.owner_id or effective["tenant_id"]),
+                department,
+                *(f"role:{role}" for role in roles),
+                "public",
+            }
+        )
     return effective
 
 
@@ -74,41 +97,43 @@ def _build_citation(item: Any, index: int) -> dict[str, Any]:
     return citation
 
 
-def _format_citations(citations: list[dict[str, Any]]) -> str:
+def format_citations(citations: list[dict[str, Any]]) -> str:
     """Serialize structured citations into a parseable tool-output block."""
     payload = json.dumps({"citations": citations}, ensure_ascii=False, sort_keys=True)
     return f"{CITATION_MARKER_START}\n{payload}\n{CITATION_MARKER_END}"
 
 
-def validate_citations(text: str) -> bool:
-    """Return True when ``text`` contains at least one well-formed citation.
-
-    The reflector (or any other caller) can use this as a cheap structural
-    gate: a response with no citations, a malformed block, or a citation
-    missing a document identifier fails validation.
-    """
+def extract_citations(text: str) -> list[dict[str, Any]]:
+    """Parse and return only structurally valid citations from tool output."""
     if not text or CITATION_MARKER_START not in text or CITATION_MARKER_END not in text:
-        return False
+        return []
     try:
         block = text.split(CITATION_MARKER_START, 1)[1].split(CITATION_MARKER_END, 1)[0]
         parsed = json.loads(block.strip())
         if not isinstance(parsed, dict):
-            return False
+            return []
         citations = parsed.get("citations")
         if not isinstance(citations, list) or not citations:
-            return False
+            return []
+        valid: list[dict[str, Any]] = []
         for citation in citations:
-            if not isinstance(citation, dict):
-                continue
-            if not str(citation.get("doc_id", "")).strip():
-                continue
-            if str(citation.get("file_name", "")).strip() or str(
-                citation.get("source", "")
-            ).strip():
-                return True
-        return False
+            if (
+                isinstance(citation, dict)
+                and str(citation.get("doc_id", "")).strip()
+                and (
+                    str(citation.get("file_name", "")).strip()
+                    or str(citation.get("source", "")).strip()
+                )
+            ):
+                valid.append(dict(citation))
+        return valid
     except (ValueError, TypeError, IndexError):
-        return False
+        return []
+
+
+def validate_citations(text: str) -> bool:
+    """Return True when ``text`` contains at least one well-formed citation."""
+    return bool(extract_citations(text))
 
 
 def search_policy(query: str, filters: dict[str, Any] | None = None) -> str:
@@ -148,7 +173,7 @@ def search_policy(query: str, filters: dict[str, Any] | None = None) -> str:
                 f"--- Document Source [{i}]: {source} (Score: {score}) ---\n{node_text.strip()}"
             )
 
-        return "\n\n".join(results) + "\n\n" + _format_citations(citations)
+        return "\n\n".join(results) + "\n\n" + format_citations(citations)
 
     domain = (
         (effective_filters.get("domain") or effective_filters.get("category") or "general")

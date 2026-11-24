@@ -10,6 +10,7 @@ from src.agentic.llm.gateway import get_llm
 from src.agentic.memory.consolidation import consolidate_session_memory
 from src.agentic.observability.tracing import traced_operation
 from src.agentic.orchestrator.state import AgentState
+from src.agentic.rag.tools import extract_citations, format_citations
 from src.agentic.safety.guardrails import get_guardrails
 
 logger = logging.getLogger(__name__)
@@ -135,10 +136,34 @@ async def finalize_node(state: AgentState) -> dict[str, Any]:
     guardrails = get_guardrails()
     sanitized_answer = guardrails.sanitize_output(raw_answer)
 
+    # Defense-in-depth citation gate. The reflector checks each RAG step, but
+    # the synthesis model may still omit sources from the user-facing answer.
+    # Preserve validated source records deterministically and refuse to publish
+    # an uncited RAG answer when upstream output is malformed.
+    rag_steps = [step for step in state.plan.steps if step.agent == "rag" and step.output]
+    citations_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for step in rag_steps:
+        for citation in extract_citations(step.output or ""):
+            key = (str(citation.get("doc_id")), str(citation.get("source") or citation.get("file_name")))
+            citations_by_key[key] = citation
+    citation_failure = bool(rag_steps) and not citations_by_key
+    if citation_failure:
+        logger.error("Refusing to finalize RAG output without verified citations.")
+        sanitized_answer = (
+            "**Manual Review Required**: RAG evidence did not contain valid structured "
+            "citations, so no grounded answer can be published."
+        )
+    elif citations_by_key and not extract_citations(sanitized_answer):
+        sanitized_answer = (
+            sanitized_answer.rstrip()
+            + "\n\n"
+            + format_citations(list(citations_by_key.values()))
+        )
+
     # Only consolidate into long-term memory if the run was verified and did
     # not completely fail.
     thread_id = state.thread_id or "session_unknown"
-    if not is_all_failed and not state.degraded:
+    if not is_all_failed and not state.degraded and not citation_failure:
         track_background_task(
             consolidate_session_memory(
                 thread_id=thread_id,
@@ -147,12 +172,17 @@ async def finalize_node(state: AgentState) -> dict[str, Any]:
                 metadata={
                     "step_count": len(state.plan.steps),
                     "status": "partial" if has_failures else "completed",
+                    "user_id": str(state.metadata.get("user_id") or ""),
+                    "public_thread_id": thread_id,
                 },
             ),
             task_name=f"consolidate_memory_{thread_id}",
         )
 
-    return {
+    result: dict[str, Any] = {
         "final_answer": sanitized_answer,
         "messages": [AIMessage(content=sanitized_answer)],
     }
+    if citation_failure:
+        result.update({"degraded": True, "degraded_reason": "missing_citations"})
+    return result

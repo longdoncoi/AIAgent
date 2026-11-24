@@ -29,12 +29,14 @@ from langgraph.graph.message import add_messages
 from src.agentic.api.main import app
 from src.agentic.core.config import get_settings
 from src.agentic.memory.data_lifecycle import (
+    PurgeBackendUnavailable,
     PurgePermissionError,
     PurgeReport,
+    cleanup_stale_postgres_checkpoints,
     cost_tags_from_context,
     purge_user_data,
 )
-from src.agentic.memory.long_term import MemoryEntry
+from src.agentic.memory.long_term import LongTermStore, MemoryEntry
 from src.agentic.memory.redis_saver import RedisSaver
 from src.agentic.memory.short_term import initialize_checkpointer, trim_messages_window
 from src.agentic.tools.execution_context import (
@@ -67,6 +69,8 @@ class FakeCursor:
         upper = sql.strip().upper()
         if upper.startswith("SELECT DISTINCT THREAD_ID"):
             self._rows = [(t,) for t in sorted(self._conn.threads)]
+        elif upper.startswith("SELECT COUNT") and "AS STALE_THREADS" in upper:
+            self._rows = [(self._conn.stale_count,)]
         elif upper.startswith("SELECT COUNT"):
             table = re.search(r"FROM\s+(\w+)", sql, re.I)
             name = table.group(1) if table else ""
@@ -98,12 +102,32 @@ class FakePgConn:
         }
         self.executed: list[tuple[str, Any]] = []
         self.commits = 0
+        self.stale_count = len(threads)
 
     def cursor(self) -> FakeCursor:
         return FakeCursor(self)
 
     def commit(self) -> None:
         self.commits += 1
+
+
+class FakePoolConnection:
+    def __init__(self, conn: FakePgConn) -> None:
+        self.conn = conn
+
+    def __enter__(self) -> FakePgConn:
+        return self.conn
+
+    def __exit__(self, *args: object) -> None:
+        self.conn.commit()
+
+
+class FakePool:
+    def __init__(self, conn: FakePgConn) -> None:
+        self.conn = conn
+
+    def connection(self) -> FakePoolConnection:
+        return FakePoolConnection(self.conn)
 
 
 class FakeRedis:
@@ -155,6 +179,31 @@ class FakeRagCache:
         return self.count
 
 
+class FakeKnowledgeGraph:
+    def __init__(self, count: int = 2) -> None:
+        self.count = count
+        self.deleted: list[str] = []
+
+    def count_tenant(self, tenant_id: str) -> int:
+        return self.count
+
+    def delete_tenant(self, tenant_id: str) -> int:
+        self.deleted.append(tenant_id)
+        return self.count
+
+
+class FakeQdrant:
+    def __init__(self, count: int = 3) -> None:
+        self.result = SimpleNamespace(count=count)
+        self.deleted = False
+
+    def count(self, **kwargs: Any) -> Any:
+        return self.result
+
+    def delete(self, **kwargs: Any) -> None:
+        self.deleted = True
+
+
 class FakeRegistry:
     def __init__(self, owner: str | None = None, owned: list[str] | None = None) -> None:
         self._owner = owner
@@ -168,6 +217,14 @@ class FakeRegistry:
 
     def scoped_thread_id(self, thread_id: str, owner_id: str) -> str:
         return f"thread:scoped:{owner_id}:{thread_id}"
+
+
+class FailingRegistry(FakeRegistry):
+    async def owner(self, thread_id: str) -> str | None:
+        raise ConnectionError("registry offline")
+
+    async def threads_for_owner(self, owner_id: str) -> list[str]:
+        raise ConnectionError("registry offline")
 
 
 SCOPED = "thread:scoped:alice:public-1"
@@ -208,6 +265,27 @@ def _fakes() -> tuple[FakePgConn, FakeRedis, FakeLongTermStore, FakeRagCache]:
     return pg, redis, ltm, rag
 
 
+def test_postgres_checkpoint_retention_is_bounded_and_parameterized() -> None:
+    pg = FakePgConn(["stale-1", "stale-2"])
+    count = cleanup_stale_postgres_checkpoints(86400 * 30, pool=FakePool(pg))
+
+    assert count == 2
+    assert pg.commits == 1
+    assert len([sql for sql, _ in pg.executed if sql.startswith("DELETE FROM")]) == 3
+    assert all(params == (86400 * 30,) for _, params in pg.executed)
+    assert all("2592000" not in sql for sql, _ in pg.executed)
+
+    with pytest.raises(ValueError, match="max_idle_seconds"):
+        cleanup_stale_postgres_checkpoints(1, pool=FakePool(pg))
+
+
+def test_postgres_checkpoint_retention_fails_closed_without_backend() -> None:
+    with patch(
+        "src.agentic.memory.data_lifecycle.get_postgres_pool", return_value=None
+    ), pytest.raises(PurgeBackendUnavailable):
+        cleanup_stale_postgres_checkpoints(86400 * 30)
+
+
 # ---------------------------------------------------------------------------
 # Purge service
 # ---------------------------------------------------------------------------
@@ -215,7 +293,7 @@ def _fakes() -> tuple[FakePgConn, FakeRedis, FakeLongTermStore, FakeRagCache]:
 async def test_purge_deletes_from_all_four_stores() -> None:
     """Purge must touch Postgres, Redis, LongTermStore and RAG cache."""
     pg, redis, ltm, rag = _fakes()
-    with _patch_registry(None):
+    with _patch_registry("alice"):
         report = await purge_user_data(
             "alice",
             "public-1",
@@ -256,7 +334,7 @@ async def test_purge_deletes_from_all_four_stores() -> None:
 async def test_purge_is_idempotent() -> None:
     """Running the same purge twice must report zero deletions the second time."""
     pg, redis, ltm, rag = _fakes()
-    with _patch_registry(None):
+    with _patch_registry("alice"):
         first = await purge_user_data(
             "alice",
             "public-1",
@@ -288,7 +366,7 @@ async def test_purge_is_idempotent() -> None:
 async def test_purge_dry_run_does_not_mutate() -> None:
     """Dry-run reports what would be deleted but performs no writes."""
     pg, redis, ltm, rag = _fakes()
-    with _patch_registry(None):
+    with _patch_registry("alice"):
         report = await purge_user_data(
             "alice",
             "public-1",
@@ -331,9 +409,43 @@ async def test_purge_rejects_foreign_thread() -> None:
 
 
 @pytest.mark.asyncio
+async def test_purge_fails_closed_when_thread_ownership_is_unavailable() -> None:
+    pg, redis, ltm, rag = _fakes()
+    with patch(
+        "src.agentic.memory.data_lifecycle.get_thread_registry",
+        return_value=FailingRegistry(),
+    ), pytest.raises(PurgeBackendUnavailable):
+        await purge_user_data(
+            "alice",
+            "public-1",
+            pg_conn=pg,
+            redis_client=redis,
+            long_term_store=ltm,
+            rag_cache=rag,
+        )
+    assert pg.executed == []
+    assert redis.deleted == []
+    assert ltm.delete_calls == []
+
+
+def test_long_term_primary_keys_are_tenant_namespaced(tmp_path: Any) -> None:
+    store = LongTermStore(storage_dir=tmp_path, force_sqlite=True)
+    store.add_semantic("theme", "dark", {"user_id": "alice"})
+    store.add_semantic("theme", "light", {"user_id": "bob"})
+
+    alice = store.search("dark", user_id="alice")
+    bob = store.search("light", user_id="bob")
+    assert len(alice) == len(bob) == 1
+    assert alice[0].id != bob[0].id
+    assert store.search("light", user_id="alice") == []
+
+
+@pytest.mark.asyncio
 async def test_user_wide_purge_enumerates_owned_threads() -> None:
     """Without a thread_id, all threads owned by the user must be discovered."""
     pg, redis, ltm, rag = _fakes()
+    kg = FakeKnowledgeGraph()
+    qdrant = FakeQdrant()
     with _patch_registry(None, owned=["public-1"]):
         report = await purge_user_data(
             "alice",
@@ -341,10 +453,16 @@ async def test_user_wide_purge_enumerates_owned_threads() -> None:
             redis_client=redis,
             long_term_store=ltm,
             rag_cache=rag,
+            qdrant_client=qdrant,
+            knowledge_graph_store=kg,
         )
     assert SCOPED in report.checkpoint_thread_ids
     assert "public-1" in report.checkpoint_thread_ids
     assert report.redis_keys_deleted == 3
+    assert report.qdrant_points_deleted == 3
+    assert qdrant.deleted is True
+    assert report.knowledge_graph_nodes_deleted == 2
+    assert kg.deleted == ["alice"]
 
 
 @pytest.mark.asyncio
@@ -553,6 +671,7 @@ def test_cost_tags_from_context() -> None:
         agent_name="chat",
         step_id="s1",
         owner_id="acme-corp",
+        client_id="acme-corp",
     )
     token = set_tool_execution_context(context)
     try:

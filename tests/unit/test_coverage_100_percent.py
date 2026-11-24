@@ -416,9 +416,21 @@ def test_llm_gateway_circuit_breaker_and_socket_probe():
     # The gateway instantiates its prompt-cache-aware subclass, not the base
     # ChatOpenAI symbol, so patch the effective constructor.
     with patch("src.agentic.llm.gateway._PromptCachedChatOpenAI") as mock_chat:
-        get_llm(alias="fast-llm", extra_headers={"X-Custom": "val"})
+        get_llm(
+            alias="fast-llm",
+            extra_headers={"X-Custom": "val"},
+            extra_body={
+                "metadata": {
+                    "spend_logs_metadata": {"client_id": "caller-override", "custom": "kept"}
+                }
+            },
+        )
         mock_chat.assert_called_once()
         assert mock_chat.call_args.kwargs["default_headers"]["X-Custom"] == "val"
+        spend = mock_chat.call_args.kwargs["extra_body"]["metadata"]["spend_logs_metadata"]
+        assert spend["client_id"] == "unattributed"
+        assert spend["custom"] == "kept"
+        assert {"department", "environment", "agent"}.issubset(spend)
 
 
 # ============================================================================

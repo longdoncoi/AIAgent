@@ -8,20 +8,22 @@ from collections.abc import AsyncIterator
 from typing import Any, Literal
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
+from fastapi.responses import Response
 from langchain_core.messages import HumanMessage
 from opentelemetry import trace
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from src.agentic.a2a.cards import AgentCard, add_agent_card_discovery_route
 from src.agentic.core.config import get_settings
-from src.agentic.safety.guardrails import get_guardrails
-from src.agentic.tools.execution_context import (
+from src.agentic.core.execution_context import (
     ToolExecutionContext,
     reset_tool_execution_context,
     set_tool_execution_context,
 )
+from src.agentic.safety.guardrails import get_guardrails
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +70,11 @@ class A2AAgentExecutor:
             step_fingerprint=str(metadata["step_fingerprint"])
             if metadata.get("step_fingerprint")
             else None,
+            user_roles=tuple(str(role).lower() for role in (metadata.get("user_roles") or [])),
+            department=str(metadata["department"]).lower()
+            if metadata.get("department")
+            else None,
+            client_id=str(metadata["client_id"]) if metadata.get("client_id") else None,
         )
 
     def _safe_message(self, request: A2ATaskRequest) -> HumanMessage:
@@ -197,6 +204,11 @@ def create_a2a_server(card: AgentCard, graph: Any) -> FastAPI:
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok", "agent": card.name}
+
+    @app.get("/metrics")
+    async def metrics() -> Response:
+        """Expose the process registry scraped by the agent ServiceMonitor."""
+        return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
     @app.get("/a2a/card")
     async def get_card() -> AgentCard:

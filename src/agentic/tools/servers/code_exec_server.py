@@ -153,7 +153,11 @@ async def _execute_in_k8s_sandbox(code_or_cmd: str, is_python: bool, timeout: in
     settings = get_settings()
     pod_name = f"sandbox-{uuid.uuid4().hex[:8]}"
     timeout = _bounded_timeout(timeout)
-    image = "python:3.12-slim" if is_python else "alpine:3.20"
+    image = (
+        "python:3.12-slim@sha256:a0e2dd78cc679ddfffea960fe45ecfcff9ac2f68d67917a0edfcde5c2100151b"
+        if is_python
+        else "alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
+    )
     command_flag = ["python", "-c", code_or_cmd] if is_python else ["sh", "-c", code_or_cmd]
 
     overrides = {
@@ -265,7 +269,11 @@ async def _execute_in_docker(code_or_cmd: str, is_python: bool, timeout: int = 3
             "1.0",
             "-v",
             f"{script_file.resolve()}:/app/run_target:ro",
-            "python:3.12-slim" if is_python else "alpine:3.20",
+            (
+                "python:3.12-slim@sha256:a0e2dd78cc679ddfffea960fe45ecfcff9ac2f68d67917a0edfcde5c2100151b"
+                if is_python
+                else "alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
+            ),
         ]
         if is_python:
             docker_args.extend(["python", "/app/run_target"])

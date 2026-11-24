@@ -461,7 +461,9 @@ async def test_readyz_degraded_scenarios(monkeypatch):
     monkeypatch.setenv("REQUIRE_AUTHENTICATION", "true")
     monkeypatch.setenv("JWT_SECRET_KEY", "super_secret_production_jwt_key_unique_2026")
     monkeypatch.setenv("S2S_INTERNAL_TOKEN", "super_secret_production_s2s_token_unique_2026")
-    monkeypatch.setenv("APPROVAL_SIGNING_KEY", "super_secret_production_approval_key_2026")
+    monkeypatch.setenv(
+        "APPROVAL_PRIVATE_KEY", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+    )
     monkeypatch.setenv("LITELLM_API_KEY", "sk-real-prod-key-2026")
     monkeypatch.setenv("NEO4J_PASSWORD", "real-neo4j-password-2026")
     monkeypatch.setenv("POSTGRES_URI", "postgresql://u:real-password@pgbouncer-svc:6432/db")
@@ -480,7 +482,7 @@ async def test_readyz_degraded_scenarios(monkeypatch):
     monkeypatch.delenv("REQUIRE_AUTHENTICATION", raising=False)
     monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
     monkeypatch.delenv("S2S_INTERNAL_TOKEN", raising=False)
-    monkeypatch.delenv("APPROVAL_SIGNING_KEY", raising=False)
+    monkeypatch.delenv("APPROVAL_PRIVATE_KEY", raising=False)
     monkeypatch.delenv("LITELLM_API_KEY", raising=False)
     monkeypatch.delenv("NEO4J_PASSWORD", raising=False)
     monkeypatch.delenv("POSTGRES_URI", raising=False)
@@ -494,7 +496,9 @@ async def test_code_exec_host_disabled_in_production(monkeypatch):
     monkeypatch.setenv("REQUIRE_AUTHENTICATION", "true")
     monkeypatch.setenv("JWT_SECRET_KEY", "super_secret_production_jwt_key_unique_2026")
     monkeypatch.setenv("S2S_INTERNAL_TOKEN", "super_secret_production_s2s_token_unique_2026")
-    monkeypatch.setenv("APPROVAL_SIGNING_KEY", "super_secret_production_approval_key_2026")
+    monkeypatch.setenv(
+        "APPROVAL_PRIVATE_KEY", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+    )
     monkeypatch.setenv("LITELLM_API_KEY", "sk-real-prod-key-2026")
     monkeypatch.setenv("NEO4J_PASSWORD", "real-neo4j-password-2026")
     monkeypatch.setenv("POSTGRES_URI", "postgresql://u:real-password@pgbouncer-svc:6432/db")
@@ -517,7 +521,7 @@ async def test_code_exec_host_disabled_in_production(monkeypatch):
     monkeypatch.delenv("REQUIRE_AUTHENTICATION", raising=False)
     monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
     monkeypatch.delenv("S2S_INTERNAL_TOKEN", raising=False)
-    monkeypatch.delenv("APPROVAL_SIGNING_KEY", raising=False)
+    monkeypatch.delenv("APPROVAL_PRIVATE_KEY", raising=False)
     monkeypatch.delenv("LITELLM_API_KEY", raising=False)
     monkeypatch.delenv("NEO4J_PASSWORD", raising=False)
     monkeypatch.delenv("POSTGRES_URI", raising=False)

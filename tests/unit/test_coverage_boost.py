@@ -1091,29 +1091,31 @@ async def test_finalize_node_guardrail_masking():
 
 
 def test_model_circuit_breaker_full_state_machine():
-    cb = ModelCircuitBreaker(failure_threshold=2, recovery_time_seconds=0.1)
+    cb = ModelCircuitBreaker(failure_threshold=2, recovery_time_seconds=60.0)
+    alias = "reasoning-llm"
 
     # Initial state is CLOSED
-    assert cb.should_fallback("reasoning-llm") is False
+    assert cb.should_fallback(alias) is False
 
     # 1st failure: remains CLOSED
-    cb.record_failure("reasoning-llm")
-    assert cb.should_fallback("reasoning-llm") is False
+    cb.record_failure(alias)
+    assert cb.should_fallback(alias) is False
 
     # 2nd failure: trips to OPEN
-    cb.record_failure("reasoning-llm")
-    assert cb.state["reasoning-llm"] == "OPEN"
-    assert cb.should_fallback("reasoning-llm") is True
+    cb.record_failure(alias)
+    assert cb.state[alias] == "OPEN"
+    assert cb.should_fallback(alias) is True
 
-    # After recovery timeout -> transitions to HALF_OPEN
-    time.sleep(0.15)
-    assert cb.should_fallback("reasoning-llm") is False
-    assert cb.state["reasoning-llm"] == "HALF_OPEN"
+    # Move the recorded timestamp beyond the recovery timeout instead of
+    # sleeping or racing a 100 ms wall-clock window.
+    cb.last_failure_time[alias] -= 61.0
+    assert cb.should_fallback(alias) is False
+    assert cb.state[alias] == "HALF_OPEN"
 
     # Success in HALF_OPEN -> resets to CLOSED
-    cb.record_success("reasoning-llm")
-    assert cb.state["reasoning-llm"] == "CLOSED"
-    assert cb.should_fallback("reasoning-llm") is False
+    cb.record_success(alias)
+    assert cb.state[alias] == "CLOSED"
+    assert cb.should_fallback(alias) is False
 
 
 @pytest.mark.asyncio

@@ -1,13 +1,17 @@
 """Regression tests for cross-boundary authorization and state integrity."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from pydantic import ValidationError
 
 from src.agentic.memory.redis_saver import RedisSaver
-from src.agentic.memory.thread_registry import ThreadOwnershipError, ThreadRegistry
+from src.agentic.memory.thread_registry import (
+    ThreadOwnershipError,
+    ThreadRegistry,
+    ThreadRegistryUnavailable,
+)
 from src.agentic.orchestrator.state import Plan, Step
 from src.agentic.tools.execution_context import (
     ToolExecutionContext,
@@ -58,6 +62,40 @@ async def test_thread_id_cannot_be_claimed_by_another_principal() -> None:
     assert first != "public-thread"
     with pytest.raises(ThreadOwnershipError):
         await registry.claim("public-thread", "bob")
+
+
+@pytest.mark.asyncio
+async def test_thread_registry_test_mode_never_uses_external_redis() -> None:
+    registry = ThreadRegistry()
+    with patch("redis.asyncio.from_url") as from_url:
+        assert await registry._client() is None
+    from_url.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_thread_registry_redis_operations_fail_closed_in_production() -> None:
+    registry = ThreadRegistry()
+    registry.settings = SimpleNamespace(
+        environment="production",
+        redis_url="redis://unused",
+        checkpoint_signing_key="test-checkpoint-key",
+    )
+    client = AsyncMock()
+    registry._client = AsyncMock(return_value=client)  # type: ignore[method-assign]
+
+    client.set.side_effect = RuntimeError("redis claim failed")
+    with pytest.raises(ThreadRegistryUnavailable, match="claim"):
+        await registry.claim("thread", "alice")
+
+    client.reset_mock()
+    client.get.side_effect = RuntimeError("redis owner failed")
+    with pytest.raises(ThreadRegistryUnavailable, match="owner"):
+        await registry.owner("thread")
+
+    client.reset_mock()
+    client.smembers.side_effect = RuntimeError("redis index failed")
+    with pytest.raises(ThreadRegistryUnavailable, match="owner index"):
+        await registry.threads_for_owner("alice")
 
 
 @pytest.mark.asyncio

@@ -207,6 +207,7 @@ async def test_api_deps_get_current_user():
     user = await get_current_user(authorization=f"Bearer {encoded_jwt}")
     assert user["user_id"] == "user_123"
     assert user["role"] == "operator"
+    assert user["client_id"] == "unattributed"
 
     # Case 6: Invalid JWT token with require_authentication=True
     with patch.object(settings, "require_authentication", True):

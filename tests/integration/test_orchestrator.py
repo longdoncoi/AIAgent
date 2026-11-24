@@ -4,7 +4,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
@@ -28,6 +28,9 @@ class _FakeLLM:
     def with_structured_output(self, schema: Any) -> _FakeStructuredJudge:
         return _FakeStructuredJudge()
 
+    async def ainvoke(self, prompt: Any) -> AIMessage:
+        return AIMessage(content="Deterministic synthesis grounded in [step_1].")
+
 
 class _FakeA2AClient:
     """Deterministic sub-agent stream; no A2A/LiteLLM servers in integration tests."""
@@ -38,7 +41,8 @@ class _FakeA2AClient:
 
 
 @pytest.mark.asyncio
-async def test_supervisor_execution_flow():
+async def test_supervisor_execution_flow(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("FAST_HEURISTIC_PLANNER", "true")
     checkpointer = MemorySaver()
     graph = create_supervisor_graph(checkpointer=checkpointer)
 
@@ -50,7 +54,21 @@ async def test_supervisor_execution_flow():
         "thread_id": thread_id,
     }
 
-    final_state = await graph.ainvoke(initial_state, config=config)
+    with (
+        patch(
+            "src.agentic.orchestrator.nodes.dispatch.get_a2a_client",
+            return_value=_FakeA2AClient(),
+        ),
+        patch(
+            "src.agentic.orchestrator.nodes.reflector.get_llm",
+            return_value=_FakeLLM(),
+        ),
+        patch(
+            "src.agentic.orchestrator.nodes.finalize.get_llm",
+            return_value=_FakeLLM(),
+        ),
+    ):
+        final_state = await graph.ainvoke(initial_state, config=config)
 
     assert final_state.get("plan") is not None
     assert len(final_state["plan"].steps) >= 1
@@ -58,7 +76,8 @@ async def test_supervisor_execution_flow():
 
 
 @pytest.mark.asyncio
-async def test_supervisor_hitl_interrupt_and_resume():
+async def test_supervisor_hitl_interrupt_and_resume(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("FAST_HEURISTIC_PLANNER", "true")
     checkpointer = MemorySaver()
     graph = create_supervisor_graph(checkpointer=checkpointer)
 
@@ -89,6 +108,10 @@ async def test_supervisor_hitl_interrupt_and_resume():
             ),
             patch(
                 "src.agentic.orchestrator.nodes.reflector.get_llm",
+                return_value=_FakeLLM(),
+            ),
+            patch(
+                "src.agentic.orchestrator.nodes.finalize.get_llm",
                 return_value=_FakeLLM(),
             ),
         ):

@@ -272,7 +272,7 @@ async def test_knowledge_graph_batch_and_async(tmp_path: Path) -> None:
     assert "PCI-DSS" in nodes[0].node.get_content() or "thanh toán" in nodes[0].node.get_content()
 
 
-def test_long_term_store_pool_connection() -> None:
+def test_long_term_store_pool_connection(tmp_path: Path) -> None:
     """Verifies that LongTermStore reuses PostgreSQL ConnectionPool if active."""
     from unittest.mock import MagicMock, patch
 
@@ -288,7 +288,7 @@ def test_long_term_store_pool_connection() -> None:
     mock_pool.connection.return_value.__enter__.return_value = mock_conn
 
     with patch("src.agentic.memory.short_term.get_postgres_pool", return_value=mock_pool):
-        store = LongTermStore(force_sqlite=True)  # Init locally
+        store = LongTermStore(storage_dir=tmp_path, force_sqlite=True)
         # Test _get_pg_conn context manager borrows from mock_pool
         with store._get_pg_conn() as conn:
             assert conn == mock_conn

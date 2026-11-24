@@ -22,6 +22,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "langchain-core" },
@@ -62,8 +63,10 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "pytest-xdist" },
-    { name = "ragas" },
     { name = "ruff" },
+]
+eval = [
+    { name = "ragas" },
 ]
 neural = [
     { name = "rank-bm25" },
@@ -73,12 +76,12 @@ neural = [
 [package.dev-dependencies]
 dev = [
     { name = "datasets" },
-    { name = "ragas" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.13.0" },
+    { name = "cryptography", specifier = ">=43.0.0" },
     { name = "datasets", marker = "extra == 'dev'", specifier = ">=2.19.0" },
     { name = "deepeval", marker = "extra == 'deepeval'", specifier = ">=2.0.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
@@ -109,7 +112,7 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.12" },
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "qdrant-client", specifier = ">=1.11.3" },
-    { name = "ragas", marker = "extra == 'dev'", specifier = ">=0.2.0" },
+    { name = "ragas", marker = "extra == 'eval'", specifier = ">=0.2.0" },
     { name = "rank-bm25", marker = "extra == 'neural'", specifier = ">=0.2.2" },
     { name = "redis", specifier = ">=5.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.9" },
@@ -118,13 +121,10 @@ requires-dist = [
     { name = "temporalio", specifier = ">=1.7.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.31.0" },
 ]
-provides-extras = ["dev", "neural", "deepeval"]
+provides-extras = ["dev", "eval", "neural", "deepeval"]
 
 [package.metadata.requires-dev]
-dev = [
-    { name = "datasets", specifier = ">=2.19.0" },
-    { name = "ragas", specifier = ">=0.2.0" },
-]
+dev = [{ name = "datasets", specifier = ">=2.19.0" }]
 
 [[package]]
 name = "aiohappyeyeballs"

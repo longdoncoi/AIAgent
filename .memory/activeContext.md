@@ -2,40 +2,60 @@
 
 ## Trọng tâm
 
-- Hoàn thiện đợt hardening toàn diện sau source-code review: persistence async, tenant isolation, HITL capability, MCP/A2A fail-closed, sandbox, RAG/CDC, Kubernetes và CI/CD.
-- Baseline runtime đã thống nhất ở Python 3.12; `uv.lock` đã được tái tạo.
+- Đợt hardening production-readiness ngày 2026-11-25 đã hoàn tất ở mức source code, manifest và release workflow cục bộ.
+- Đánh giá tiếp tục fail-closed: source-level PASS không đồng nghĩa Go-Live; strict AI release gate, staging drills và Release Board vẫn bắt buộc.
 
 ## Đã hoàn thành
 
-- Chuyển production checkpoint sang `AsyncPostgresSaver` với lifecycle async; Redis checkpoint từ chối payload pickle không ký.
-- Scope checkpoint theo chủ sở hữu và bổ sung thread ownership registry phân tán; approval xác thực thread/step đang interrupt.
-- Approval được cấp theo từng step và truyền qua A2A bằng execution context; tool rủi ro cao kiểm tra capability tại biên MCP.
-- A2A/MCP production fail-closed; MCP dùng transport SSE thật và S2S authentication; local fallback chỉ dành cho dev/test.
-- Bổ sung DAG validation, deadlock defense, lọc SSE chỉ ở node `finalize`, và sửa vòng replan dựa trên reflection mới nhất.
-- Siết Docker/Kubernetes sandbox, timeout, non-root, read-only FS, capability drop và network deny.
-- CDC chống path traversal, thực hiện upsert/delete + rebuild index; RAG cache/retrieval phân vùng theo filter/tenant.
-- Readiness, rate limiting, long-term consolidation và cache async path không còn block event loop trực tiếp.
-- Đồng bộ Python 3.12, Docker Compose, Kubernetes MCP services/service accounts/network policies và CI security gates.
-- Bổ sung regression tests cho DAG, unsigned checkpoint, thread ownership và step-scoped HITL.
-- **Thực hiện khuyến nghị sau review mã nguồn toàn diện**:
-  - Triệt tiêu 100% lỗi linter Ruff (`I001`, `F401`) trên toàn bộ kho mã nguồn bao gồm `migrations/`.
-  - Giữ vững chất lượng tĩnh: `ruff check .` (0 lỗi), `mypy --strict src` (74/74 source files sạch lỗi).
-  - Tích hợp `pytest-xdist>=3.6.1` và cập nhật lockfile `uv.lock`, đồng bộ chạy song song qua `-n auto` trong `Makefile` và `.github/workflows/ci.yml`.
-  - Xử lý dứt điểm các cảnh báo coroutine unawaited và rò rỉ kết nối `sqlite3.Connection` trong `LongTermStore` bằng `@contextmanager`.
-  - Xác nhận toàn bộ 268/268 test cases đều passed với coverage 96% toàn hệ thống (100% trên orchestration, safety và tools).
+- HITL step capability được Supervisor/API ký Ed25519; L3 chỉ có public key và attenuate thành call capability exact-argument, one-time; L4 MCP xác minh toàn bộ parent binding, TTL, tool subset và nonce chống replay.
+- Production `SERVICE_ROLE` bắt buộc API có private key, agent/MCP có public key và từ chối khởi động nếu private key bị cấp cho verifier/maintenance.
+- ExternalSecret tách riêng API, Chat, RAG, Coding, MCP, maintenance và database. Chat/Coding không nhận Qdrant/Neo4j credential; chỉ API nhận approval private key.
+- JWT roles/department/client được pin qua API → signed A2A metadata → execution context; RAG/Qdrant/KG áp dụng tenant, role, department và ACL, chặn caller override.
+- Long-term memory và Knowledge Graph có namespace tenant; Finalize từ chối RAG thiếu citation đã xác minh.
+- Right-to-be-Forgotten fail-closed theo owner, fan-out qua PostgreSQL, Redis, LTM, Qdrant, KG, cache và raw files theo tenant.
+- Production rate limiter fail-closed khi Redis unavailable; A2A có `/metrics`; stream latency chỉ ghi khi stream thực sự kết thúc.
+- BM25 dùng `rank_bm25`; production bắt buộc neural reranker và embedding service thật.
+- Repo MCP chặn symlink/junction escape; server-side tool authorization có regression test.
+- Execution context chung nằm ở `core/`, loại bỏ reverse dependency giữa memory/LLM và tools.
+- FinOps metadata lấy từ verified context, chống caller override, ghi LiteLLM spend logs và Prometheus mà không dùng user ID làm metric label.
+- Redis checkpoint có TTL; PostgreSQL có migration `002_checkpoint_retention`, cleanup parameterized, admin/CLI và CronJob 30 ngày với NetworkPolicy riêng.
+- Kubernetes least-privilege routes tách Chat→Web và Coding→Repo/CodeExec; sửa label/cổng pgBouncer; Kustomize dùng labels transformer mới.
+- CI action/runtime images được pin; production audit dùng dependency graph có hash từ `uv.lock`, `--no-deps --disable-pip`, tránh resolver lần hai trên mutable index.
+- E2E API và integration orchestrator dùng deterministic boundary doubles; full suite không còn phụ thuộc LiteLLM/A2A thật.
+- `validate-deploy` cài và chạy toàn bộ parser/test qua cùng môi trường `uv sync --frozen`; regression test chặn việc gọi Python hệ thống thiếu dependency.
+- Tất cả GitHub Actions đã nâng lên phiên bản Node 24 hiện hành và vẫn pin bằng commit SHA bất biến; loại bỏ cảnh báo runner cưỡng bức nâng Node 20.
+- Publish/CD chỉ chạy cho release tag sau strict gate; tải PRR artifact của đúng workflow/commit thay vì tin bản tracked có thể cũ.
+- Release sign-off dùng giao thức hai commit không tự-tham-chiếu: Hội đồng ký source commit `C`; tag trỏ commit attestation `A` chỉ chứa `release-board.json`; CI xác minh `A` có đúng một parent `C` và không có path thay đổi khác.
 
-## Xác minh
+## Xác minh mới nhất
 
-- `ruff check .`: PASS (0 cảnh báo/lỗi trên toàn bộ dự án).
-- `mypy src/`: PASS (Success: no issues found in 74 source files).
-- `pytest -n auto`: 268/268 passed (100% pass) trong ~109s, độ phủ mã nguồn đạt 96%.
-- Docker Desktop 4.100.0 và WSL 2 đã được kiểm tra (WSL 2 active, sẵn sàng kích hoạt Docker daemon).
+- Current committed HEAD là `1e5e546318b4000b58e559b8143b03aa1644fcaa`; các sửa release workflow hiện còn ở working tree. `evidence/prr/latest.json` tracked thuộc commit cũ và **không** được coi là attestation cho thay đổi này; CI phải tái sinh artifact sau commit.
+- `ruff check .`: PASS.
+- `mypy src/` strict: PASS, 82 source files.
+- Full CI-equivalent suite: `383 passed, 1 skipped in 212.85s`; skip là kiểm thử symlink đặc quyền trên Windows.
+- Coverage: `87.70%` (ngưỡng CI 80%).
+- Deploy/release regressions gồm locked runtime, tag-only publish, artifact binding, single-parent attestation, Node 24 immutable pins và chặn unit test ghi SQLite vào storage tracked.
+- Circuit-breaker state-machine test không còn dùng sleep/cửa sổ 100 ms; timeout được mô phỏng bằng timestamp để ổn định dưới xdist/runner chậm.
+- Security/deploy regression cho Ed25519, attenuation, key isolation: PASS.
+- YAML parse và `kubectl kustomize deploy/k8s`: PASS.
+- `uv lock --check`: PASS.
+- Production-only `pip-audit` theo lockfile: không phát hiện vulnerability đã biết.
+- Latest GitHub run `45452472308` tại HEAD hiện tại: lint/audit và test/eval PASS; validate-deploy FAIL do gọi Python hệ thống thiếu `yaml`. Nguyên nhân đã sửa cục bộ bằng `uv run --no-sync`; cần commit/push và CI remote xanh để xác nhận.
+- GitHub runtime audit ngày 2026-11-25: repo/staging/production đều có 0 secret và 0 variable; `production` chỉ có 1 required reviewer, `staging` không có reviewer; `main` không có branch protection khả dụng.
+- Runtime preflight ngày 2026-11-24: Docker CLI có nhưng daemon không chạy; `kubectl` không có current context/cluster; không có service production lắng nghe trên các cổng phụ thuộc; các biến kết nối/secret production đều vắng mặt.
+- Strict `python evals/release_gate.py`: FAIL đúng thiết kế với `LLM gateway unreachable — no real generation or LLM judging possible`.
+- `evidence/signoff/release-board.json`: MISSING; chưa có 9 chữ ký gắn với commit/tag.
 
-## Việc tiếp theo
+## Blocker Go-Live còn lại
 
-1. Khởi động lại Windows để hoàn tất WSL 2, sau đó khởi động Docker Desktop và thực hiện pre-flight với Docker/Kubernetes dependencies thật trước go-live.
-2. Chạy smoke test với Postgres/Redis/LiteLLM/A2A/MCP thực trước khi ký go-live.
+1. Provision LiteLLM, embedding service, Qdrant, Redis, PostgreSQL/pgBouncer và OTel/Tempo trên staging; chạy strict release eval với neural stack + RAGAS/DeepEval thật.
+2. Chạy load/soak 100 users ≥5 phút, chaos, cross-tenant security probing, cross-pod approval-key probing, RTBF đối soát từng backend và migration/retention drill trên cluster thật.
+3. Cấu hình WAL archiving/off-cluster PITR và diễn tập restore; logical PVC backup hiện không đạt tiêu chí RPO=0.
+4. Xác thực ExternalSecret/Vault, Alertmanager/Slack, LiteLLM budget rejection và spend-log allocation trên runtime thật.
+5. Cấu hình GitHub secrets/variables, đủ reviewer độc lập, branch protection; commit/push các sửa CI và yêu cầu mọi remote job xanh.
+6. Thu đủ 9 chữ ký Release Board theo giao thức `C → A → tag`; không tự tạo sign-off artifact.
 
-## Blocker
+## Kết luận hiện tại
 
-- Windows đang báo pending reboot sau khi bật WSL; Docker daemon chưa thể khởi động cho đến khi máy được restart. Kubernetes cluster/context cũng chưa được cấu hình, nên chưa thể smoke-test workload thật.
+- Source code + manifest + release workflow gates: PASS tại workspace; remote CI còn chờ commit/rerun.
+- Production Go-Live 10/10: CHƯA ĐƯỢC PHÊ DUYỆT do thiếu bằng chứng staging/DR/load/eval/sign-off; không hạ ngưỡng hoặc dùng heuristic thay thế.

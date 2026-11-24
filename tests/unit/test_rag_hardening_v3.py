@@ -226,6 +226,64 @@ def test_missing_tenant_metadata_is_dropped_in_production() -> None:
     assert retriever._is_permitted(tagged, {"tenant_id": "alice"}) is True
 
 
+def test_document_rbac_requires_role_department_and_acl_match() -> None:
+    retriever = HybridRetriever.__new__(HybridRetriever)
+    retriever.settings = SimpleNamespace(require_embedding_service=True)
+    permitted = NodeWithScore(
+        node=TextNode(
+            text="finance policy",
+            metadata={
+                "tenant_id": "acme",
+                "allowed_roles": ["operator"],
+                "department": "finance",
+                "acl": ["role:operator"],
+            },
+        ),
+        score=1.0,
+    )
+    scope = {
+        "tenant_id": "acme",
+        "user_roles": ["operator"],
+        "department": "finance",
+        "acl_principals": ["alice", "role:operator", "finance"],
+    }
+    assert retriever._is_permitted(permitted, scope) is True
+    assert retriever._is_permitted(permitted, {**scope, "user_roles": ["guest"]}) is False
+    assert retriever._is_permitted(permitted, {**scope, "department": "engineering"}) is False
+    assert retriever._is_permitted(
+        permitted, {**scope, "acl_principals": ["bob", "role:guest"]}
+    ) is False
+
+
+def test_rag_authorization_filters_cannot_be_overridden_by_tool_arguments() -> None:
+    token = set_tool_execution_context(
+        ToolExecutionContext(
+            agent_name="rag",
+            step_id="s-rbac",
+            owner_id="acme",
+            user_roles=("operator",),
+            department="finance",
+        )
+    )
+    try:
+        effective = _build_effective_filters(
+            {
+                "tenant_id": "victim",
+                "user_roles": ["admin"],
+                "department": "executive",
+                "acl_principals": ["victim"],
+            }
+        )
+        assert effective == {
+            "tenant_id": "acme",
+            "user_roles": ["operator"],
+            "department": "finance",
+            "acl_principals": ["acme", "finance", "public", "role:operator"],
+        }
+    finally:
+        reset_tool_execution_context(token)
+
+
 # ---------------------------------------------------------------------------
 # 2. Security metadata + stale-vector deletion + fail-closed ingestion
 # ---------------------------------------------------------------------------

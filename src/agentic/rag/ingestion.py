@@ -94,12 +94,16 @@ def _attach_security_metadata(
     documents: list[Document],
     tenant_id: str,
     acl: list[str] | None = None,
+    department: str | None = None,
+    allowed_roles: list[str] | None = None,
 ) -> None:
     """Stamp authoritative tenant/ACL metadata onto documents (in place)."""
     for doc in documents:
         metadata = dict(getattr(doc, "metadata", {}) or {})
         metadata["tenant_id"] = tenant_id
         metadata["acl"] = list(acl) if acl else [tenant_id]
+        metadata["department"] = str(department or "*").lower()
+        metadata["allowed_roles"] = sorted(set(allowed_roles or ["*"]))
         doc.metadata = metadata
 
 
@@ -196,6 +200,8 @@ def ingest_documents(
     *,
     tenant_id: str | None = None,
     acl: list[str] | None = None,
+    department: str | None = None,
+    allowed_roles: list[str] | None = None,
 ) -> int:
     """Ingests documents, builds hierarchical chunks, and persists index.
 
@@ -233,7 +239,7 @@ def ingest_documents(
         )
         documents = [sample_doc]
 
-    _attach_security_metadata(documents, effective_tenant, acl)
+    _attach_security_metadata(documents, effective_tenant, acl, department, allowed_roles)
 
     # Hierarchical Node Parser: 1024 parent chunk, 256 child chunk
     node_parser = HierarchicalNodeParser.from_defaults(
@@ -305,7 +311,16 @@ def ingest_documents(
                 file_name = (
                     doc.metadata.get("file_name", "doc") if hasattr(doc, "metadata") else "doc"
                 )
-                total_triples += kg.index_text(doc.text, source_doc=file_name)
+                total_triples += kg.index_text(
+                    doc.text,
+                    source_doc=file_name,
+                    metadata={
+                        "tenant_id": doc.metadata.get("tenant_id"),
+                        "department": doc.metadata.get("department"),
+                        "allowed_roles": doc.metadata.get("allowed_roles"),
+                        "acl": doc.metadata.get("acl"),
+                    },
+                )
             logger.info(
                 "Successfully extracted and indexed %s triples into Knowledge Graph.",
                 total_triples,

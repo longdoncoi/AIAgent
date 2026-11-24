@@ -67,7 +67,14 @@ async def chat_endpoint(
     initial_input = {
         "messages": [HumanMessage(content=clean_query)],
         "thread_id": thread_id,
-        "metadata": {**safe_metadata, "user_id": owner_id, "public_thread_id": thread_id},
+        "metadata": {
+            **safe_metadata,
+            "user_id": owner_id,
+            "public_thread_id": thread_id,
+            "user_roles": list(user.get("roles") or [user.get("role", "guest")]),
+            "department": str(user.get("department") or "public"),
+            "client_id": str(user.get("client_id") or "unattributed"),
+        },
     }
 
     try:
@@ -164,7 +171,14 @@ async def chat_stream_endpoint(
     initial_input = {
         "messages": [HumanMessage(content=clean_query)],
         "thread_id": thread_id,
-        "metadata": {**safe_metadata, "user_id": owner_id, "public_thread_id": thread_id},
+        "metadata": {
+            **safe_metadata,
+            "user_id": owner_id,
+            "public_thread_id": thread_id,
+            "user_roles": list(user.get("roles") or [user.get("role", "guest")]),
+            "department": str(user.get("department") or "public"),
+            "client_id": str(user.get("client_id") or "unattributed"),
+        },
     }
 
     async def event_generator() -> AsyncIterator[dict[str, Any]]:

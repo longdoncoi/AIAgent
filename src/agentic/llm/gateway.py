@@ -26,13 +26,12 @@ from pydantic import PrivateAttr, SecretStr
 from src.agentic.cache.kv_cache import get_kv_cache_headers
 from src.agentic.cache.prompt_cache import get_prompt_cache
 from src.agentic.core.config import Settings, get_settings
-from src.agentic.memory.data_lifecycle import cost_tags_from_context
+from src.agentic.core.execution_context import cost_allocation_tags, get_tool_execution_context
 from src.agentic.observability.metrics import (
     COST_ALLOCATION_TOTAL,
     TOKEN_COST_TOTAL,
     TOKENS_TOTAL,
 )
-from src.agentic.tools.execution_context import get_tool_execution_context
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +69,7 @@ def _record_cost(alias: str, prompt_tokens: int, completion_tokens: int) -> None
         TOKEN_COST_TOTAL.labels(model_alias=bounded, token_type="completion").inc(
             completion_tokens / 1000.0 * completion_price
         )
-    tags = cost_tags_from_context()
+    tags = cost_allocation_tags(str(get_settings().environment))
     total_cost = (
         prompt_tokens / 1000.0 * prompt_price + completion_tokens / 1000.0 * completion_price
     )
@@ -477,6 +476,31 @@ def get_llm(
     if "extra_headers" in kwargs:
         default_headers.update(kwargs.pop("extra_headers"))
 
+    # LiteLLM persists this request metadata in spend logs.  Protected billing
+    # dimensions always come from the verified A2A/JWT execution context and
+    # overwrite same-named values supplied by internal callers.
+    extra_body = kwargs.pop("extra_body", {}) or {}
+    if not isinstance(extra_body, dict):
+        raise TypeError("extra_body must be a mapping")
+    metadata = extra_body.get("metadata", {}) or {}
+    if not isinstance(metadata, dict):
+        raise TypeError("extra_body.metadata must be a mapping")
+    spend_metadata = metadata.get("spend_logs_metadata", {}) or {}
+    if not isinstance(spend_metadata, dict):
+        raise TypeError("extra_body.metadata.spend_logs_metadata must be a mapping")
+    allocation = cost_allocation_tags(str(settings.environment))
+    protected_allocation = {
+        "client_id": allocation["client_id"],
+        "department": allocation["department"],
+        "environment": allocation["env"],
+        "agent": allocation["agent"],
+    }
+    metadata = {
+        **metadata,
+        "spend_logs_metadata": {**spend_metadata, **protected_allocation},
+    }
+    extra_body = {**extra_body, "metadata": metadata}
+
     logger.debug(
         f"Resolved LLM alias '{alias}' -> model='{model_name}' at base_url='{base_url}' (timeout={effective_timeout}s)"
     )
@@ -495,6 +519,7 @@ def get_llm(
         "max_retries": max_retries,
         "callbacks": callbacks,
         "default_headers": default_headers,
+        "extra_body": extra_body,
     }
     llm = _PromptCachedChatOpenAI(**chat_model_kwargs, **kwargs)
     llm._cache_alias = _bounded_alias(alias)

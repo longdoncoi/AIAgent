@@ -87,6 +87,17 @@ def _validate_safe_path(target_path: str, is_write: bool = False) -> Path:
     return path
 
 
+def _validate_discovered_path(path: Path) -> Path:
+    """Validate a directory entry before traversal or opening it.
+
+    Validating only the caller-supplied root is insufficient: a symlink or
+    junction below that root can resolve to a sensitive path outside the
+    workspace.  Resolve every discovered entry and apply the same boundary and
+    deny-list policy before using it.
+    """
+    return _validate_safe_path(str(path))
+
+
 def list_files_core(directory: str = ".", max_depth: int = 3) -> str:
     """Lists repository directory tree up to max_depth."""
     try:
@@ -106,11 +117,17 @@ def list_files_core(directory: str = ".", max_depth: int = 3) -> str:
             for item in sorted(current.iterdir()):
                 if item.name in IGNORED_DIRS:
                     continue
+                try:
+                    safe_item = _validate_discovered_path(item)
+                except (OSError, PermissionError):
+                    # Do not disclose the target or descend into an unsafe
+                    # symlink/junction.
+                    continue
                 rel_path = item.relative_to(base_path)
                 prefix = "  " * (depth - 1)
-                if item.is_dir():
+                if safe_item.is_dir():
                     results.append(f"{prefix}[DIR]  {rel_path.as_posix()}/")
-                    _walk(item, depth + 1)
+                    _walk(safe_item, depth + 1)
                 else:
                     results.append(f"{prefix}[FILE] {rel_path.as_posix()}")
         except PermissionError:
@@ -171,12 +188,22 @@ def search_symbol_core(query: str, directory: str = ".") -> str:
 
     matches: list[str] = []
 
-    for root, dirs, files in os.walk(base_path):
-        dirs[:] = [d for d in dirs if d not in IGNORED_DIRS]
+    for root, dirs, files in os.walk(base_path, followlinks=False):
+        safe_dirs: list[str] = []
+        for directory_name in dirs:
+            if directory_name in IGNORED_DIRS:
+                continue
+            try:
+                _validate_discovered_path(Path(root) / directory_name)
+            except (OSError, PermissionError):
+                continue
+            safe_dirs.append(directory_name)
+        dirs[:] = safe_dirs
         for file in files:
             file_path = Path(root) / file
             try:
-                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                safe_file = _validate_discovered_path(file_path)
+                with open(safe_file, "r", encoding="utf-8", errors="ignore") as f:
                     for line_num, line in enumerate(f, start=1):
                         if len(line) > _MAX_MATCH_LINE_CHARS:
                             continue

@@ -1,5 +1,6 @@
 """Long-term Memory Store: Semantic, Episodic, and Procedural Memory with Dual-Engine (PostgreSQL & SQLite WAL) Persistence."""
 
+import hashlib
 import json
 import logging
 import re
@@ -14,7 +15,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from src.agentic.core.config import get_settings
-from src.agentic.tools.execution_context import get_tool_execution_context
+from src.agentic.core.execution_context import get_tool_execution_context
 
 logger = logging.getLogger(__name__)
 
@@ -179,33 +180,68 @@ class LongTermStore:
                 except Exception as e:
                     logger.warning(f"Error migrating legacy JSON memories: {e}")
 
+    def _prepare_owned_metadata(self, metadata: dict[str, Any] | None) -> dict[str, Any]:
+        """Resolve and validate the authoritative owner for a memory record."""
+        owned = dict(metadata or {})
+        context = get_tool_execution_context()
+        contextual_owner = context.owner_id if context is not None else None
+        supplied_owner = owned.get("user_id")
+        if supplied_owner and contextual_owner and str(supplied_owner) != str(contextual_owner):
+            raise PermissionError("Long-term memory owner does not match execution context.")
+        owner_id = str(supplied_owner or contextual_owner or "")
+        if not owner_id:
+            if self.settings.environment == "production":
+                raise PermissionError("Production long-term memory writes require an owner_id.")
+            owner_id = "local_system"
+        _validate_user_id(owner_id)
+        owned["user_id"] = owner_id
+        return owned
+
+    @staticmethod
+    def _owned_entry_id(category: str, logical_key: str, owner_id: str) -> str:
+        """Create an opaque, tenant-namespaced primary key.
+
+        Hashing avoids leaking principal identifiers through database primary
+        keys while guaranteeing that two tenants can never overwrite one
+        another's semantic/episodic/procedural record.
+        """
+        digest = hashlib.sha256(
+            f"{category}\x00{owner_id}\x00{logical_key}".encode("utf-8")
+        ).hexdigest()
+        return f"{category[:4]}_{digest}"
+
     def add_semantic(self, key: str, fact: str, metadata: dict[str, Any] | None = None) -> None:
         """Stores a semantic fact or user preference."""
-        entry_id = f"sem_{key}"
-        self._upsert(entry_id, "semantic", fact, metadata or {})
+        owned = self._prepare_owned_metadata(metadata)
+        owned.setdefault("memory_key", key)
+        entry_id = self._owned_entry_id("semantic", key, str(owned["user_id"]))
+        self._upsert(entry_id, "semantic", fact, owned)
 
     def add_episodic(
         self, task_id: str, summary: str, metadata: dict[str, Any] | None = None
     ) -> None:
         """Stores an episodic record of a completed task or decision."""
-        entry_id = f"epi_{task_id}"
-        self._upsert(entry_id, "episodic", summary, metadata or {})
+        owned = self._prepare_owned_metadata(metadata)
+        owned.setdefault("task_id", task_id)
+        entry_id = self._owned_entry_id("episodic", task_id, str(owned["user_id"]))
+        self._upsert(entry_id, "episodic", summary, owned)
 
     def add_procedural(
         self, workflow_name: str, steps_guide: str, metadata: dict[str, Any] | None = None
     ) -> None:
         """Stores a procedural workflow or recipe."""
-        entry_id = f"proc_{workflow_name}"
-        self._upsert(entry_id, "procedural", steps_guide, metadata or {})
+        owned = self._prepare_owned_metadata(metadata)
+        owned.setdefault("workflow_name", workflow_name)
+        entry_id = self._owned_entry_id("procedural", workflow_name, str(owned["user_id"]))
+        self._upsert(entry_id, "procedural", steps_guide, owned)
 
     def _upsert(self, entry_id: str, category: str, content: str, metadata: dict[str, Any]) -> None:
         now_iso = datetime.now(timezone.utc).isoformat()
-        # Stamp the owning principal when available so deletion can enumerate
-        # exactly this user's records via a strict JSON predicate.
         metadata = dict(metadata)
         context = get_tool_execution_context()
-        if context is not None and context.owner_id and "user_id" not in metadata:
-            metadata["user_id"] = context.owner_id
+        if context is not None and context.owner_id:
+            if metadata.get("user_id") != context.owner_id:
+                raise PermissionError("Long-term memory owner changed after authorization.")
         meta_json = json.dumps(metadata, ensure_ascii=False)
 
         if self.is_postgres:
@@ -255,6 +291,13 @@ class LongTermStore:
     ) -> list[MemoryEntry]:
         """Queries stored memories with optional category and strict user filter."""
         results: list[MemoryEntry] = []
+        context = get_tool_execution_context()
+        context_owner = context.owner_id if context is not None else None
+        if user_id and context_owner and user_id != context_owner:
+            raise PermissionError("Cross-tenant long-term memory search is forbidden.")
+        effective_user_id = user_id or context_owner
+        if self.settings.environment == "production" and not effective_user_id:
+            raise PermissionError("Production long-term memory searches require an owner_id.")
 
         if self.is_postgres:
             try:
@@ -265,11 +308,11 @@ class LongTermStore:
                         if category:
                             clauses.append("category = %s")
                             params.append(category)
-                        if user_id:
+                        if effective_user_id:
                             # JSONB containment keeps the user filter strict and
                             # independent of the (caller-controlled) query text.
                             clauses.append("metadata @> %s::jsonb")
-                            params.append(json.dumps({"user_id": user_id}))
+                            params.append(json.dumps({"user_id": effective_user_id}))
                         cur.execute(
                             f"""SELECT id, category, content, metadata, created_at
                                 FROM long_term_memories
@@ -306,9 +349,9 @@ class LongTermStore:
                 if category:
                     clauses.append("category = ?")
                     params.append(category)
-                if user_id:
+                if effective_user_id:
                     clauses.append("json_extract(metadata, '$.user_id') = ?")
-                    params.append(user_id)
+                    params.append(effective_user_id)
                 cursor = conn.execute(
                     f"""SELECT id, category, content, metadata, created_at
                         FROM long_term_memories
