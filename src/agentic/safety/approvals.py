@@ -27,19 +27,24 @@ import hmac
 import json
 import logging
 import secrets
+import threading
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from src.agentic.core.config import Settings, get_settings
+from src.agentic.core.redis import get_redis_client
 from src.agentic.observability.metrics import APPROVAL_GRANTS_TOTAL
 
 logger = logging.getLogger(__name__)
 
-_GRANT_VERSION = 1
-_DOMAIN = b"agentic-approval-grant-v1\x00"
+_GRANT_VERSION = 2
+_DOMAIN = b"agentic-approval-grant-v2\x00"
+_NONCE_PREFIX = "agentic:approval:nonce:"
+_local_used_nonces: dict[str, int] = {}
+_local_nonce_lock = threading.Lock()
 
 
 class ApprovalGrantPayload(BaseModel):
@@ -54,6 +59,7 @@ class ApprovalGrantPayload(BaseModel):
     iat: int
     exp: int
     nonce: str
+    purpose: Literal["step", "call"] = "step"
     args_digest: str | None = None
 
 
@@ -73,9 +79,32 @@ class ApprovalGrant:
 
 
 def _approval_key(settings: Settings) -> bytes:
-    """Domain-separated signing key, isolated from checkpoint signatures."""
-    material = _DOMAIN + settings.checkpoint_signing_key.encode("utf-8")
+    """Dedicated HITL key; never derived from the shared S2S transport token."""
+    material = _DOMAIN + settings.approval_key.encode("utf-8")
     return hashlib.sha256(material).digest()
+
+
+def _consume_nonce(nonce: str, expires_at: int, settings: Settings) -> bool:
+    """Atomically consume a one-time nonce; Redis in prod, local dict in dev."""
+    ttl = max(1, expires_at - int(time.time()))
+    if settings.is_production:
+        client = get_redis_client(settings.redis_url)
+        if client is None:
+            logger.error("Approval nonce store unavailable; failing closed")
+            return False
+        try:
+            return bool(client.set(f"{_NONCE_PREFIX}{nonce}", "1", ex=ttl, nx=True))
+        except Exception as exc:
+            logger.error("Approval nonce store error; failing closed: %s", exc)
+            return False
+    now = int(time.time())
+    with _local_nonce_lock:
+        for key in [k for k, exp in _local_used_nonces.items() if exp <= now]:
+            _local_used_nonces.pop(key, None)
+        if nonce in _local_used_nonces:
+            return False
+        _local_used_nonces[nonce] = expires_at
+        return True
 
 
 def _b64encode(raw: bytes) -> str:
@@ -103,10 +132,13 @@ def issue_approval_grant(
     tools: list[str] | None = None,
     ttl_seconds: int | None = None,
     args_digest: str | None = None,
+    purpose: Literal["step", "call"] = "step",
     settings: Settings | None = None,
 ) -> str:
     """Mint a signed grant. Must only be called by the supervisor/HITL node."""
     cfg = settings or get_settings()
+    if purpose == "call" and args_digest is None:
+        raise ValueError("A call-scoped approval grant must bind an args_digest")
     now = int(time.time())
     payload = ApprovalGrantPayload(
         step_id=step_id,
@@ -117,12 +149,35 @@ def issue_approval_grant(
         iat=now,
         exp=now + (ttl_seconds if ttl_seconds is not None else cfg.approval_grant_ttl_seconds),
         nonce=secrets.token_hex(8),
+        purpose=purpose,
         args_digest=args_digest,
     )
     body = _b64encode(payload.model_dump_json().encode("utf-8"))
     signature = _b64encode(hmac.new(_approval_key(cfg), body.encode("ascii"), hashlib.sha256).digest())
     APPROVAL_GRANTS_TOTAL.labels(outcome="issued").inc()
     return f"{body}.{signature}"
+
+
+def issue_call_grant(
+    *,
+    step_grant: ApprovalGrant,
+    tool_name: str,
+    arguments: dict[str, Any],
+    ttl_seconds: int | None = None,
+    settings: Settings | None = None,
+) -> str:
+    """Issue a single-use grant bound to the exact tool call arguments."""
+    return issue_approval_grant(
+        step_id=step_grant.step_id,
+        fingerprint=step_grant.payload.fingerprint,
+        owner_id=step_grant.owner_id,
+        agent_name=step_grant.payload.agent_name,
+        tools=[tool_name],
+        args_digest=canonical_args_digest(tool_name, arguments),
+        purpose="call",
+        ttl_seconds=ttl_seconds,
+        settings=settings,
+    )
 
 
 def verify_approval_grant(
@@ -163,7 +218,11 @@ def verify_approval_grant(
             return None
         if payload.agent_name not in (agent_name, agent_name.replace("_agent", "")):
             return None
-        if owner_id is not None and payload.owner_id not in (owner_id, "anonymous_user", "unknown"):
+        if (
+            not owner_id
+            or owner_id in {"anonymous_user", "unknown"}
+            or not hmac.compare_digest(payload.owner_id, owner_id)
+        ):
             logger.warning("Approval owner mismatch for step %s", step_id)
             return None
         if tool_name is not None:
@@ -171,7 +230,18 @@ def verify_approval_grant(
             if tool_name not in payload.tools and tool_name not in allowed:
                 logger.warning("Tool %s not covered by approval grant for step %s", tool_name, step_id)
                 return None
-        if arguments is not None and payload.args_digest is not None:
+        if payload.purpose == "call":
+            if payload.args_digest is None or arguments is None:
+                logger.warning("Call-scoped grant without argument binding rejected for step %s", step_id)
+                return None
+            if not hmac.compare_digest(
+                payload.args_digest, canonical_args_digest(tool_name or "", arguments)
+            ):
+                return None
+            if not _consume_nonce(payload.nonce, payload.exp, cfg):
+                logger.warning("Replayed approval grant rejected for step %s", step_id)
+                return None
+        elif arguments is not None and payload.args_digest is not None:
             if not hmac.compare_digest(payload.args_digest, canonical_args_digest(tool_name or "", arguments)):
                 return None
     except Exception as exc:  # malformed token must never grant access

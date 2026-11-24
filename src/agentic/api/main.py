@@ -8,12 +8,13 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.agentic.api.middleware import REQUEST_ID_VAR, RequestIDAndMetricsMiddleware
+from src.agentic.api.middleware import RequestIDAndMetricsMiddleware
 from src.agentic.api.routes.admin import router as admin_router
 from src.agentic.api.routes.approvals import router as approvals_router
 from src.agentic.api.routes.chat import router as chat_router
 from src.agentic.api.routes.health import router as health_router
 from src.agentic.core.config import get_settings
+from src.agentic.core.context import REQUEST_ID_VAR
 from src.agentic.orchestrator.graph import get_supervisor_graph
 
 

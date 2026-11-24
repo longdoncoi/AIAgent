@@ -3,9 +3,12 @@
 import hashlib
 from functools import lru_cache
 from pathlib import Path
+from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+Environment = Literal["development", "test", "staging", "production"]
 
 
 class Settings(BaseSettings):
@@ -23,7 +26,7 @@ class Settings(BaseSettings):
     # API Configuration
     host: str = "0.0.0.0"
     port: int = 8000
-    environment: str = "development"
+    environment: Environment = "development"
     log_level: str = "INFO"
     debug: bool = True
     allowed_origins: list[str] = Field(
@@ -96,7 +99,9 @@ class Settings(BaseSettings):
     require_authentication: bool = False
     enable_docker_sandbox: bool = True
     s2s_internal_token: str = "agentic-internal-s2s-token-2026"
-    approval_grant_ttl_seconds: int = 300
+    # Dedicated HITL signing key, never derived from the shared S2S credential.
+    approval_signing_key: str | None = None
+    approval_grant_ttl_seconds: int = 60
     jwt_audience: str = "agentic-api"
     jwt_issuer: str = "agentic-platform"
     # CIDRs of trusted reverse proxies. X-Forwarded-For is ignored entirely
@@ -136,6 +141,8 @@ class Settings(BaseSettings):
     max_output_tokens: int = 4096
     # Embedding service is a required dependency in production.
     require_embedding_service: bool = False
+    require_neural_reranker: bool = False
+    rag_default_tenant_id: str = "public"
     semantic_cache_domain_thresholds: dict[str, float] = {
         "legal": 0.96,
         "finance": 0.96,
@@ -179,6 +186,19 @@ class Settings(BaseSettings):
     enable_prometheus: bool = True
     prometheus_port: int = 9090
 
+    @field_validator("environment", mode="before")
+    @classmethod
+    def normalize_environment(cls, value: Any) -> Any:
+        """Normalize the environment label so a typo cannot disable prod guards."""
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
+    @property
+    def is_production(self) -> bool:
+        """Single authoritative production flag derived from a validated label."""
+        return self.environment == "production"
+
     @property
     def policies_path(self) -> Path:
         return self.project_root / "configs" / "policies.yaml"
@@ -199,22 +219,28 @@ class Settings(BaseSettings):
         material = f"agentic-chkpt-isolated\x00{self.s2s_internal_token}"
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
+    @property
+    def approval_key(self) -> str:
+        """Dedicated HITL signing material; never derived from a transport token."""
+        if self.approval_signing_key:
+            return self.approval_signing_key
+        material = f"agentic-approval-dev-only\x00{self.jwt_secret_key}"
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
     @model_validator(mode="after")
     def validate_production_inviolables(self) -> "Settings":
         """Enforces zero-trust production security invariants."""
         # Fail-closed: Never auto-enable host code execution even in development
-        if self.environment == "production":
+        if self.is_production:
             self.allow_host_code_execution = False
             self.allow_local_agent_fallback = False
-            # Fail-closed operational defaults: enforce rather than merely
-            # document them, so a missing env var cannot weaken production.
             self.debug = False
             self.enable_redis_rate_limit = True
             self.enable_redis_cache = True
             self.enable_tracing = True
             self.require_embedding_service = True
-            if "require_model_gateway_ready" not in self.model_fields_set:
-                self.require_model_gateway_ready = True
+            self.require_neural_reranker = True
+            self.require_model_gateway_ready = True
             insecure_keys = [
                 "agentic-secret-key-change-in-production-2026",
                 "secret",
@@ -263,6 +289,23 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "Production Inviolable Violated: allowed_origins cannot contain wildcard '*' when allow_credentials is True in production."
                 )
+            if not self.approval_signing_key:
+                raise ValueError(
+                    "Production Inviolable Violated: approval_signing_key must be explicitly configured in production."
+                )
+            placeholder_secrets = {
+                "litellm_api_key": (self.litellm_api_key, {"sk-dummy-key"}),
+                "neo4j_password": (self.neo4j_password, {"agentic_neo4j_password"}),
+                "postgres_uri": (
+                    self.postgres_uri,
+                    {"postgresql://postgres:postgres@localhost:5432/agentic_db"},
+                ),
+            }
+            for name, (value, placeholders) in placeholder_secrets.items():
+                if value in placeholders:
+                    raise ValueError(
+                        f"Production Inviolable Violated: {name} uses an insecure placeholder in production."
+                    )
 
             # Auto-resolve internal Kubernetes cluster DNS service names if unchanged from default localhost
             if self.a2a_chat_agent_url == "http://localhost:9100/a2a":

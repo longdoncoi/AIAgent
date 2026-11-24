@@ -45,16 +45,29 @@ groups:
           description: "Primary reasoning-llm (GPU/vLLM) is unresponsive; traffic redirected to CPU fallback."
 
       # 4. Excessive Pending HITL Approvals
+      # The old counter expression was never emitted and could never fire.
       - alert: HighPendingApprovalsQueue
         expr: |
-          sum(rate(agent_hitl_approvals_total{decision="pending"}[10m])) > 10
-        for: 5m
+          agent_hitl_pending_approvals > 10
+        for: 10m
         labels:
           severity: warning
           tier: l2-orchestration
         annotations:
           summary: "High volume of paused workflows waiting for Human-in-the-Loop review"
           description: "Backlog of high-risk actions awaiting supervisor approval."
+
+      # 4b. Guard: surface a missing gauge instead of silently disabling the alert.
+      - alert: HITLPendingApprovalsMetricMissing
+        expr: |
+          absent(agent_hitl_pending_approvals) == 1
+        for: 30m
+        labels:
+          severity: info
+          tier: l2-orchestration
+        annotations:
+          summary: "HITL pending-approval gauge is not exported"
+          description: "HighPendingApprovalsQueue cannot evaluate until the gauge is instrumented."
 
       # 5. RAG Cache Miss Ratio Spike
       - alert: RAGCacheMissSpike

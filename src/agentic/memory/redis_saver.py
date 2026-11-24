@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import logging
 import pickle
+import re
 from collections.abc import Sequence
 from typing import Any
 
@@ -28,6 +29,15 @@ logger = logging.getLogger(__name__)
 _MAX_LOCAL_THREADS = 512
 _MAX_LOCAL_CHECKPOINTS_PER_THREAD = 256
 
+# Glob metacharacters supplied by a caller must never be able to widen a SCAN
+# pattern into another tenant's namespace.
+_GLOB_SPECIAL = re.compile(r"([*?\[\]{}])")
+
+
+def _escape_glob(value: str) -> str:
+    """Escape Redis glob metacharacters in a tenant scope component."""
+    return _GLOB_SPECIAL.sub(r"\\\1", value)
+
 
 class RedisSaver(MemorySaver):
     """Distributed Redis Checkpointer with multi-tier memory caching, async I/O, and HMAC verification.
@@ -42,9 +52,13 @@ class RedisSaver(MemorySaver):
         redis_url: str | None = None,
         ttl_seconds: int | None = None,
         key_prefix: str = "agentic:checkpoint",
+        tenant_scope: str | None = None,
     ) -> None:
         super().__init__()
         self.settings = get_settings()
+        # Namespace every key with the owning tenant/principal. Maintenance
+        # operations can then only ever touch this saver's own namespace.
+        self.tenant_scope = str(tenant_scope or "default").strip() or "default"
         self.redis_url = redis_url or self.settings.redis_url
         self.ttl = (
             ttl_seconds if ttl_seconds is not None else self.settings.redis_checkpoint_ttl_seconds
@@ -110,14 +124,21 @@ class RedisSaver(MemorySaver):
     def is_redis_active(self) -> bool:
         return self._redis_client is not None or self._async_redis_client is not None
 
+    def _namespace(self) -> str:
+        """Stable, escaped namespace component for this tenant."""
+        return f"tenant:{_escape_glob(self.tenant_scope)}"
+
     def _redis_key(self, thread_id: str, checkpoint_ns: str, checkpoint_id: str) -> str:
-        return f"{self.key_prefix}:{thread_id}:{checkpoint_ns}:{checkpoint_id}"
+        return f"{self.key_prefix}:{self._namespace()}:{thread_id}:{checkpoint_ns}:{checkpoint_id}"
 
     def _writes_key(self, thread_id: str, checkpoint_ns: str, checkpoint_id: str) -> str:
-        return f"{self.key_prefix}:writes:{thread_id}:{checkpoint_ns}:{checkpoint_id}"
+        return (
+            f"{self.key_prefix}:writes:{self._namespace()}:"
+            f"{thread_id}:{checkpoint_ns}:{checkpoint_id}"
+        )
 
     def _thread_index_key(self, thread_id: str, checkpoint_ns: str) -> str:
-        return f"{self.key_prefix}:index:{thread_id}:{checkpoint_ns}"
+        return f"{self.key_prefix}:index:{self._namespace()}:{thread_id}:{checkpoint_ns}"
 
     @staticmethod
     def _record_persist_error(
@@ -212,7 +233,13 @@ class RedisSaver(MemorySaver):
                     )
                     return None
                 return pickle.loads(raw)
-        if self.settings.allow_legacy_unsigned_checkpoints:
+        production_invariants = bool(
+            getattr(self.settings, "environment", None) == "production"
+        )
+        if getattr(self.settings, "allow_legacy_unsigned_checkpoints", False) and not production_invariants:
+            # Pickle is executed ONLY after HMAC verification has succeeded for
+            # signed payloads. Unsigned legacy payloads are a non-production
+            # migration escape hatch and are never permitted in production.
             logger.warning("Loading an unsigned legacy checkpoint; migrate it immediately.")
             try:
                 return pickle.loads(raw_payload)
@@ -220,8 +247,8 @@ class RedisSaver(MemorySaver):
                 logger.warning("Could not deserialize legacy Redis payload: %s", exc)
         else:
             CHECKPOINT_PERSIST_ERRORS_TOTAL.labels(
-                        backend="redis", operation="verify"
-                    ).inc()
+                backend="redis", operation="verify"
+            ).inc()
             logger.error("Security Alert: rejected unsigned Redis checkpoint payload.")
         return None
 
@@ -433,12 +460,28 @@ class RedisSaver(MemorySaver):
 
         self._enforce_memory_bounds()
 
-    def cleanup_inactive_threads(self, max_idle_seconds: int = 86400 * 30) -> int:
-        """Evicts expired or inactive thread checkpoints from Redis to optimize cluster memory."""
+    def _assert_tenant_scope(self, tenant_scope: str | None) -> None:
+        """Reject cleanup calls that attempt to target a different tenant."""
+        if tenant_scope is not None and str(tenant_scope) != self.tenant_scope:
+            raise PermissionError(
+                "Cross-tenant checkpoint cleanup is forbidden: "
+                f"saver scope={self.tenant_scope!r}, requested={tenant_scope!r}."
+            )
+
+    def cleanup_inactive_threads(
+        self, max_idle_seconds: int = 86400 * 30, tenant_scope: str | None = None
+    ) -> int:
+        """Evict expired/inactive checkpoints, scoped to this saver's tenant.
+
+        ``tenant_scope`` must either be omitted or match the saver's configured
+        scope; cross-tenant cleanup is rejected. The pattern is tenant-scoped;
+        the async counterpart uses SCAN for large deployments.
+        """
+        self._assert_tenant_scope(tenant_scope)
         cleaned_threads = 0
         if self._redis_client is not None:
             try:
-                index_pattern = f"{self.key_prefix}:index:*"
+                index_pattern = f"{self.key_prefix}:index:{self._namespace()}:*"
                 keys = self._redis_client.keys(index_pattern)
                 for idx_key in keys:
                     ttl_left = self._redis_client.ttl(idx_key)
@@ -458,12 +501,15 @@ class RedisSaver(MemorySaver):
                 cleaned_threads += 1
         return cleaned_threads
 
-    async def acleanup_inactive_threads(self, max_idle_seconds: int = 86400 * 30) -> int:
-        """Asynchronously scan indexes; never issue a cluster-blocking Redis KEYS call."""
+    async def acleanup_inactive_threads(
+        self, max_idle_seconds: int = 86400 * 30, tenant_scope: str | None = None
+    ) -> int:
+        """Asynchronously scan this tenant's indexes; never call Redis KEYS."""
+        self._assert_tenant_scope(tenant_scope)
         cleaned_threads = 0
         if self._async_redis_client is not None:
             try:
-                pattern = f"{self.key_prefix}:index:*"
+                pattern = f"{self.key_prefix}:index:{self._namespace()}:*"
                 async for idx_key in self._async_redis_client.scan_iter(match=pattern, count=200):
                     ttl_left = await self._async_redis_client.ttl(idx_key)
                     members = await self._async_redis_client.scard(idx_key)

@@ -8,8 +8,13 @@ FALLBACK (heuristic): when ``sentence_transformers`` or the model weights are
 unavailable, scoring degrades to a *statistical heuristic* (term frequency with
 BM25-style saturation + positional boost blended with the dense score). This is
 NOT a neural cross-encoder and its scores are only roughly calibrated. The
-fallback is logged at WARNING and exported through
-``agent_rag_reranker_mode{mode="heuristic"}`` so production can alert on it.
+fallback is logged at WARNING, exported through
+``agent_rag_reranker_mode{mode="heuristic"}`` and counted by
+``agent_rag_reranker_fallback_total`` so production can alert on it.
+
+When ``settings.require_neural_reranker`` is True (forced in production), any
+inability to load or run the neural model is a hard error: the reranker fails
+closed instead of silently serving heuristic scores as if they were neural.
 """
 
 import logging
@@ -19,7 +24,9 @@ from typing import Any
 
 from llama_index.core.schema import NodeWithScore
 
+from src.agentic.core.config import get_settings
 from src.agentic.observability.metrics import RAG_RERANKER_MODE
+from src.agentic.rag.metrics import RAG_RERANKER_FALLBACK_TOTAL
 
 logger = logging.getLogger(__name__)
 
@@ -29,17 +36,54 @@ _model_cache: dict[str, Any] = {}
 _heuristic_warned = False
 
 
+def _require_neural() -> bool:
+    """Fail-closed flag read lazily so config reloads are honoured."""
+    return bool(getattr(get_settings(), "require_neural_reranker", False))
+
+
 def _set_reranker_mode(mode: str) -> None:
-    """Publish the selected mode once (shared metric, info-style counter)."""
+    """Publish the mode actually in use (shared metric, info-style counter)."""
     RAG_RERANKER_MODE.labels(mode=mode).inc()
 
 
-def _get_cross_encoder(model_name: str) -> Any | None:
-    """Return the shared lazily-initialized cross-encoder, or None if unavailable."""
+def _record_fallback(reason: str) -> None:
+    """Count every fallback so 'neural' is never reported after a silent failure."""
+    RAG_RERANKER_FALLBACK_TOTAL.labels(reason=reason).inc()
+    _set_reranker_mode("heuristic")
+
+
+def _fail_closed(reason: str, exc: BaseException | None = None) -> None:
+    """Raise when a neural reranker is mandatory; otherwise record the fallback."""
+    if _require_neural():
+        raise RuntimeError(
+            "Neural cross-encoder is required (require_neural_reranker=True) but "
+            f"could not be used ({reason})."
+        ) from exc
+
+
+def _warn_heuristic_once(model_name: str, exc: BaseException | None) -> None:
     global _heuristic_warned
+    if not _heuristic_warned:
+        logger.warning(
+            "Neural cross-encoder '%s' unavailable%s; using HEURISTIC reranking. "
+            "Relevance scores are approximate; install sentence_transformers and "
+            "the model weights for production ranking quality.",
+            model_name,
+            f" ({exc})" if exc is not None else "",
+        )
+        _heuristic_warned = True
+
+
+def _get_cross_encoder(model_name: str) -> Any | None:
+    """Return the shared lazily-initialized cross-encoder, or None if unavailable.
+
+    A failed load is NOT cached as ``None``: a later call may retry once the
+    weights or dependencies become available.
+    """
     with _model_lock:
-        if model_name in _model_cache:
-            return _model_cache[model_name]
+        cached = _model_cache.get(model_name)
+        if cached is not None:
+            return cached
 
         try:
             from sentence_transformers import CrossEncoder
@@ -48,21 +92,12 @@ def _get_cross_encoder(model_name: str) -> Any | None:
             _model_cache[model_name] = model
             _set_reranker_mode("neural")
             logger.info("Loaded neural CrossEncoder model: %s", model_name)
+            return model
         except Exception as exc:
-            # Heuristic fallback -- intentionally WARNING, not debug: silently
-            # using it would make relevance scores look trustworthy when they are not.
-            _model_cache[model_name] = None
-            _set_reranker_mode("heuristic")
-            if not _heuristic_warned:
-                logger.warning(
-                    "Neural cross-encoder '%s' unavailable (%s); using HEURISTIC reranking. "
-                    "Relevance scores are approximate; install sentence_transformers and "
-                    "the model weights for production ranking quality.",
-                    model_name,
-                    exc,
-                )
-                _heuristic_warned = True
-        return _model_cache[model_name]
+            _fail_closed("model_load_failed", exc)
+            _record_fallback("model_load_failed")
+            _warn_heuristic_once(model_name, exc)
+            return None
 
 
 class CrossEncoderReranker:
@@ -71,6 +106,7 @@ class CrossEncoderReranker:
     def __init__(self, model_name: str | None = DEFAULT_MODEL, top_n: int = 3) -> None:
         self.model_name = model_name or DEFAULT_MODEL
         self.top_n = top_n
+        self.mode = "unknown"
 
     @property
     def _cross_encoder(self) -> Any | None:
@@ -81,7 +117,11 @@ class CrossEncoderReranker:
     def _cross_encoder(self, model: Any | None) -> None:
         """Inject a model into the shared cache (used by tests and warm-up hooks)."""
         with _model_lock:
-            _model_cache[self.model_name] = model
+            if model is None:
+                # Explicit injection of a failed model must not poison the cache.
+                _model_cache.pop(self.model_name, None)
+            else:
+                _model_cache[self.model_name] = model
 
     def _fallback_score(self, query: str, text: str, base_score: float) -> float:
         """Heuristic TF + position-weighted scoring (BM25-style saturation, no IDF)."""
@@ -117,6 +157,7 @@ class CrossEncoderReranker:
     def rerank(self, query: str, nodes: list[NodeWithScore]) -> list[NodeWithScore]:
         """Reranks candidate nodes and returns the top_n highest scoring items."""
         if not nodes:
+            self.mode = "neural" if _require_neural() else "no-op"
             return []
 
         encoder = self._cross_encoder
@@ -135,13 +176,17 @@ class CrossEncoderReranker:
                 for item, score in zip(nodes, scores, strict=False):
                     item.score = float(score)
                 nodes.sort(key=lambda x: x.score or 0.0, reverse=True)
+                self.mode = "neural"
                 return nodes[: self.top_n]
             except Exception as exc:
                 logger.warning(
                     "Neural cross-encoder inference failed (%s). Falling back to heuristic.",
                     exc,
                 )
+                _fail_closed("inference_failed", exc)
+                _record_fallback("inference_failed")
 
+        self.mode = "heuristic"
         scored: list[tuple[NodeWithScore, float]] = []
         for item in nodes:
             base = item.score or 0.0

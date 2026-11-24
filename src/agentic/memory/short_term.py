@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from langchain_core.messages import BaseMessage, SystemMessage
+from langchain_core.messages.modifier import RemoveMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -108,7 +109,32 @@ async def initialize_checkpointer() -> BaseCheckpointSaver[Any]:
             if settings.environment == "production" and not settings.use_redis_checkpoint:
                 raise RuntimeError("PostgreSQL checkpointer initialization failed.") from exc
             logger.warning("PostgreSQL checkpointer unavailable; trying configured fallback: %s", exc)
+            # Fall through to the explicit Redis branch below. ``get_checkpointer``
+            # short-circuits on ``use_postgres_checkpoint`` and would otherwise
+            # mask the Redis fallback (or silently use MemorySaver in prod).
+            return _init_redis_checkpointer(settings)
 
+    return get_checkpointer()
+
+
+def _init_redis_checkpointer(settings: Any) -> BaseCheckpointSaver[Any]:
+    """Construct a RedisSaver directly; fail closed in production."""
+    global _global_checkpointer
+    if settings.use_redis_checkpoint:
+        try:
+            from src.agentic.memory.redis_saver import RedisSaver
+
+            saver = RedisSaver(redis_url=settings.redis_url)
+            _global_checkpointer = saver
+            logger.info("Initialized distributed RedisSaver checkpointer (fallback path).")
+            return saver
+        except Exception as exc:
+            if settings.environment == "production":
+                raise RuntimeError(
+                    "Fatal Production Configuration Error: both PostgreSQL and Redis "
+                    "checkpointers are unavailable."
+                ) from exc
+            logger.warning("RedisSaver fallback unavailable: %s", exc)
     return get_checkpointer()
 
 
@@ -180,8 +206,18 @@ def get_checkpointer() -> BaseCheckpointSaver[Any]:
 def trim_messages_window(
     messages: list[BaseMessage],
     max_tokens: int = 4000,
+    *,
+    emit_removals: bool = True,
 ) -> list[BaseMessage]:
-    """Ensures message history remains within token budget, keeping system prompt intact."""
+    """Ensure message history stays within a token budget.
+
+    LangGraph's ``add_messages`` reducer is append-only: returning only the
+    surviving messages does NOT shrink the checkpoint, it merely appends them.
+    By default this function therefore appends ``RemoveMessage`` entries for
+    every dropped message id, so the checkpointed list actually shrinks once
+    the reducer processes the result. Set ``emit_removals=False`` for the legacy
+    view-only behaviour (e.g. when building a prompt for the model).
+    """
     if not messages:
         return []
 
@@ -200,4 +236,10 @@ def trim_messages_window(
         trimmed.insert(0, msg)
         current_chars += content_len
 
-    return system_msgs + trimmed
+    kept_ids = {id(m) for m in system_msgs + trimmed}
+    result: list[BaseMessage] = list(system_msgs) + trimmed
+    if emit_removals:
+        for msg in messages:
+            if id(msg) not in kept_ids and msg.id:
+                result.append(RemoveMessage(id=msg.id))
+    return result

@@ -10,7 +10,8 @@ retrieval in production.
 Production rule: when ``settings.require_embedding_service`` is True (the
 production default), an unreachable/invalid embedding service raises
 ``RuntimeError`` instead of degrading to mock. The active provider is exported
-via the ``agent_rag_embed_provider{type="real|mock"}`` gauge.
+via the ``agent_rag_embed_provider{type="real|mock"}`` gauge. A one-text probe
+validates the model actually returns vectors of the configured dimension.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from urllib.parse import urlparse
 
 from src.agentic.core.config import Settings, get_settings
 from src.agentic.observability.metrics import RAG_EMBED_PROVIDER
+from src.agentic.rag.metrics import RAG_EMBED_PROBE_ERRORS_TOTAL
 
 logger = logging.getLogger(__name__)
 
@@ -31,10 +33,14 @@ def _set_embed_provider(provider: str) -> None:
     """Publish the selected provider (shared metric, info-style counter)."""
     RAG_EMBED_PROVIDER.labels(type=provider).inc()
 
+
 _EMBEDDING_LOCK = threading.Lock()
 _configured_provider: str | None = None
 
 _EMBED_API_KEY = "sk-embed-dummy"  # Accepted by the local llama.cpp embedding server.
+_PROBE_TEXT = "embedding dimension probe"
+_DEFAULT_EMBED_TIMEOUT = 10.0
+_DEFAULT_EMBED_MAX_RETRIES = 2
 
 
 def resolve_embed_endpoint(base_url: str, settings: Settings | None = None) -> tuple[str, int]:
@@ -69,6 +75,53 @@ def is_embedding_service_reachable(base_url: str, timeout: float = 0.3) -> bool:
         return False
 
 
+def _is_mock_embedder(embedding_model: Any) -> bool:
+    """Detect dev-only mock/test-double embedders (dimension is meaningless)."""
+    class_name = embedding_model.__class__.__name__.lower()
+    module_name = embedding_model.__class__.__module__
+    return "mock" in class_name or module_name.startswith("unittest.mock")
+
+
+def probe_embedding_model(embedding_model: Any, settings: Settings, provider: str) -> int:
+    """Run a one-text probe and return the observed embedding dimension.
+
+    A real provider must return exactly ``settings.default_embedding_dim``
+    values; a mismatch raises (and increments a metric) because the vector
+    store was created with that dimension and queries would silently fail.
+    Mock embedders are only accepted when explicitly allowed by the caller.
+    """
+    try:
+        vector = embedding_model.get_text_embedding(_PROBE_TEXT)
+    except Exception as exc:
+        RAG_EMBED_PROBE_ERRORS_TOTAL.labels(reason="probe_failed").inc()
+        raise RuntimeError(
+            f"Embedding model probe failed ({exc}); refusing to use an unverified provider."
+        ) from exc
+
+    dimension = len(vector) if isinstance(vector, (list, tuple)) else 0
+    expected = int(settings.default_embedding_dim)
+    if _is_mock_embedder(embedding_model) or provider == "mock":
+        # MockEmbedding is explicitly allowed only outside production; its
+        # constant vectors have no meaningful dimension guarantee, but a valid
+        # non-empty vector is still required.
+        if dimension < 1:
+            RAG_EMBED_PROBE_ERRORS_TOTAL.labels(reason="empty_mock_vector").inc()
+            raise RuntimeError("Embedding model probe returned an empty vector.")
+        logger.warning(
+            "Using mock embedder (dimension=%s); retrieval results are NOT meaningful.",
+            dimension,
+        )
+        return dimension
+
+    if dimension != expected:
+        RAG_EMBED_PROBE_ERRORS_TOTAL.labels(reason="dimension_mismatch").inc()
+        raise RuntimeError(
+            f"Embedding model returned dimension {dimension}, expected {expected}. "
+            "Check default_embedding_model / default_embedding_dim configuration."
+        )
+    return dimension
+
+
 def get_configured_embedding_provider() -> str | None:
     """Return the provider selected by the last :func:`configure_embedding_model` call."""
     with _EMBEDDING_LOCK:
@@ -90,8 +143,8 @@ def configure_embedding_model(*, force: bool = False) -> str:
 
     Raises:
         RuntimeError: If the service is required (production) but unreachable,
-            or if the configured URL is invalid. There is intentionally no
-            silent fallback in this case.
+            if the configured URL is invalid, or if the one-text probe fails.
+            There is intentionally no silent fallback in this case.
     """
     global _configured_provider
     settings = get_settings()
@@ -102,6 +155,8 @@ def configure_embedding_model(*, force: bool = False) -> str:
 
         base_url = settings.llama_embed_base_url
         host, port = resolve_embed_endpoint(base_url, settings)
+        timeout = float(getattr(settings, "embedding_request_timeout_seconds", _DEFAULT_EMBED_TIMEOUT))
+        max_retries = int(getattr(settings, "embedding_max_retries", _DEFAULT_EMBED_MAX_RETRIES))
 
         if is_embedding_service_reachable(base_url):
             from llama_index.embeddings.openai import OpenAIEmbedding
@@ -110,6 +165,8 @@ def configure_embedding_model(*, force: bool = False) -> str:
                 api_base=base_url,
                 api_key=_EMBED_API_KEY,
                 model_name=settings.default_embedding_model,
+                timeout=timeout,
+                max_retries=max_retries,
             )
             provider = "real"
             logger.info(
@@ -137,6 +194,8 @@ def configure_embedding_model(*, force: bool = False) -> str:
                 host,
                 port,
             )
+
+        probe_embedding_model(embedding_model, settings, provider)
 
         from llama_index.core import Settings as LlamaSettings
 

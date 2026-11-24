@@ -42,23 +42,19 @@ def evaluate_faithfulness(generated_answer: str, retrieved_context: str) -> floa
         return 0.0
     ans_tokens = [w for w in generated_answer.lower().split() if len(w) > 3]
     if not ans_tokens:
-        return 1.0
+        return 0.0
     ctx_text = retrieved_context.lower()
     supported = sum(1 for token in ans_tokens if token in ctx_text)
     return round(float(supported / len(ans_tokens)), 3)
 
 
-async def evaluate_groundedness(question: str, generated_answer: str, ground_truth: str) -> float:
-    """Evaluates whether the generated answer is faithful to the reference truth."""
+async def evaluate_groundedness(
+    question: str, generated_answer: str, ground_truth: str, *, mode: str = "smoke"
+) -> float:
+    """Mode-aware groundedness: judge failure in release mode is a hard error."""
     if not generated_answer.strip():
         return 0.0
 
-    # Objective token recall against reference ground truth
-    gt_tokens = {w for w in ground_truth.lower().split() if len(w) > 3}
-    ans_tokens = {w for w in generated_answer.lower().split() if len(w) > 3}
-    overlap = len(gt_tokens.intersection(ans_tokens)) / max(1, len(gt_tokens))
-
-    # Try LLM-as-a-judge if model is responsive
     if os.environ.get("SKIP_LLM_JUDGE") != "true":
         try:
             llm = get_llm(alias="reasoning-llm", temperature=0.0)
@@ -73,8 +69,16 @@ async def evaluate_groundedness(question: str, generated_answer: str, ground_tru
             if isinstance(judge_res, GroundednessScore):
                 return judge_res.groundedness
         except Exception as e:
-            logger.debug(f"LLM-as-a-judge fallback to objective token recall ({e})")
+            if mode == "release":
+                raise RuntimeError(
+                    "RELEASE GATE FAIL: groundedness LLM judge unavailable; "
+                    "token overlap is not a release-quality measurement."
+                ) from e
+            logger.warning("Using SMOKE-ONLY token-overlap proxy for groundedness: %s", e)
 
+    gt_tokens = {w for w in ground_truth.lower().split() if len(w) > 3}
+    ans_tokens = {w for w in generated_answer.lower().split() if len(w) > 3}
+    overlap = len(gt_tokens.intersection(ans_tokens)) / max(1, len(gt_tokens))
     return round(min(1.0, overlap), 3)
 
 

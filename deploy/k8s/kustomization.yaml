@@ -15,12 +15,36 @@ resources:
   - network-policy.yaml
   - ingress.yaml
   - pgbouncer.yaml
+  - backup.yaml          # owner-supplied backup workload (file to be restored)
   - pod-disruption-budgets.yaml
   - istio-security.yaml
+  - otel-collector.yaml
+  - monitoring.yaml
 
 commonLabels:
   app.kubernetes.io/part-of: agentic-platform
   app.kubernetes.io/managed-by: argocd
 
-transformers:
-  - namespace-transformer.yaml
+# Namespace is declared EXPLICITLY on every manifest. The legacy builtin
+# NamespaceTransformer referenced through `transformers:` is silently ignored
+# by kubectl kustomize, which left platform objects in `default`.
+# namespace-transformer.yaml is retained only as historical reference.
+# Sandbox resources explicitly use `agentic-sandbox`.
+
+# ==============================================================================
+# IMMUTABLE IMAGE PINS
+# ------------------------------------------------------------------------------
+# Source manifests carry the placeholder tag `IMMUTABLE_SHA_REQUIRED` so a bare
+# `kubectl apply -f deployment.yaml` can never roll out unreviewed `:latest`.
+# CI replaces `newTag` with the reviewed commit SHA before rendering.
+# ==============================================================================
+images:
+  - name: ghcr.io/agentic-platform/api
+    newName: ghcr.io/agentic-platform/api
+    newTag: sha-REPLACE_WITH_COMMIT_SHA
+  - name: ghcr.io/agentic-platform/agent
+    newName: ghcr.io/agentic-platform/agent
+    newTag: sha-REPLACE_WITH_COMMIT_SHA
+  - name: ghcr.io/agentic-platform/mcp
+    newName: ghcr.io/agentic-platform/mcp
+    newTag: sha-REPLACE_WITH_COMMIT_SHA

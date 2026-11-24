@@ -1,6 +1,6 @@
 """Prometheus metrics for Agentic Platform monitoring."""
 
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
 
 REQUEST_DURATION = Histogram(
     "agent_request_duration_seconds",
@@ -33,6 +33,11 @@ HITL_APPROVALS_TOTAL = Counter(
     "agent_hitl_approvals_total",
     "Human-in-the-loop approval actions",
     ["decision", "risk_level"],
+)
+
+HITL_PENDING_APPROVALS = Gauge(
+    "agent_hitl_pending_approvals",
+    "Number of executions currently paused waiting for human approval",
 )
 
 A2A_REQUESTS_TOTAL = Counter(
@@ -112,6 +117,12 @@ TOKEN_COST_TOTAL = Counter(
     "agent_token_cost_total",
     "Estimated token cost in USD",
     ["model_alias", "token_type"],
+)
+
+COST_ALLOCATION_TOTAL = Counter(
+    "agent_cost_allocation_total",
+    "Estimated token cost attributed to client, department and environment",
+    ["client_id", "department", "env"],
 )
 
 APPROVAL_GRANTS_TOTAL = Counter(

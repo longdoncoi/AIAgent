@@ -11,7 +11,6 @@ here (the gateway does not guess streaming intent).
 
 import asyncio
 import logging
-import os
 import threading
 import time
 from typing import Any
@@ -27,7 +26,12 @@ from pydantic import PrivateAttr, SecretStr
 from src.agentic.cache.kv_cache import get_kv_cache_headers
 from src.agentic.cache.prompt_cache import get_prompt_cache
 from src.agentic.core.config import Settings, get_settings
-from src.agentic.observability.metrics import TOKEN_COST_TOTAL, TOKENS_TOTAL
+from src.agentic.memory.data_lifecycle import cost_tags_from_context
+from src.agentic.observability.metrics import (
+    COST_ALLOCATION_TOTAL,
+    TOKEN_COST_TOTAL,
+    TOKENS_TOTAL,
+)
 from src.agentic.tools.execution_context import get_tool_execution_context
 
 logger = logging.getLogger(__name__)
@@ -66,6 +70,13 @@ def _record_cost(alias: str, prompt_tokens: int, completion_tokens: int) -> None
         TOKEN_COST_TOTAL.labels(model_alias=bounded, token_type="completion").inc(
             completion_tokens / 1000.0 * completion_price
         )
+    tags = cost_tags_from_context()
+    total_cost = (
+        prompt_tokens / 1000.0 * prompt_price + completion_tokens / 1000.0 * completion_price
+    )
+    COST_ALLOCATION_TOTAL.labels(
+        client_id=tags["client_id"], department=tags["department"], env=tags["env"]
+    ).inc(total_cost)
 
 
 def _validate_fallback_alias(settings: Settings, failed_alias: str) -> str:
@@ -199,10 +210,21 @@ class TokenMetricsCallbackHandler(AsyncCallbackHandler):
         super().__init__()
         self.model_alias = model_alias
         self._bounded_alias = _bounded_alias(model_alias)
+        # Per-run counters: model instances are shared across concurrent requests.
+        self._prompt_chars_by_run: dict[str, int] = {}
+        self._completion_chars_by_run: dict[str, int] = {}
+        self._lock = threading.Lock()
         self._prompt_chars = 0
         self._completion_chars = 0
 
-    def _record_success(self, response: LLMResult) -> None:
+    def _consume_chars(self, run_id: str | None) -> tuple[int, int]:
+        key = str(run_id or "default")
+        with self._lock:
+            prompt = self._prompt_chars_by_run.pop(key, 0)
+            completion = self._completion_chars_by_run.pop(key, 0)
+        return prompt, completion
+
+    def _record_success(self, response: LLMResult, run_id: str | None = None) -> None:
         _circuit_breaker.record_success(self.model_alias)
         usage: dict[str, Any] = {}
         if response.llm_output and "token_usage" in response.llm_output:
@@ -211,10 +233,11 @@ class TokenMetricsCallbackHandler(AsyncCallbackHandler):
                 usage = raw_usage
         prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
         completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+        run_prompt, run_completion = self._consume_chars(run_id)
         if not prompt_tokens:
-            prompt_tokens = self._prompt_chars // 4
+            prompt_tokens = run_prompt // 4
         if not completion_tokens:
-            completion_tokens = self._completion_chars // 4
+            completion_tokens = run_completion // 4
 
         if prompt_tokens:
             TOKENS_TOTAL.labels(model_alias=self._bounded_alias, token_type="prompt").inc(
@@ -225,14 +248,18 @@ class TokenMetricsCallbackHandler(AsyncCallbackHandler):
                 completion_tokens
             )
         _record_cost(self.model_alias, prompt_tokens, completion_tokens)
-        self._prompt_chars = 0
-        self._completion_chars = 0
 
     def _record_error(self, error: BaseException) -> None:
         """Trip the shared breaker from real provider failures (5xx/connection), ignoring 4xx client errors."""
-        err_msg = str(error).lower()
-        if any(code in err_msg for code in ["400", "401", "403", "404", "422"]):
-            logger.debug(f"Client error on alias '{self.model_alias}'; not tripping breaker: {error}")
+        status = getattr(error, "status_code", None) or getattr(error, "http_status", None)
+        client_error = status in {400, 401, 403, 404, 422}
+        class_name = type(error).__name__.lower()
+        if not client_error and any(
+            m in class_name for m in ("badrequest", "notfound", "permission", "unauthorized", "validation")
+        ):
+            client_error = True
+        if client_error:
+            logger.debug("Client error on alias '%s'; not tripping breaker: %s", self.model_alias, type(error).__name__)
             return
         _circuit_breaker.record_failure(self.model_alias)
         logger.warning(
@@ -240,8 +267,10 @@ class TokenMetricsCallbackHandler(AsyncCallbackHandler):
         )
 
     def on_llm_start(self, serialized: dict[str, Any], prompts: list[str], **kwargs: Any) -> Any:
-        self._prompt_chars = sum(len(prompt) for prompt in prompts)
-        self._completion_chars = 0
+        key = str(kwargs.get("run_id") or "default")
+        with self._lock:
+            self._prompt_chars_by_run[key] = sum(len(prompt) for prompt in prompts)
+            self._completion_chars_by_run[key] = 0
         return _AwaitableNone()
 
     def on_chat_model_start(
@@ -250,10 +279,12 @@ class TokenMetricsCallbackHandler(AsyncCallbackHandler):
         messages: list[list[BaseMessage]],
         **kwargs: Any,
     ) -> Any:
-        self._prompt_chars = sum(
-            len(str(message.content)) for batch in messages for message in batch
-        )
-        self._completion_chars = 0
+        key = str(kwargs.get("run_id") or "default")
+        with self._lock:
+            self._prompt_chars_by_run[key] = sum(
+                len(str(message.content)) for batch in messages for message in batch
+            )
+            self._completion_chars_by_run[key] = 0
         return _AwaitableNone()
 
     def on_llm_new_token(
@@ -268,11 +299,16 @@ class TokenMetricsCallbackHandler(AsyncCallbackHandler):
     ) -> Any:
         # Signature matches AsyncCallbackHandler/LLMManagerMixin; token may be
         # a structured list for some providers.
-        self._completion_chars += len(token) if isinstance(token, str) else len(str(token))
+        key = str(run_id or "default")
+        with self._lock:
+            self._completion_chars_by_run[key] = (
+                self._completion_chars_by_run.get(key, 0)
+                + (len(token) if isinstance(token, str) else len(str(token)))
+            )
         return _AwaitableNone()
 
     def on_llm_end(self, response: LLMResult, **kwargs: Any) -> Any:
-        self._record_success(response)
+        self._record_success(response, kwargs.get("run_id"))
         return _AwaitableNone()
 
     def on_llm_error(self, error: BaseException, **kwargs: Any) -> Any:
@@ -422,12 +458,8 @@ def get_llm(
         alias = fallback_alias
         model_name = fallback_alias
 
-    is_test_or_ci = (
-        settings.environment == "test"
-        or os.environ.get("CI") == "true"
-        or os.environ.get("GITHUB_ACTIONS") == "true"
-        or os.environ.get("ENVIRONMENT") == "test"
-    )
+    # Only the validated Settings label may select test-mode timeouts.
+    is_test_or_ci = settings.environment == "test"
 
     # Enforce deterministic, configured timeouts without blocking sync socket probes
     effective_timeout = (

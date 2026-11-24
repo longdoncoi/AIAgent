@@ -1,35 +1,35 @@
-# ---------------------------------------------------------
+# syntax=docker/dockerfile:1.7
+# Pinned toolchain -- see Dockerfile.api for the rationale.
+ARG PYTHON_BASE=python:3.12.11-slim-bookworm
+ARG UV_VERSION=0.7.13
+
 # Stage 1: Build & Dependencies
-# ---------------------------------------------------------
-FROM python:3.12-slim AS builder
+FROM ${PYTHON_BASE} AS builder
 
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
     git \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION} /uv /usr/local/bin/uv
 
-ENV VIRTUAL_ENV=/opt/venv
+ENV VIRTUAL_ENV=/opt/venv \
+    UV_CACHE_DIR=/tmp/uv-cache \
+    UV_LINK_MODE=copy
 RUN uv venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
-RUN uv pip install -e .
+RUN uv sync --frozen --no-dev --extra neural --active
 
-# ---------------------------------------------------------
 # Stage 2: Hardened Runtime
-# ---------------------------------------------------------
-FROM python:3.12-slim AS runtime
+FROM ${PYTHON_BASE} AS runtime
 
-RUN apt-get update && \
-    apt-get upgrade -y --no-install-recommends && \
-    rm -rf /var/lib/apt/lists/* && \
-    groupadd -g 10001 appgroup && \
+# No `apt-get upgrade`: pinned, scanned base image only.
+RUN groupadd -g 10001 appgroup && \
     useradd -u 10001 -g appgroup -s /bin/bash -m appuser
 
 WORKDIR /app
@@ -45,5 +45,10 @@ ENV MCP_SERVER_MODULE="src.agentic.tools.servers.code_exec_server"
 ENV MCP_PORT=9001
 
 EXPOSE 9001 9002 9003
+
+# FastMCP servers expose no HTTP /health route and require the internal service
+# token on HTTP routes: a raw TCP connection is auth-free.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=15s --retries=3 \
+    CMD ["python", "-c", "import os,socket; s=socket.create_connection(('127.0.0.1', int(os.environ['MCP_PORT'])), timeout=5); s.close()"]
 
 CMD ["sh", "-c", "python -m ${MCP_SERVER_MODULE} --port ${MCP_PORT} --transport sse"]

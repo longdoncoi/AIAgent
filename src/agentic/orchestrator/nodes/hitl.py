@@ -6,7 +6,7 @@ from typing import Any
 
 from langgraph.types import interrupt
 
-from src.agentic.observability.metrics import HITL_APPROVALS_TOTAL
+from src.agentic.observability.metrics import HITL_APPROVALS_TOTAL, HITL_PENDING_APPROVALS
 from src.agentic.observability.tracing import traced_operation
 from src.agentic.orchestrator.state import AgentState, Step
 
@@ -51,21 +51,8 @@ async def hitl_node(state: AgentState) -> dict[str, Any]:
     ):
         return {"requires_approval": False, "pending_approval_step_id": None}
 
-    # Compatibility for explicitly constructed/restored states.
-    if state.approval_granted is True:
-        new_ids = (
-            state.approved_step_ids
-            if high_risk_step.id in state.approved_step_ids
-            else [*state.approved_step_ids, high_risk_step.id]
-        )
-        new_fps = {**state.approved_step_fingerprints, high_risk_step.id: step_fp}
-        return {
-            "requires_approval": False,
-            "approval_granted": True,
-            "approved_step_ids": new_ids,
-            "approved_step_fingerprints": new_fps,
-            "pending_approval_step_id": None,
-        }
+    # A bare boolean in state is NOT proof of a human decision; the legacy
+    # compatibility branch was removed to prevent HITL bypass via checkpoint.
     if state.approval_granted is False:
         HITL_APPROVALS_TOTAL.labels(decision="rejected", risk_level="high").inc()
         updated_steps = [
@@ -92,6 +79,7 @@ async def hitl_node(state: AgentState) -> dict[str, Any]:
     logger.info(
         f"Triggering HITL interrupt for high-risk step: {high_risk_step.id} ('{high_risk_step.description}') [fp={step_fp[:8]}]"
     )
+    HITL_PENDING_APPROVALS.inc()
     approval_data = interrupt(
         {
             "step_id": high_risk_step.id,
@@ -120,6 +108,7 @@ async def hitl_node(state: AgentState) -> dict[str, Any]:
             high_risk_step = next(s for s in updated_steps if s.id == high_risk_step.id)
             step_fp = compute_step_fingerprint(high_risk_step)
 
+    HITL_PENDING_APPROVALS.dec()
     if approved:
         HITL_APPROVALS_TOTAL.labels(decision="approved", risk_level="high").inc()
         new_ids = (

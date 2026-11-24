@@ -1,0 +1,186 @@
+# ==============================================================================
+# OpenTelemetry Collector: ServiceAccount + ConfigMap + Deployment + Service
+# ------------------------------------------------------------------------------
+# Canonical collector config: deploy/otel/otel-collector.yaml. It is embedded
+# here so `kubectl kustomize deploy/k8s` actually deploys a collector reachable
+# at otel-collector-svc:4317 (previously the config existed but no workload did).
+# Keep both files in sync.
+# ==============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector-sa
+  namespace: agentic-platform
+  labels:
+    app: otel-collector
+    tier: l9-observability
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: agentic-platform
+  labels:
+    app: otel-collector
+    tier: l9-observability
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      batch:
+        timeout: 1s
+        send_batch_size: 256
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 20
+
+    exporters:
+      prometheus:
+        endpoint: "0.0.0.0:8889"
+        namespace: "agentic"
+      otlp/tempo:
+        endpoint: "tempo:4317"
+        tls:
+          insecure: true
+      logging:
+        verbosity: detailed
+
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+      zpages:
+        endpoint: 0.0.0.0:55679
+
+    service:
+      extensions: [health_check, zpages]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [otlp/tempo, logging]
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [prometheus]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: agentic-platform
+  labels:
+    app: otel-collector
+    tier: l9-observability
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+        tier: l9-observability
+    spec:
+      serviceAccountName: otel-collector-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.114.0
+          imagePullPolicy: IfNotPresent
+          args: ["--config=/etc/otelcol/config.yaml"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          ports:
+            - name: grpc-otlp
+              containerPort: 4317
+            - name: http-otlp
+              containerPort: 4318
+            - name: prometheus
+              containerPort: 8889
+            - name: health
+              containerPort: 13133
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          startupProbe:
+            tcpSocket:
+              port: 4317
+            failureThreshold: 30
+            periodSeconds: 5
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector-svc
+  namespace: agentic-platform
+  labels:
+    app: otel-collector
+    tier: l9-observability
+spec:
+  type: ClusterIP
+  selector:
+    app: otel-collector
+  ports:
+    - name: grpc-otlp
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: http-otlp
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+    - name: prometheus
+      port: 8889
+      targetPort: 8889
+      protocol: TCP

@@ -29,6 +29,12 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from typing import Any
 
+from src.agentic.cache.locking import (
+    acquire_owned_lock,
+    desynchronize_waiters,
+    release_owned_lock,
+)
+from src.agentic.cache.redaction import redact_pii
 from src.agentic.core.config import get_settings
 from src.agentic.observability.metrics import RAG_CACHE_HITS_TOTAL, RAG_CACHE_MISSES_TOTAL
 
@@ -37,6 +43,8 @@ logger = logging.getLogger(__name__)
 RAG_INVALIDATION_CHANNEL = "rag_cache:invalidation"
 RAG_INVALIDATION_GENERATION_KEY = "rag_cache:invalidation:generation"
 RAG_INVALIDATION_LATEST_KEY = "rag_cache:invalidation:latest"
+RAG_CACHE_KEY_PREFIX = "rag_cache:"
+RAG_LOCK_PREFIX = "lock:rag:"
 
 
 class RAGCache:
@@ -68,6 +76,7 @@ class RAGCache:
         self._embed_fn: Any = embed_fn or self._resolve_default_embed_fn()
         self._invalidation_generation = 0
         self._invalidation_callbacks: list[Callable[[str, str, int], None]] = []
+        self._lock_tokens: dict[str, str] = {}
 
         target_redis_url = redis_url or self.settings.redis_url
         should_use_redis = (
@@ -97,6 +106,16 @@ class RAGCache:
                     f"Redis L2 backend not reachable for RAGCache ({e}). Operating in L1 local memory mode."
                 )
 
+        # A restarted replica must inherit the shared generation so values
+        # written by an older process are recognized as stale immediately.
+        if self._redis_client is not None:
+            try:
+                raw_generation = self._redis_client.get(RAG_INVALIDATION_GENERATION_KEY)
+                if raw_generation is not None:
+                    self._invalidation_generation = int(self._as_text(raw_generation).strip())
+            except Exception as ex:  # pragma: no cover - best effort
+                logger.debug("Could not read initial RAG invalidation generation: %s", ex)
+
     @staticmethod
     def _normalize_query(query: str) -> str:
         """Normalizes query text for deterministic hashing."""
@@ -122,19 +141,51 @@ class RAGCache:
         else:  # pragma: no cover - only legacy/minimal Redis clients
             yield from client.keys(pattern)
 
+    @staticmethod
+    def _is_value_key(key: Any) -> bool:
+        """True for a cached-value key, excluding invalidation metadata keys."""
+        text = RAGCache._as_text(key)
+        return text.startswith(RAG_CACHE_KEY_PREFIX) and "invalidation:" not in text
+
     def _hash_key(self, query: str, top_k: int, **kwargs: Any) -> str:
         norm = self._normalize_query(query)
         meaningful = {key: value for key, value in kwargs.items() if value not in (None, "")}
+        # ``domain`` is part of the key: a "general"/chat entry must never be
+        # served for legal/finance/security queries. The full set of kwargs
+        # (notably ``scope``, which carries the authoritative tenant) is
+        # folded in as well, so identical text for two tenants never collides.
         extra = f":k={top_k}:" + ":".join(
             f"{key}={value}" for key, value in sorted(meaningful.items())
         )
         return hashlib.sha256((norm + extra).encode("utf-8")).hexdigest()
+
+    def _current_generation(self) -> int:
+        """Read the shared generation from L2, falling back to the local value."""
+        if self._redis_client is not None:
+            try:
+                raw = self._redis_client.get(RAG_INVALIDATION_GENERATION_KEY)
+                if raw is not None:
+                    return int(self._as_text(raw).strip())
+            except Exception as ex:  # pragma: no cover - best effort
+                logger.debug("Could not read RAG invalidation generation: %s", ex)
+        return self._invalidation_generation
+
+    @staticmethod
+    def _redact_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        """Redact free-form result/document text before any L2 write."""
+        redacted = dict(payload)
+        if isinstance(redacted.get("result"), str):
+            redacted["result"] = redact_pii(redacted["result"])
+        if isinstance(redacted.get("query"), str):
+            redacted["query"] = redact_pii(redacted["query"])
+        return redacted
 
     def get(self, query: str, top_k: int = 5, **kwargs: Any) -> str | None:
         """Retrieves cached result if still valid (checking L1 memory then L2 Redis)."""
         if not self.settings.enable_rag_cache:
             return None
 
+        kwargs.setdefault("domain", "general")
         key = self._hash_key(query, top_k, **kwargs)
         now = time.time()
 
@@ -146,7 +197,7 @@ class RAGCache:
                     self._cache.move_to_end(key)
                     self._hits += 1
                     RAG_CACHE_HITS_TOTAL.inc()
-                    logger.debug(f"RAG Cache L1 HIT for query='{query[:40]}...' (key={key[:8]})")
+                    logger.debug("RAG Cache L1 HIT (key=%s)", key[:8])
                     return value
                 else:
                     del self._cache[key]
@@ -154,7 +205,7 @@ class RAGCache:
         # 2. Check L2 Distributed Redis Cache
         if self._redis_client is not None:
             try:
-                redis_key = f"rag_cache:{key}"
+                redis_key = RAG_CACHE_KEY_PREFIX + key
                 cached_data = self._redis_client.get(redis_key)
                 if cached_data is not None:
                     # Deserialize and populate back into L1
@@ -164,22 +215,31 @@ class RAGCache:
                         if text_data.startswith("{")
                         else {"result": text_data}
                     )
-                    result_val = str(payload.get("result", text_data))
-                    meta_raw = payload.get("metadata", {})
-                    meta_val = meta_raw if isinstance(meta_raw, dict) else {}
-                    ttl_left = max(60, int(self._redis_client.ttl(redis_key)))
-                    with self._lock:
-                        if len(self._cache) >= self.max_entries:
-                            self._cache.popitem(last=False)
-                        self._cache[key] = (now + ttl_left, result_val, meta_val)
-                    self._hits += 1
-                    RAG_CACHE_HITS_TOTAL.inc()
-                    logger.debug(
-                        f"RAG Cache L2 (Redis) HIT for query='{query[:40]}...' (key={key[:8]})"
-                    )
-                    return str(result_val)
+                    # Generation embedded in the value is the authoritative
+                    # freshness check: if a remote invalidation advanced the
+                    # generation after this value was written, ignore it even
+                    # when its key survived a partial deletion.
+                    cached_generation = payload.get("generation")
+                    if (
+                        isinstance(cached_generation, int)
+                        and cached_generation < self._current_generation()
+                    ):
+                        self._redis_client.delete(redis_key)
+                    else:
+                        result_val = str(payload.get("result", text_data))
+                        meta_raw = payload.get("metadata", {})
+                        meta_val = meta_raw if isinstance(meta_raw, dict) else {}
+                        ttl_left = max(60, int(self._redis_client.ttl(redis_key)))
+                        with self._lock:
+                            if len(self._cache) >= self.max_entries:
+                                self._cache.popitem(last=False)
+                            self._cache[key] = (now + ttl_left, result_val, meta_val)
+                        self._hits += 1
+                        RAG_CACHE_HITS_TOTAL.inc()
+                        logger.debug("RAG Cache L2 (Redis) HIT (key=%s)", key[:8])
+                        return str(result_val)
             except Exception as ex:
-                logger.debug(f"Redis L2 read exception in RAGCache: {ex}")
+                logger.debug("Redis L2 read exception in RAGCache: %s", ex)
 
         with self._lock:
             self._misses += 1
@@ -199,6 +259,7 @@ class RAGCache:
         if not self.settings.enable_rag_cache:
             return
 
+        kwargs.setdefault("domain", "general")
         key = self._hash_key(query, top_k, **kwargs)
         effective_ttl = ttl if ttl is not None else self.settings.rag_cache_ttl_seconds
         expire_at = time.time() + effective_ttl
@@ -211,19 +272,25 @@ class RAGCache:
                 self._cache.popitem(last=False)
             self._cache[key] = (expire_at, result, metadata or {})
 
-        # 2. Set in L2 Distributed Redis Cache
+        # 2. Set in L2 Distributed Redis Cache. Never persist raw retrieved
+        #    document text or PII into the shared Redis instance.
         if self._redis_client is not None:
             try:
-                redis_key = f"rag_cache:{key}"
-                payload = json.dumps(
-                    {"result": result, "metadata": metadata or {}}, ensure_ascii=False
+                redis_key = RAG_CACHE_KEY_PREFIX + key
+                payload = self._redact_payload(
+                    {
+                        "result": result,
+                        "metadata": metadata or {},
+                        "generation": self._current_generation(),
+                    }
                 )
-                self._redis_client.set(redis_key, payload, ex=effective_ttl)
-                logger.debug(
-                    f"RAG Cache L2 (Redis) SET for query='{query[:40]}...' (TTL={effective_ttl}s)"
+                self._redis_client.set(
+                    redis_key, json.dumps(payload, ensure_ascii=False, default=str),
+                    ex=effective_ttl,
                 )
+                logger.debug("RAG Cache L2 (Redis) SET (key=%s, TTL=%ss)", key[:8], effective_ttl)
             except Exception as ex:
-                logger.debug(f"Redis L2 write exception in RAGCache: {ex}")
+                logger.debug("Redis L2 write exception in RAGCache: %s", ex)
 
     def get_domain_threshold(self, domain: str = "general") -> float:
         """Retrieves domain-adaptive cosine similarity threshold.
@@ -236,6 +303,10 @@ class RAGCache:
             domain_clean,
             self.settings.semantic_cache_default_threshold,
         )
+
+    def _is_sensitive_domain(self, domain: str) -> bool:
+        """Whether a domain has a dedicated high-assurance similarity threshold."""
+        return self.get_domain_threshold(domain) >= 0.93
 
     @staticmethod
     def _compute_similarity(vec1: list[float], vec2: list[float]) -> float:
@@ -335,8 +406,8 @@ class RAGCache:
         if not self.settings.enable_rag_cache:
             return None
 
-        # 1. Exact match check first
-        exact_hit = self.get(query, top_k=top_k, **kwargs)
+        # 1. Exact match check first (domain is part of the key).
+        exact_hit = self.get(query, top_k=top_k, domain=domain, **kwargs)
         if exact_hit is not None:
             return exact_hit
 
@@ -359,7 +430,15 @@ class RAGCache:
                 if entry.get("scope", "") != str(kwargs.get("scope", "")):
                     continue
                 entry_domain = entry.get("domain", "general")
-                if entry_domain != domain and entry_domain != "general" and domain != "general":
+                # Sensitive domains (legal/finance/security/...) must match
+                # EXACTLY: a "general" entry is never reused for them. This
+                # closes the cross-domain cache bleed that let a low-threshold
+                # general answer serve a high-assurance policy query.
+                if entry_domain != domain and (
+                    self._is_sensitive_domain(domain)
+                    or self._is_sensitive_domain(entry_domain)
+                    or domain not in ("general", "chat")
+                ):
                     continue
                 sim = self._compute_similarity(target_vec, entry["vector"])
                 if sim >= threshold and sim > best_score:
@@ -372,7 +451,7 @@ class RAGCache:
                 RAG_CACHE_HITS_TOTAL.inc()
                 logger.debug(
                     f"RAG Cache Semantic HIT for domain='{domain}' "
-                    f"(score={best_score:.4f} >= threshold={threshold:.2f}, query='{query[:30]}...')"
+                    f"(score={best_score:.4f} >= threshold={threshold:.2f})"
                 )
                 return str(best_candidate["result"])
 
@@ -390,7 +469,9 @@ class RAGCache:
         scope: str = "",
     ) -> None:
         """Stores query result in both exact match cache and semantic entry list."""
-        self.set(query, result, top_k=top_k, ttl=ttl, metadata=metadata, scope=scope)
+        self.set(
+            query, result, top_k=top_k, ttl=ttl, metadata=metadata, scope=scope, domain=domain
+        )
         if not self.settings.enable_semantic_cache:
             return
 
@@ -415,30 +496,27 @@ class RAGCache:
             self._semantic_entries.append(entry)
 
     def acquire_lock(self, key: str, timeout: float = 5.0) -> bool:
-        """Acquires a distributed Redis or in-memory lock for a key to prevent cache stampede."""
-        if self._redis_client is not None:
-            try:
-                acquired = bool(
-                    self._redis_client.set(f"lock:rag:{key}", "1", nx=True, ex=max(1, int(timeout)))
-                )
-                return acquired
-            except Exception:
-                pass
+        """Acquires a distributed Redis or in-memory lock for a key to prevent cache stampede.
+
+        The Redis lock carries a unique ownership token so a slow computation
+        that outlives its TTL can never delete another request's lock.
+        """
+        token = acquire_owned_lock(
+            self._redis_client, RAG_LOCK_PREFIX, key, timeout, self._inflight_locks, self._lock
+        )
+        if token is None:
+            return False
         with self._lock:
-            if key in self._inflight_locks:
-                return False
-            self._inflight_locks.add(key)
-            return True
+            self._lock_tokens[key] = token
+        return True
 
     def release_lock(self, key: str) -> None:
-        """Releases the stampede lock for a key."""
-        if self._redis_client is not None:
-            try:
-                self._redis_client.delete(f"lock:rag:{key}")
-            except Exception:
-                pass
+        """Releases the stampede lock for a key (only if still owned by us)."""
         with self._lock:
-            self._inflight_locks.discard(key)
+            token = self._lock_tokens.pop(key, None)
+        release_owned_lock(
+            self._redis_client, RAG_LOCK_PREFIX, key, token, self._inflight_locks, self._lock
+        )
 
     async def get_or_compute_async(
         self,
@@ -506,6 +584,8 @@ class RAGCache:
                 )
                 if cached is not None:
                     return cached
+            # Jitter prevents every timed-out waiter from recomputing in lockstep.
+            desynchronize_waiters()
             import inspect
 
             if inspect.iscoroutinefunction(compute_fn):
@@ -565,6 +645,7 @@ class RAGCache:
                 )
                 if cached is not None:
                     return cached
+            desynchronize_waiters()
             return str(compute_fn())
 
     @staticmethod
@@ -607,7 +688,9 @@ class RAGCache:
         redis_keys: list[Any] = []
         if self._redis_client is not None and norm_source:
             try:
-                for key in self._iter_redis_keys("rag_cache:*"):
+                for key in self._iter_redis_keys(RAG_CACHE_KEY_PREFIX + "*"):
+                    if not self._is_value_key(key):
+                        continue
                     raw_val = self._redis_client.get(key)
                     if raw_val is not None and norm_source in self._as_text(raw_val).lower():
                         redis_keys.append(key)
@@ -768,12 +851,50 @@ class RAGCache:
             with self._lock:
                 self._cache.clear()
                 self._semantic_entries.clear()
+
+            # Clear L2 values too. Advancing the generation without deleting
+            # Redis keys leaves stale values that are immediately rehydrated
+            # into L1. Only keys whose embedded generation is older than the
+            # new one are deleted: a value written after this generation by a
+            # faster replica is fresh and must survive. This also avoids any
+            # indiscriminate cross-tenant flush.
+            removed_l2 = 0
+            try:
+                stale_keys: list[Any] = []
+                for key in self._iter_redis_keys(RAG_CACHE_KEY_PREFIX + "*"):
+                    if not self._is_value_key(key):
+                        continue
+                    raw_val = self._redis_client.get(key)
+                    if raw_val is None:
+                        continue
+                    value_gen: int | None = None
+                    try:
+                        parsed = json.loads(self._as_text(raw_val))
+                        if isinstance(parsed, dict) and isinstance(
+                            parsed.get("generation"), int
+                        ):
+                            value_gen = int(parsed["generation"])
+                    except (TypeError, ValueError):
+                        value_gen = None  # legacy value without generation metadata
+                    if value_gen is None or value_gen < generation:
+                        stale_keys.append(key)
+                for start in range(0, len(stale_keys), 500):
+                    batch = stale_keys[start : start + 500]
+                    pipe = self._redis_client.pipeline()
+                    for key in batch:
+                        pipe.delete(key)
+                    pipe.execute()
+                    removed_l2 += len(batch)
+            except Exception as ex:
+                logger.warning("Could not purge stale RAG L2 keys after invalidation: %s", ex)
+
             logger.info(
                 "Applied remote RAG invalidation generation=%s doc_id=%s file_path=%s; "
-                "cleared local L1 cache.",
+                "cleared local L1 cache and %s stale L2 keys.",
                 generation,
                 doc_id,
                 file_path,
+                removed_l2,
             )
             for callback in list(self._invalidation_callbacks):
                 try:
@@ -797,7 +918,11 @@ class RAGCache:
             self._semantic_entries.clear()
         if self._redis_client is not None:
             try:
-                keys = list(self._iter_redis_keys("rag_cache:*"))
+                keys = [
+                    key
+                    for key in self._iter_redis_keys(RAG_CACHE_KEY_PREFIX + "*")
+                    if self._is_value_key(key)
+                ]
                 if keys:
                     pipe = self._redis_client.pipeline()
                     for key in keys:

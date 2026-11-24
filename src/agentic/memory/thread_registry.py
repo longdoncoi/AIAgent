@@ -28,12 +28,19 @@ class ThreadRegistry:
     def __init__(self) -> None:
         self.settings = get_settings()
         self._owners: dict[str, str] = {}
+        # Reverse index used by the Right-to-be-Forgotten purge to enumerate
+        # every public thread owned by a principal.
+        self._owner_threads: dict[str, set[str]] = {}
         self._lock = asyncio.Lock()
         self._redis: Any | None = None
 
     def _key(self, thread_id: str) -> str:
         digest = hashlib.sha256(thread_id.encode("utf-8")).hexdigest()
         return f"agentic:thread-owner:{digest}"
+
+    def _owner_index_key(self, owner_id: str) -> str:
+        digest = hashlib.sha256(owner_id.encode("utf-8")).hexdigest()
+        return f"agentic:owner-threads:{digest}"
 
     def scoped_thread_id(self, thread_id: str, owner_id: str) -> str:
         """Create a stable opaque checkpoint key without exposing the principal ID."""
@@ -73,12 +80,30 @@ class ThreadRegistry:
             if current != owner_id:
                 raise ThreadOwnershipError("Thread belongs to another principal.")
             await client.expire(key, 86400 * 30)
+            await client.sadd(self._owner_index_key(owner_id), thread_id)
+            await client.expire(self._owner_index_key(owner_id), 86400 * 30)
         else:
             async with self._lock:
                 current = self._owners.setdefault(thread_id, owner_id)
                 if current != owner_id:
                     raise ThreadOwnershipError("Thread belongs to another principal.")
+                self._owner_threads.setdefault(owner_id, set()).add(thread_id)
         return self.scoped_thread_id(thread_id, owner_id)
+
+    async def threads_for_owner(self, owner_id: str) -> list[str]:
+        """Enumerate public thread ids owned by ``owner_id`` (for data purge)."""
+        client = await self._client()
+        if client is not None:
+            try:
+                members = await client.smembers(self._owner_index_key(owner_id))
+                return [
+                    m.decode("utf-8") if isinstance(m, bytes) else str(m) for m in members
+                ]
+            except Exception as exc:
+                logger.warning("Could not read thread-owner reverse index: %s", exc)
+                return []
+        async with self._lock:
+            return sorted(self._owner_threads.get(owner_id, set()))
 
     async def owner(self, thread_id: str) -> str | None:
         """Resolve the owner for an administrative HITL resume operation."""

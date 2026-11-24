@@ -75,41 +75,39 @@ class GuardrailManager:
         self.policy_mgr = get_policy_manager()
 
     def _check_obfuscated_injection(self, text: str) -> None:
-        """Inspects URL-encoded strings and Base64 payloads to defeat obfuscation bypass attacks."""
-        # 1. URL Decoding check
-        if "%" in text:
-            try:
-                decoded_url = urllib.parse.unquote(text)
-                if decoded_url != text:
-                    for pattern in self.INJECTION_PATTERNS:
-                        if pattern.search(decoded_url):
-                            raise GuardrailViolation(
-                                message="Potential URL-obfuscated prompt injection detected.",
-                                rule="url_obfuscated_injection_defense",
-                                details={"decoded_sample": decoded_url[:80]},
-                            )
-            except GuardrailViolation:
-                raise
-            except Exception:
-                pass
-
-        # 2. Base64 payload decoding check
-        b64_matches = self.BASE64_CANDIDATE.findall(text)
-        for token in b64_matches:
-            try:
-                decoded_bytes = base64.b64decode(token, validate=True)
-                decoded_str = decoded_bytes.decode("utf-8", errors="ignore")
+        """Iteratively decode URL/Base64 payloads (bounded depth) to detect injection."""
+        seen: set[str] = set()
+        candidates: list[tuple[str, str]] = [(text, "obfuscated_injection_defense")]
+        for _ in range(3):
+            nxt: list[tuple[str, str]] = []
+            for candidate, rule in candidates:
+                if candidate in seen:
+                    continue
+                seen.add(candidate)
                 for pattern in self.INJECTION_PATTERNS:
-                    if pattern.search(decoded_str):
+                    if pattern.search(candidate):
                         raise GuardrailViolation(
-                            message="Potential Base64-obfuscated prompt injection detected.",
-                            rule="base64_obfuscated_injection_defense",
-                            details={"decoded_sample": decoded_str[:80]},
+                            message="Potential obfuscated prompt injection detected.",
+                            rule=rule,
+                            details={"decoded_sample": candidate[:80]},
                         )
-            except GuardrailViolation:
-                raise
-            except Exception:
-                continue
+                if "%" in candidate:
+                    try:
+                        decoded = urllib.parse.unquote(candidate)
+                        if decoded != candidate:
+                            nxt.append((decoded, "url_obfuscated_injection_defense"))
+                    except Exception:
+                        pass
+                for token in self.BASE64_CANDIDATE.findall(candidate):
+                    try:
+                        decoded_str = base64.b64decode(token, validate=True).decode("utf-8", errors="ignore")
+                        if decoded_str != token:
+                            nxt.append((decoded_str, "base64_obfuscated_injection_defense"))
+                    except Exception:
+                        continue
+            candidates = nxt
+            if not candidates:
+                break
 
     async def asanitize_input(self, text: str) -> str:
         """Full input guardrail including the semantic jailbreak check."""
@@ -132,12 +130,7 @@ class GuardrailManager:
         normalized_text = unicodedata.normalize("NFKC", text)
         cleaned_text = re.sub(r"[\u200B-\u200D\uFEFF]", "", normalized_text)
 
-        # 2. Obfuscation detection (Base64 / URL-encoding)
-        self._check_obfuscated_injection(text)
-        if cleaned_text != text:
-            self._check_obfuscated_injection(cleaned_text)
-
-        # 3. Direct regex injection patterns checked against cleaned/normalized text
+        # 2. Direct regex on raw and normalized text (keeps historical rule name).
         for pattern in self.INJECTION_PATTERNS:
             if pattern.search(cleaned_text) or pattern.search(text):
                 raise GuardrailViolation(
@@ -145,6 +138,9 @@ class GuardrailManager:
                     rule="prompt_injection_defense",
                     details={"matched_pattern": pattern.pattern},
                 )
+
+        # 3. Obfuscation detection (URL / Base64, iteratively)
+        self._check_obfuscated_injection(text)
 
         # 3. Check sensitive keywords
         cfg = self.policy_mgr.get_guardrails_config()
@@ -157,11 +153,10 @@ class GuardrailManager:
                     details={"keyword": kw},
                 )
 
-        # 4. Mask PII if enabled
+        # 4. Return the normalized string so the model sees what was inspected.
         if self.settings.pii_redaction_enabled:
-            text = self.mask_pii(text)
-
-        return text
+            cleaned_text = self.mask_pii(cleaned_text)
+        return cleaned_text
 
     def sanitize_context(self, context: dict[str, Any], *, max_depth: int = 4) -> dict[str, Any]:
         """Sanitize an untrusted structured context before it enters a prompt.
@@ -213,11 +208,17 @@ class GuardrailManager:
         return text
 
     def validate_tool_input(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
-        """Validates tool argument safety before executing MCP tools."""
+        """Validates tool argument safety recursively before executing MCP tools."""
         if not self.settings.enable_guardrails:
             return args
 
-        for param, val in args.items():
+        def check(param: str, val: Any, depth: int) -> None:
+            if depth > 6:
+                raise GuardrailViolation(
+                    message=f"Tool argument '{param}' is nested too deeply.",
+                    rule="tool_argument_depth_limit",
+                    details={"parameter": param},
+                )
             if isinstance(val, str):
                 if self.PATH_TRAVERSAL_PATTERN.search(val):
                     raise GuardrailViolation(
@@ -237,6 +238,16 @@ class GuardrailManager:
                         rule="command_injection_defense",
                         details={"parameter": param},
                     )
+                self._check_obfuscated_injection(val)
+            elif isinstance(val, dict):
+                for key, child in val.items():
+                    check(f"{param}.{key}", child, depth + 1)
+            elif isinstance(val, (list, tuple)):
+                for idx, child in enumerate(val):
+                    check(f"{param}[{idx}]", child, depth + 1)
+
+        for param, val in args.items():
+            check(param, val, 0)
         return args
 
     async def check_semantic_safety(self, text: str) -> tuple[bool, str]:

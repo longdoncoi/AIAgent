@@ -293,6 +293,9 @@ async def chat_stream_endpoint(
                     output = event.get("data", {}).get("output", {})
                     final_ans = output.get("final_answer")
                     if final_ans:
+                        final_ans = await asyncio.to_thread(
+                            guardrails.sanitize_output, str(final_ans)
+                        )
                         yield {
                             "event": "final",
                             "data": json.dumps(
@@ -329,12 +332,15 @@ async def chat_stream_endpoint(
                     if tasks and tasks[0].interrupts
                     else "High-risk action"
                 )
+                safe_interrupt = await asyncio.to_thread(
+                    guardrails.sanitize_output, json.dumps(interrupt_val, default=str)
+                )
                 yield {
                     "event": "hitl_required",
                     "data": json.dumps(
                         {
                             "thread_id": thread_id,
-                            "interrupt": interrupt_val,
+                            "interrupt": safe_interrupt,
                             "resume_url": f"/api/v1/approvals/{thread_id}/resume",
                             "trace_id": active_trace_id,
                         }

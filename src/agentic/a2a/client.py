@@ -17,6 +17,7 @@ from prometheus_client import Counter
 from src.agentic.a2a.cards import get_agent_card
 from src.agentic.a2a.executor import A2ATaskPayload, A2ATaskRequest, A2ATaskResponse
 from src.agentic.core.config import get_settings
+from src.agentic.core.context import get_request_id
 from src.agentic.core.errors import A2ACommunicationError
 from src.agentic.observability.metrics import A2A_REQUESTS_TOTAL
 
@@ -83,14 +84,7 @@ class A2AClient:
         if current_span.is_recording():
             TraceContextTextMapPropagator().inject(headers)
 
-        # Imported lazily to avoid an a2a <-> api import cycle at module load.
-        request_id = ""
-        try:
-            from src.agentic.api.middleware import REQUEST_ID_VAR
-
-            request_id = REQUEST_ID_VAR.get()
-        except ImportError:  # pragma: no cover - defensive for minimal runtimes
-            logger.debug("REQUEST_ID_VAR unavailable; skipping X-Request-ID propagation")
+        request_id = get_request_id()
         if request_id and request_id != "-":
             headers["X-Request-ID"] = request_id
         return headers
@@ -325,6 +319,7 @@ class A2AClient:
                             ) as resp:
                                 if resp.status_code == 200:
                                     buffered: list[str] = []
+                                    lifecycle_seen = False
                                     async for line in resp.aiter_lines():
                                         if line == "":
                                             if buffered:
@@ -334,6 +329,8 @@ class A2AClient:
                                                     frames, target_agent, step_id
                                                 ):
                                                     status = "success"
+                                                    if frame.get("event") in {"completed", "error"}:
+                                                        lifecycle_seen = True
                                                     yield frame
                                             continue
                                         if line.startswith("data:"):
@@ -345,7 +342,18 @@ class A2AClient:
                                             buffered, target_agent, step_id
                                         ):
                                             status = "success"
+                                            if frame.get("event") in {"completed", "error"}:
+                                                lifecycle_seen = True
                                             yield frame
+                                    if not lifecycle_seen:
+                                        raise A2ACommunicationError(
+                                            target_agent=target_agent,
+                                            message=(
+                                                f"A2A stream for step '{step_id}' ended with HTTP 200 "
+                                                "but no completed/error lifecycle event; refusing "
+                                                "to treat a dead sub-agent as success."
+                                            ),
+                                        )
                                     return
                                 if (
                                     resp.status_code in {429, 502, 503, 504}

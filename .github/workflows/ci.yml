@@ -38,6 +38,10 @@ jobs:
           uv pip install --system -e ".[dev]"
           uv pip install --system pip-audit
 
+      - name: Verify Lockfile Is In Sync With pyproject.toml
+        # Fail closed: Dockerfiles build with `uv sync --frozen`.
+        run: uv lock --check
+
       - name: Lint Code (ruff)
         run: ruff check src/ tests/
 
@@ -46,8 +50,6 @@ jobs:
 
       - name: Production Dependency Vulnerability Scan (pip-audit)
         run: |
-          # Audit the frozen production graph. Development-only evaluation
-          # dependencies (for example RAGAS) are not shipped in runtime images.
           uv export --frozen --no-dev --no-hashes --no-emit-project \
             --output-file "$RUNNER_TEMP/production-requirements.txt"
           pip-audit --desc on \
@@ -145,6 +147,125 @@ jobs:
           if-no-files-found: error
 
   # ----------------------------------------------------------------------------
+  # 2b. Deployment Manifest Integrity Gate (PRs and all pushes)
+  # ----------------------------------------------------------------------------
+  validate-deploy:
+    name: Validate Deployment Manifests (fail-closed)
+    needs: [lint-and-audit]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: python -m pip install --quiet pyyaml
+
+      - name: Parse every deployment / workflow YAML
+        run: |
+          python -c "import yaml,glob; [list(yaml.safe_load_all(open(f,encoding='utf-8'))) for f in glob.glob('deploy/**/*.yaml',recursive=True)+glob.glob('.github/workflows/*.yml')]"
+
+      - name: Run deployment-hardening regression tests
+        run: python -m pytest tests/unit/test_deploy_hardening_v3.py -v
+
+      - name: Check namespace / ingress / image-pin invariants
+        run: |
+          python - <<'PY'
+          import glob, re, sys
+          import yaml
+
+          docs = []
+          for path in sorted(glob.glob('deploy/**/*.yaml', recursive=True)):
+              docs.extend((path, d) for d in yaml.safe_load_all(open(path, encoding='utf-8')) if d)
+
+          def bodies(kind):
+              return [(p, d) for p, d in docs if d.get('kind') == kind]
+
+          errors = []
+
+          # 1. No mutable :latest tag in production references.
+          for p, d in docs:
+              if re.search(r'image:\s*\S+:latest\b', yaml.safe_dump(d)):
+                  errors.append(f'{p}: mutable :latest image reference')
+
+          # 2. Namespace carries the Istio injection label.
+          ns = [d for p, d in bodies('Namespace')
+                if d.get('metadata', {}).get('name') == 'agentic-platform']
+          if not ns or ns[0].get('metadata', {}).get('labels', {}).get('istio-injection') != 'enabled':
+              errors.append('agentic-platform Namespace is missing istio-injection: enabled')
+
+          # 3. Ingress namespace + backend Service must exist in the same base.
+          service_names = {d['metadata']['name'] for p, d in bodies('Service')}
+          for p, d in bodies('Ingress'):
+              ns_field = d.get('metadata', {}).get('namespace')
+              if ns_field and ns_field != 'agentic-platform':
+                  errors.append(f'{p}: Ingress namespace {ns_field!r} != agentic-platform')
+              for rule in d.get('spec', {}).get('rules', []):
+                  for path in rule.get('http', {}).get('paths', []):
+                      name = path.get('backend', {}).get('service', {}).get('name')
+                      if name and name not in service_names:
+                          errors.append(f'{p}: backend {name!r} has no Service in the same Kustomize base')
+
+          # 4. OTel Collector Service on 4317 must be deployed.
+          otel = [d for p, d in bodies('Service')
+                  if d['metadata'].get('name') == 'otel-collector-svc']
+          if not otel:
+              errors.append('otel-collector-svc Service is missing')
+          elif 4317 not in {x.get('port') for x in otel[0]['spec'].get('ports', [])}:
+              errors.append('otel-collector-svc does not expose port 4317')
+
+          # 5. pgBouncer must be selected by an allow rule.
+          pgb_allowed = any(
+              d['spec'].get('podSelector', {}).get('matchLabels', {}).get('app') == 'pgbouncer'
+              and d['spec'].get('ingress')
+              for p, d in bodies('NetworkPolicy')
+          )
+          if not pgb_allowed:
+              errors.append('no NetworkPolicy allows ingress to pgbouncer')
+
+          # 6. Kustomize must render every required workload.
+          kust = yaml.safe_load(open('deploy/k8s/kustomization.yaml', encoding='utf-8'))
+          resources = set(kust.get('resources', []))
+          for required in ('namespace.yaml', 'ingress.yaml', 'network-policy.yaml',
+                           'otel-collector.yaml', 'monitoring.yaml', 'external-secret.yaml',
+                           'backup.yaml'):
+              if required not in resources:
+                  errors.append(f'kustomization.yaml is missing {required}')
+
+          if errors:
+              print('::error::Deployment manifest integrity check failed:')
+              for e in errors:
+                  print('  - ' + e)
+              sys.exit(1)
+          print('Deployment manifest integrity check PASSED')
+          PY
+
+      - name: Verify CI enforces the release gate and sign-off fields
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          ci = Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
+          required = [
+              'python evals/release_gate.py',
+              'release-gate:',
+              'commit_sha',
+              'production_ready',
+              'verdict',
+              'signature',
+              'release_tag',
+              'environment: production-release',
+          ]
+          missing = [x for x in required if x not in ci]
+          if missing:
+              raise SystemExit(f'ci.yml is missing required release controls: {missing}')
+          print('CI release controls verified')
+          PY
+
+  # ----------------------------------------------------------------------------
   # 3. Container Build, Hardening & Security Scan
   # ----------------------------------------------------------------------------
   build-and-scan:
@@ -190,16 +311,134 @@ jobs:
           severity: 'CRITICAL,HIGH'
 
   # ----------------------------------------------------------------------------
-  # 4. Continuous Deployment: Publish to GHCR & GitOps Manifest Update
+  # 4. STRICT RELEASE QUALITY GATE (required for every tag build)
+  # ----------------------------------------------------------------------------
+  release-gate:
+    name: Strict Release Quality Gate (production-readiness)
+    needs: [test-and-eval, validate-deploy]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # Manual approval / sign-off enforced by production-release environment.
+    environment: production-release
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install uv Package Manager
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Release Dependencies (dev + neural + real DeepEval)
+        run: |
+          uv pip install --system -e ".[dev,neural]"
+          uv pip install --system -e ".[deepeval]"
+
+      - name: Run Strict Release Gate
+        # NO env overrides here: release_blockers() treats ENVIRONMENT=test and
+        # CI=true as hard blockers. Deliberately no continue-on-error either.
+        run: python evals/release_gate.py
+
+  # ----------------------------------------------------------------------------
+  # 5. Continuous Deployment: immutable images & GitOps manifest update
   # ----------------------------------------------------------------------------
   publish-and-deploy:
     name: Publish Images to GHCR & CD Sync
-    needs: [build-and-scan]
-    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    needs: [build-and-scan, release-gate]
+    # Fail closed: tag builds MUST pass the strict release gate before publish.
+    if: >-
+      always() &&
+      needs.build-and-scan.result == 'success' &&
+      ((github.ref == 'refs/heads/main' && needs.release-gate.result == 'skipped') ||
+       (startsWith(github.ref, 'refs/tags/v') && needs.release-gate.result == 'success'))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      # ---- Sign-off verification runs BEFORE any image is pushed ------------
+      - name: Verify Release Sign-off & PRR Attestation (fail closed)
+        id: signoff
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, sys
+
+          evidence_path = pathlib.Path('evidence/prr/latest.json')
+          board_path = pathlib.Path('evidence/signoff/release-board.json')
+
+          if not evidence_path.exists() or not board_path.exists():
+              print('::error::Missing sign-off/attestation artifacts')
+              sys.exit(1)
+
+          evidence = json.loads(evidence_path.read_text(encoding='utf-8'))
+          board = json.loads(board_path.read_text(encoding='utf-8'))
+          if not isinstance(evidence, dict) or not isinstance(board, dict):
+              print('::error::Invalid attestation payload (expected JSON objects)')
+              sys.exit(1)
+
+          expected_sha = os.environ['EXPECTED_SHA']
+          expected_tag = os.environ['EXPECTED_TAG']
+          errors = []
+
+          # Auto-evidence is honest "PENDING" until a human signs; the board
+          # attestation below is the authority for approval.
+          if evidence.get('commit_sha') != expected_sha:
+              errors.append(f'PRR commit_sha {evidence.get("commit_sha")!r} != {expected_sha!r}')
+          allowed_evidence_verdicts = {
+              'APPROVED', 'APPROVED_WITH_WAIVER', 'AUTO-EVIDENCE PENDING REVIEW BOARD'
+          }
+          if evidence.get('verdict') not in allowed_evidence_verdicts:
+              errors.append(f'PRR verdict {evidence.get("verdict")!r} is not a recognised value')
+
+          # Human sign-off must bind to this exact commit and release tag.
+          if board.get('commit_sha') != expected_sha:
+              errors.append(f'board commit_sha {board.get("commit_sha")!r} != {expected_sha!r}')
+          if board.get('release_tag') != expected_tag:
+              errors.append(f'board release_tag {board.get("release_tag")!r} != {expected_tag!r}')
+          if board.get('production_ready') is not True:
+              errors.append('board production_ready is not True')
+          if board.get('verdict') not in {'APPROVED', 'APPROVED_WITH_WAIVER'}:
+              errors.append(f'board verdict {board.get("verdict")!r} is not approved')
+
+          # All 9 required signatures must be present, non-empty and decided.
+          required_signers = [
+              'chief_ai_architect', 'lead_backend_engineer', 'qa_lead',
+              'secops_lead', 'legal_dpo', 'finops_lead',
+              'data_governance_lead', 'principal_sre', 'product_owner',
+          ]
+          signatures = board.get('signatures')
+          if not isinstance(signatures, dict):
+              errors.append('board.signatures must be an object with 9 signers')
+          else:
+              for signer in required_signers:
+                  entry = signatures.get(signer)
+                  if not isinstance(entry, dict):
+                      errors.append(f'missing signature: {signer}')
+                      continue
+                  for field in ('role', 'representative', 'decision', 'signature', 'date_utc'):
+                      value = entry.get(field)
+                      if not isinstance(value, str) or not value.strip():
+                          errors.append(f'{signer}.{field} is empty')
+                  if entry.get('decision') not in {'Go', 'Waiver'}:
+                      errors.append(f'{signer}.decision is not Go/Waiver')
+
+          if errors:
+              print('::error::Release sign-off validation FAILED (deploy blocked):')
+              for error in errors:
+                  print('  - ' + error)
+              sys.exit(1)
+
+          print('::notice::Release sign-off verified for', expected_tag, expected_sha)
+          PY
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -215,15 +454,7 @@ jobs:
         run: |
           echo "REPO_LOWER=${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
 
-      - name: Extract Metadata (Tags, Labels)
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ghcr.io/${{ env.REPO_LOWER }}/api
-            ghcr.io/${{ env.REPO_LOWER }}/agent
-            ghcr.io/${{ env.REPO_LOWER }}/mcp
-
+      # Only immutable SHA / semver tags are pushed. `:latest` is never published.
       - name: Build and Push API Image
         uses: docker/build-push-action@v5
         with:
@@ -231,8 +462,8 @@ jobs:
           file: deploy/docker/Dockerfile.api
           push: true
           tags: |
-            ghcr.io/${{ env.REPO_LOWER }}/api:${{ github.sha }}
-            ghcr.io/${{ env.REPO_LOWER }}/api:latest
+            ghcr.io/${{ env.REPO_LOWER }}/api:sha-${{ github.sha }}
+            ghcr.io/${{ env.REPO_LOWER }}/api:${{ github.ref_name }}-sha-${{ github.sha }}
 
       - name: Build and Push Agent Image
         uses: docker/build-push-action@v5
@@ -241,8 +472,8 @@ jobs:
           file: deploy/docker/Dockerfile.agent
           push: true
           tags: |
-            ghcr.io/${{ env.REPO_LOWER }}/agent:${{ github.sha }}
-            ghcr.io/${{ env.REPO_LOWER }}/agent:latest
+            ghcr.io/${{ env.REPO_LOWER }}/agent:sha-${{ github.sha }}
+            ghcr.io/${{ env.REPO_LOWER }}/agent:${{ github.ref_name }}-sha-${{ github.sha }}
 
       - name: Build and Push MCP Image
         uses: docker/build-push-action@v5
@@ -251,54 +482,33 @@ jobs:
           file: deploy/docker/Dockerfile.mcp
           push: true
           tags: |
-            ghcr.io/${{ env.REPO_LOWER }}/mcp:${{ github.sha }}
-            ghcr.io/${{ env.REPO_LOWER }}/mcp:latest
+            ghcr.io/${{ env.REPO_LOWER }}/mcp:sha-${{ github.sha }}
+            ghcr.io/${{ env.REPO_LOWER }}/mcp:${{ github.ref_name }}-sha-${{ github.sha }}
 
       - name: Validate Kubernetes Manifests & GitOps Definitions
         run: |
           curl -fsSL -o kubeconform.tar.gz https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
           tar -xzf kubeconform.tar.gz kubeconform
           kubectl kustomize deploy/k8s > /tmp/agentic-manifests.yaml
+          if grep -Eq 'image:.*(:latest|IMMUTABLE_SHA_REQUIRED|REPLACE_WITH_COMMIT_SHA)' /tmp/agentic-manifests.yaml; then
+            echo "::error::Rendered manifests contain a mutable/placeholder image tag"
+            exit 1
+          fi
           ./kubeconform -strict -summary -ignore-missing-schemas /tmp/agentic-manifests.yaml
 
-      - name: Verify Release Sign-off & PRR Attestation Artifacts
-        id: signoff
+      - name: GitOps Image Tag Auto-Update & ArgoCD Sync (requires sign-off)
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          # Auto-deploy is only permitted with a committed, valid sign-off and
-          # machine-generated PRR evidence. Otherwise release stays MANUAL.
-          if python - <<'PY'
-          import json, pathlib, sys
-          required = [
-              pathlib.Path("evidence/prr/latest.json"),
-              pathlib.Path("evidence/signoff/release-board.json"),
-          ]
-          missing = [str(p) for p in required if not p.exists()]
-          if missing:
-              print("::warning::Missing sign-off/attestation artifacts: " + ", ".join(missing))
-              sys.exit(2)
-          for p in required:
-              payload = json.loads(p.read_text(encoding="utf-8"))
-              if not isinstance(payload, dict):
-                  raise SystemExit(f"Invalid attestation payload: {p}")
-          print("Sign-off and PRR attestation artifacts verified.")
-          PY
-          then
-            echo "approved=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "approved=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: GitOps Image Tag Auto-Update & ArgoCD Sync (requires sign-off)
-        if: startsWith(github.ref, 'refs/tags/v') && steps.signoff.outputs.approved == 'true'
-        run: |
           echo "Release tag detected: ${{ github.ref_name }}. Sign-off verified."
-          echo "Updating deployment image references with immutable SHA: ${{ github.sha }}..."
-          sed -i "s|image: ghcr.io/agentic-platform/api:latest|image: ghcr.io/${REPO_LOWER}/api:${{ github.sha }}|g" deploy/k8s/deployment.yaml
-          sed -i "s|image: ghcr.io/agentic-platform/agent:latest|image: ghcr.io/${REPO_LOWER}/agent:${{ github.sha }}|g" deploy/k8s/deployment.yaml
-          sed -i "s|image: ghcr.io/agentic-platform/mcp:latest|image: ghcr.io/${REPO_LOWER}/mcp:${{ github.sha }}|g" deploy/k8s/deployment.yaml
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('deploy/k8s/kustomization.yaml')
+          text = p.read_text(encoding='utf-8')
+          text = text.replace('sha-REPLACE_WITH_COMMIT_SHA', 'sha-${{ github.sha }}')
+          p.write_text(text, encoding='utf-8')
+          PY
           git config user.name "agentic-release-bot"
           git config user.email "agentic-release-bot@users.noreply.github.com"
-          git add deploy/k8s/deployment.yaml
+          git add deploy/k8s/kustomization.yaml
           git commit -m "chore(deploy): pin release images to ${{ github.sha }} [skip ci]"
           git push origin HEAD:main

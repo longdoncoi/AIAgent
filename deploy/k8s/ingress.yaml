@@ -5,7 +5,8 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: agentic-platform-ingress
-  namespace: default
+  namespace: agentic-platform
+  # `namespace: default` stranded this Ingress away from agentic-api-svc.
   labels:
     app: agentic-platform
     tier: l1-interface

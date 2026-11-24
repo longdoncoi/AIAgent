@@ -270,7 +270,8 @@ async def test_temporal_run_worker_exception_handling():
     with patch(
         "temporalio.client.Client.connect", side_effect=ConnectionError("Temporal unreachable")
     ):
-        await run_worker()
+        with pytest.raises(ConnectionError):
+            await run_worker()
 
 
 # ==============================================================================
@@ -460,6 +461,10 @@ async def test_readyz_degraded_scenarios(monkeypatch):
     monkeypatch.setenv("REQUIRE_AUTHENTICATION", "true")
     monkeypatch.setenv("JWT_SECRET_KEY", "super_secret_production_jwt_key_unique_2026")
     monkeypatch.setenv("S2S_INTERNAL_TOKEN", "super_secret_production_s2s_token_unique_2026")
+    monkeypatch.setenv("APPROVAL_SIGNING_KEY", "super_secret_production_approval_key_2026")
+    monkeypatch.setenv("LITELLM_API_KEY", "sk-real-prod-key-2026")
+    monkeypatch.setenv("NEO4J_PASSWORD", "real-neo4j-password-2026")
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://u:real-password@pgbouncer-svc:6432/db")
     monkeypatch.setenv("USE_POSTGRES_CHECKPOINT", "true")
     get_settings.cache_clear()
 
@@ -475,6 +480,10 @@ async def test_readyz_degraded_scenarios(monkeypatch):
     monkeypatch.delenv("REQUIRE_AUTHENTICATION", raising=False)
     monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
     monkeypatch.delenv("S2S_INTERNAL_TOKEN", raising=False)
+    monkeypatch.delenv("APPROVAL_SIGNING_KEY", raising=False)
+    monkeypatch.delenv("LITELLM_API_KEY", raising=False)
+    monkeypatch.delenv("NEO4J_PASSWORD", raising=False)
+    monkeypatch.delenv("POSTGRES_URI", raising=False)
     monkeypatch.delenv("USE_POSTGRES_CHECKPOINT", raising=False)
     get_settings.cache_clear()
 
@@ -485,6 +494,10 @@ async def test_code_exec_host_disabled_in_production(monkeypatch):
     monkeypatch.setenv("REQUIRE_AUTHENTICATION", "true")
     monkeypatch.setenv("JWT_SECRET_KEY", "super_secret_production_jwt_key_unique_2026")
     monkeypatch.setenv("S2S_INTERNAL_TOKEN", "super_secret_production_s2s_token_unique_2026")
+    monkeypatch.setenv("APPROVAL_SIGNING_KEY", "super_secret_production_approval_key_2026")
+    monkeypatch.setenv("LITELLM_API_KEY", "sk-real-prod-key-2026")
+    monkeypatch.setenv("NEO4J_PASSWORD", "real-neo4j-password-2026")
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://u:real-password@pgbouncer-svc:6432/db")
     monkeypatch.setenv("USE_POSTGRES_CHECKPOINT", "true")
     get_settings.cache_clear()
 
@@ -504,6 +517,10 @@ async def test_code_exec_host_disabled_in_production(monkeypatch):
     monkeypatch.delenv("REQUIRE_AUTHENTICATION", raising=False)
     monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
     monkeypatch.delenv("S2S_INTERNAL_TOKEN", raising=False)
+    monkeypatch.delenv("APPROVAL_SIGNING_KEY", raising=False)
+    monkeypatch.delenv("LITELLM_API_KEY", raising=False)
+    monkeypatch.delenv("NEO4J_PASSWORD", raising=False)
+    monkeypatch.delenv("POSTGRES_URI", raising=False)
     monkeypatch.delenv("USE_POSTGRES_CHECKPOINT", raising=False)
     get_settings.cache_clear()
 
@@ -514,13 +531,16 @@ async def test_code_exec_host_disabled_in_production(monkeypatch):
 @pytest.mark.asyncio
 async def test_repo_server_write_and_tool_wrappers(tmp_path):
     with patch("src.agentic.tools.servers.repo_server._get_workspace_root", return_value=tmp_path):
-        w_res = write_file_core(str(tmp_path / "new_dir" / "created.txt"), "hello written")
+        w_res = write_file_core(
+            str(tmp_path / "data" / "scratch" / "new_dir" / "created.txt"), "hello written"
+        )
         assert "Successfully wrote" in w_res
 
-        tool_write = await repo_write_file(str(tmp_path / "tool_w.txt"), "tool content")
+        scratch = tmp_path / "data" / "scratch"
+        tool_write = await repo_write_file(str(scratch / "tool_w.txt"), "tool content")
         assert "Successfully wrote" in tool_write
 
-        tool_read = await repo_read_file(str(tmp_path / "tool_w.txt"))
+        tool_read = await repo_read_file(str(scratch / "tool_w.txt"))
         assert "tool content" in tool_read
 
         tool_list = await repo_list_files(str(tmp_path))

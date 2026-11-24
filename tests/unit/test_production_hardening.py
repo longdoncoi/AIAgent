@@ -144,11 +144,16 @@ def test_production_inviolable_validators() -> None:
             use_postgres_checkpoint=False,
         )
 
-    # Production with valid settings passes
+    # Production with valid settings passes. All production secrets must be
+    # explicitly provisioned (no placeholders, dedicated approval key).
     valid_prod = Settings(
         environment="production",
         jwt_secret_key="custom-secure-prod-key-12345",
         s2s_internal_token="custom-secure-s2s-token-12345",
+        approval_signing_key="custom-secure-approval-key-12345",
+        litellm_api_key="sk-prod-real-key-12345",
+        neo4j_password="real-neo4j-password-12345",
+        postgres_uri="postgresql://agentic_user:real-password@pgbouncer-svc:6432/agentic_db",
         require_authentication=True,
         use_postgres_checkpoint=True,
     )

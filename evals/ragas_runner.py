@@ -211,7 +211,7 @@ class RagasLocalEvaluator:
         if not q_tokens:
             return 1.0
         overlap = len(q_tokens.intersection(a_tokens)) / len(q_tokens)
-        return round(min(1.0, max(0.5, overlap + 0.35)), 3)
+        return round(min(1.0, overlap + 0.35), 3)
 
     async def evaluate_context_precision(
         self, question: str, contexts: list[str], ground_truth: str

@@ -223,7 +223,9 @@ def test_repo_server_permissions_and_truncation(tmp_path):
             assert "Blocked" in write_file_core("new.py", "content")
 
         with patch("builtins.open", side_effect=Exception("Disk full")):
-            assert "Failed to write" in write_file_core(str(tmp_path / "fail.py"), "content")
+            assert "Failed to write" in write_file_core(
+                str(tmp_path / "data" / "scratch" / "fail.py"), "content"
+            )
 
 
 @pytest.mark.asyncio

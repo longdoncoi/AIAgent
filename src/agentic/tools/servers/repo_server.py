@@ -27,15 +27,12 @@ IGNORED_DIRS = {
     "build",
 }
 
-# Protected paths that coding agents must never overwrite to prevent security policy tampering
-DENIED_WRITE_PATTERNS = {
-    "configs",
-    "src",
-    ".git",
-    "migrations",
-    ".env",
-    "deploy",
-    "alembic.ini",
+# Writes are allowed ONLY in a dedicated scratch root; denylists cannot cover
+# every sensitive path (.github/workflows, pyproject, agent instructions...).
+WRITABLE_ROOTS = {"data/scratch"}
+DENIED_READ_PATTERNS = {
+    ".git", ".env", "data/memory", "deploy",
+    "configs/litellm_config.yaml", ".context", "evidence", "uv.lock",
 }
 
 
@@ -69,17 +66,20 @@ def _validate_safe_path(target_path: str, is_write: bool = False) -> Path:
         )
 
     rel_posix = path.relative_to(root).as_posix()
-    top_dir = rel_posix.split("/")[0] if "/" in rel_posix else rel_posix
 
-    if is_write:
-        for denied in DENIED_WRITE_PATTERNS:
-            if rel_posix == denied or rel_posix.startswith(f"{denied}/") or top_dir == denied:
-                raise PermissionError(
-                    f"Security Violation: Writing to protected system directory/file '{rel_posix}' is forbidden."
-                )
+    if is_write and not any(
+        rel_posix == allowed or rel_posix.startswith(f"{allowed}/")
+        for allowed in WRITABLE_ROOTS
+    ):
+        raise PermissionError(
+            f"Security Violation: Writing to '{rel_posix}' is forbidden. "
+            f"Writes are only allowed under {sorted(WRITABLE_ROOTS)}."
+        )
 
-    # Protect secret files from direct read
-    if rel_posix == ".env" or rel_posix.startswith(".env.") or rel_posix.startswith("data/memory/checkpoints"):
+    if any(
+        rel_posix == denied or rel_posix.startswith(f"{denied}/")
+        for denied in DENIED_READ_PATTERNS
+    ):
         raise PermissionError(
             f"Security Violation: Direct access to secret file '{rel_posix}' is forbidden."
         )

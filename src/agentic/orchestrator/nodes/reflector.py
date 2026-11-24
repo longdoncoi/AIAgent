@@ -20,6 +20,7 @@ from src.agentic.memory.short_term import trim_messages_window
 from src.agentic.observability.metrics import NODE_DURATION, REFLECTION_FALLBACK_TOTAL
 from src.agentic.observability.tracing import traced_operation
 from src.agentic.orchestrator.state import MAX_REFLECTION_ATTEMPTS, AgentState, Step
+from src.agentic.rag.tools import validate_citations
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,18 @@ async def reflector_node(state: AgentState) -> dict[str, Any]:
 
         notes = list(state.reflection_notes)
         score = evaluation.confidence_score
+        rag_outputs = [o for o in outputs if "[CITATIONS]" in o]
+        if any(s.agent == "rag" for s in state.plan.steps) and rag_outputs:
+            if not all(validate_citations(o) for o in rag_outputs):
+                notes.append("REPLAN_REQUIRED: RAG output is missing valid structured citations.")
+                return {
+                    "reflection_notes": notes,
+                    "reflection_count": state.reflection_count + 1,
+                    "messages": trimmed_msgs,
+                    "degraded": True,
+                    "degraded_reason": "missing_citations",
+                }
+
         needs_revision = (
             not evaluation.passed
             or evaluation.action in ("retry", "replan")

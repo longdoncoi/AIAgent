@@ -818,6 +818,7 @@ async def test_a2a_client_streaming_and_fallback():
             async def aiter_lines(self):
                 yield 'data: {"token": "Hello "}'
                 yield 'data: {"token": "enterprise!"}'
+                yield 'data: {"event": "completed", "output": "Hello enterprise!"}'
                 yield "data: [DONE]"
 
         yield MockStreamResponse()
@@ -931,13 +932,16 @@ async def test_hitl_rejection_and_modification_branches():
     res_rejected = await hitl_node(state_rejected)
     assert res_rejected["approval_granted"] is False
 
-    # 2. HITL Pre-approved: approval_granted = True
+    # 2. A bare approval_granted=True must NOT skip the interrupt.
     state_approved = AgentState(
         messages=[HumanMessage(content="Deploy to production")],
         plan=plan.model_copy(deep=True),
         approval_granted=True,
     )
-    res_approved = await hitl_node(state_approved)
+    with patch("src.agentic.orchestrator.nodes.hitl.interrupt") as mock_interrupt:
+        mock_interrupt.return_value = {"approved": True}
+        res_approved = await hitl_node(state_approved)
+        mock_interrupt.assert_called_once()
     assert res_approved["approval_granted"] is True
 
     # 3. LangGraph interrupt simulation with modified input

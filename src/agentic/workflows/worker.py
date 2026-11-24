@@ -37,7 +37,8 @@ async def run_worker() -> None:
         logger.info(f"Temporal worker started on task queue '{settings.temporal_task_queue}'.")
         await worker.run()
     except Exception as e:
-        logger.warning(f"Could not connect to Temporal ({e}). Temporal background worker exiting.")
+        logger.error("Could not start Temporal worker: %s", e)
+        raise
 
 
 def main() -> None:

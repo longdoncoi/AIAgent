@@ -2,9 +2,10 @@
 
 import json
 import logging
+import re
 import sqlite3
 import threading
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +14,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from src.agentic.core.config import get_settings
+from src.agentic.tools.execution_context import get_tool_execution_context
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +200,12 @@ class LongTermStore:
 
     def _upsert(self, entry_id: str, category: str, content: str, metadata: dict[str, Any]) -> None:
         now_iso = datetime.now(timezone.utc).isoformat()
+        # Stamp the owning principal when available so deletion can enumerate
+        # exactly this user's records via a strict JSON predicate.
+        metadata = dict(metadata)
+        context = get_tool_execution_context()
+        if context is not None and context.owner_id and "user_id" not in metadata:
+            metadata["user_id"] = context.owner_id
         meta_json = json.dumps(metadata, ensure_ascii=False)
 
         if self.is_postgres:
@@ -238,36 +246,38 @@ class LongTermStore:
                 )
                 conn.commit()
 
-    def search(self, query: str, category: str | None = None, limit: int = 5) -> list[MemoryEntry]:
-        """Queries stored memories with optional category filter."""
+    def search(
+        self,
+        query: str,
+        category: str | None = None,
+        limit: int = 5,
+        user_id: str | None = None,
+    ) -> list[MemoryEntry]:
+        """Queries stored memories with optional category and strict user filter."""
         results: list[MemoryEntry] = []
 
         if self.is_postgres:
             try:
                 with self._get_pg_conn() as conn:
                     with conn.cursor() as cur:
+                        clauses = ["content ILIKE %s"]
+                        params: list[Any] = [f"%{query}%"]
                         if category:
-                            cur.execute(
-                                """
-                                SELECT id, category, content, metadata, created_at
+                            clauses.append("category = %s")
+                            params.append(category)
+                        if user_id:
+                            # JSONB containment keeps the user filter strict and
+                            # independent of the (caller-controlled) query text.
+                            clauses.append("metadata @> %s::jsonb")
+                            params.append(json.dumps({"user_id": user_id}))
+                        cur.execute(
+                            f"""SELECT id, category, content, metadata, created_at
                                 FROM long_term_memories
-                                WHERE category = %s AND content ILIKE %s
+                                WHERE {' AND '.join(clauses)}
                                 ORDER BY created_at DESC
-                                LIMIT %s;
-                                """,
-                                (category, f"%{query}%", limit),
-                            )
-                        else:
-                            cur.execute(
-                                """
-                                SELECT id, category, content, metadata, created_at
-                                FROM long_term_memories
-                                WHERE content ILIKE %s
-                                ORDER BY created_at DESC
-                                LIMIT %s;
-                                """,
-                                (f"%{query}%", limit),
-                            )
+                                LIMIT %s;""",
+                            (*params, limit),
+                        )
                         rows = cur.fetchall()
                         for r in rows:
                             meta = r[3] if isinstance(r[3], dict) else {}
@@ -291,28 +301,22 @@ class LongTermStore:
 
         with self._lock:
             with self._get_sqlite_connection() as conn:
+                clauses = ["content LIKE ?"]
+                params = [f"%{query}%"]
                 if category:
-                    cursor = conn.execute(
-                        """
-                        SELECT id, category, content, metadata, created_at
+                    clauses.append("category = ?")
+                    params.append(category)
+                if user_id:
+                    clauses.append("json_extract(metadata, '$.user_id') = ?")
+                    params.append(user_id)
+                cursor = conn.execute(
+                    f"""SELECT id, category, content, metadata, created_at
                         FROM long_term_memories
-                        WHERE category = ? AND content LIKE ?
+                        WHERE {' AND '.join(clauses)}
                         ORDER BY created_at DESC
-                        LIMIT ?
-                        """,
-                        (category, f"%{query}%", limit),
-                    )
-                else:
-                    cursor = conn.execute(
-                        """
-                        SELECT id, category, content, metadata, created_at
-                        FROM long_term_memories
-                        WHERE content LIKE ?
-                        ORDER BY created_at DESC
-                        LIMIT ?
-                        """,
-                        (f"%{query}%", limit),
-                    )
+                        LIMIT ?""",
+                    (*params, limit),
+                )
                 rows = cursor.fetchall()
 
         for r in rows:
@@ -332,6 +336,98 @@ class LongTermStore:
                 )
             )
         return results
+
+    def _entries_from_rows(self, rows: Sequence[Any], *, postgres: bool) -> list[MemoryEntry]:
+        """Map DB rows (tuples or sqlite.Row) to MemoryEntry objects."""
+        entries: list[MemoryEntry] = []
+        for row in rows:
+            meta: Any = row[3] if postgres else row["metadata"]
+            if not isinstance(meta, dict):
+                try:
+                    meta = json.loads(str(meta))
+                except Exception:
+                    meta = {}
+            entries.append(
+                MemoryEntry(
+                    id=str(row[0] if postgres else row["id"]),
+                    category=str(row[1] if postgres else row["category"]),
+                    content=str(row[2] if postgres else row["content"]),
+                    metadata=meta,
+                    created_at=str(row[4] if postgres else row["created_at"]),
+                )
+            )
+        return entries
+
+    def list_by_user(self, user_id: str) -> list[MemoryEntry]:
+        """Enumerate every memory record belonging to ``user_id``.
+
+        Used by the Right-to-be-Forgotten purge to know exactly what will be
+        erased. The filter is applied in SQL via a JSON containment predicate;
+        no user-controlled string is interpolated into the statement.
+        """
+        _validate_user_id(user_id)
+        if self.is_postgres:
+            try:
+                with self._get_pg_conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """SELECT id, category, content, metadata, created_at
+                               FROM long_term_memories
+                               WHERE metadata @> %s::jsonb
+                               ORDER BY created_at DESC;""",
+                            (json.dumps({"user_id": user_id}),),
+                        )
+                        return self._entries_from_rows(cur.fetchall(), postgres=True)
+            except Exception as e:
+                self._handle_pg_failure("list_by_user", e)
+
+        with self._lock:
+            with self._get_sqlite_connection() as conn:
+                cursor = conn.execute(
+                    """SELECT id, category, content, metadata, created_at
+                       FROM long_term_memories
+                       WHERE json_extract(metadata, '$.user_id') = ?
+                       ORDER BY created_at DESC;""",
+                    (user_id,),
+                )
+                return self._entries_from_rows(cursor.fetchall(), postgres=False)
+
+    def delete_by_user(self, user_id: str) -> int:
+        """Delete all memory records for ``user_id`` and return the row count."""
+        _validate_user_id(user_id)
+        if self.is_postgres:
+            try:
+                with self._get_pg_conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """DELETE FROM long_term_memories
+                               WHERE metadata @> %s::jsonb;""",
+                            (json.dumps({"user_id": user_id}),),
+                        )
+                        deleted = int(cur.rowcount or 0)
+                    conn.commit()
+                    return deleted
+            except Exception as e:
+                self._handle_pg_failure("delete_by_user", e)
+
+        with self._lock:
+            with self._get_sqlite_connection() as conn:
+                cursor = conn.execute(
+                    """DELETE FROM long_term_memories
+                       WHERE json_extract(metadata, '$.user_id') = ?;""",
+                    (user_id,),
+                )
+                deleted = int(cursor.rowcount or 0)
+                conn.commit()
+                return deleted
+
+
+_USER_ID_RE = re.compile(r"^[A-Za-z0-9_.:@\-]{1,255}$")
+
+
+def _validate_user_id(user_id: str) -> None:
+    if not isinstance(user_id, str) or not _USER_ID_RE.fullmatch(user_id):
+        raise ValueError("Invalid user_id.")
 
 
 _long_term_store: LongTermStore | None = None

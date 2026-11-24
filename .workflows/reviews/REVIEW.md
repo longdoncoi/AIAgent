@@ -70,10 +70,24 @@ Các tiêu chí dưới đây được ghi rõ **NOT IMPLEMENTED** trong tệp r
 
 | Tiêu chí | Tệp review | Trạng thái thực tế |
 | :--- | :--- | :--- |
-| Xóa dữ liệu theo yêu cầu (Right to be Forgotten) | `REVIEW_COMPLIANCE, PRIVACY & AI ETHICS.md` (12.1) | **NOT IMPLEMENTED** |
-| Citations có cấu trúc (`doc_id`, `page`, `source`) | `REVIEW_COMPLIANCE, PRIVACY & AI ETHICS.md` (12.4) | **NOT IMPLEMENTED** |
-| RBAC tài liệu theo `user_roles` / `department` | `REVIEW_DATA GOVERNANCE & RAG RBAC.md` (14.1) | **NOT IMPLEMENTED** |
-| Ngân sách token cứng theo tenant + cảnh báo đột biến | `REVIEW_FINOPS & COST GOVERNANCE.md` (13.1, 13.5) | **CONFIGURED — cần kiểm chứng runtime** |
+| Xóa dữ liệu theo yêu cầu (Right to be Forgotten) | `REVIEW_COMPLIANCE, PRIVACY & AI ETHICS.md` (12.1) | **IMPLEMENTED (code + test)** — `src/agentic/memory/data_lifecycle.py`, `POST /api/v1/admin/users/{user_id}/purge`, `scripts/delete_user_data.py`. Cần diễn tập staging. |
+| Citations có cấu trúc (`doc_id`, `page`, `source`) | `REVIEW_COMPLIANCE, PRIVACY & AI ETHICS.md` (12.4) | **IMPLEMENTED (code + test)** — `search_policy` phát block `[CITATIONS]`; `validate_citations()` được gọi trong reflector. |
+| RBAC tài liệu theo `user_roles` / `department` | `REVIEW_DATA GOVERNANCE & RAG RBAC.md` (14.1) | **PARTIAL** — tenant/ACL từ execution context đã áp dụng. CẦN filter theo `user_roles`/`department` từ JWT claim. Chưa tính đạt P0. |
+| Ngân sách token cứng theo tenant + cảnh báo đột biến | `REVIEW_FINOPS & COST GOVERNANCE.md` (13.1, 13.5) | **CONFIGURED — cần kiểm chứng runtime**. Cost-tag `client_id/department/env` đã phát metric `agent_cost_allocation_total`. |
+| WAL PITR với RPO = 0 | `REVIEW_SRE & DISASTER RECOVERY.md` (10.2) | **PARTIAL / honest gap** — chỉ có logical backup CronJob (`deploy/k8s/backup.yaml`). PITR RPO=0 cần WAL archiving + S3/GCS do nhà cung cấp DB quản lý. |
+
+### 6.2.1 Bản Ghi Đợt Gia Cố P0 (2026-11-24)
+
+Đợt gia cố đã xử lý các blocker Critical (có regression test trong `tests/unit/test_*_v3.py`):
+ENVIRONMENT fail-open; HITL grant forgeable + wildcard owner + replay; nhánh `approval_granted`
+fail-open; SSE/A2A output chưa sanitize; guardrail double-encoding; tenant override qua tool
+argument; cache invalidation không xóa L2; MCP probe/pgBouncer/Ingress/OTLP blockers; release
+gate không nằm trong CI; sign-off gate chỉ kiểm tra file tồn tại.
+
+> **CẦN HIỂU RÕ**: đây là bằng chứng **code-level**. Nó KHÔNG thay cho việc chạy
+> `python evals/release_gate.py` với LLM judge/neural model thật, diễn tập DR/load test trên
+> cụm K8s thật, và 9 chữ ký của Release Board. Verdict tự động vẫn là
+> `AUTO-EVIDENCE PENDING REVIEW BOARD`.
 
 ### 6.3 Bảng Chữ Ký Phê Chuẩn Của Hội Đồng Đánh Giá (Release Board)
 

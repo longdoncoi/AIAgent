@@ -1,5 +1,9 @@
 # ==============================================================================
 # OpenTelemetry Collector Configuration (Enterprise Production Standard)
+# ------------------------------------------------------------------------------
+# Canonical collector config. The runnable workload (ServiceAccount + ConfigMap
+# + Deployment + Service `otel-collector-svc:4317`) lives in
+# deploy/k8s/otel-collector.yaml and IS included in the kustomization.
 # ==============================================================================
 receivers:
   otlp:

@@ -9,6 +9,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: agentic-api
+  namespace: agentic-platform
   labels:
     app: agentic-api
     tier: l1-interface
@@ -42,7 +43,7 @@ spec:
               drop: ["ALL"]
             seccompProfile:
               type: RuntimeDefault
-          image: ghcr.io/agentic-platform/api:latest
+          image: ghcr.io/agentic-platform/api:IMMUTABLE_SHA_REQUIRED
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000
@@ -75,6 +76,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: agentic-api-svc
+  namespace: agentic-platform
 spec:
   type: ClusterIP
   selector:
@@ -87,6 +89,7 @@ apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: agentic-api-hpa
+  namespace: agentic-platform
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
@@ -115,6 +118,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: agentic-chat-agent
+  namespace: agentic-platform
   labels:
     app: agentic-chat-agent
     tier: l3-agent
@@ -148,7 +152,7 @@ spec:
               drop: ["ALL"]
             seccompProfile:
               type: RuntimeDefault
-          image: ghcr.io/agentic-platform/agent:latest
+          image: ghcr.io/agentic-platform/agent:IMMUTABLE_SHA_REQUIRED
           env:
             - name: AGENT_MODULE
               value: "src.agentic.agents.chat.server"
@@ -185,6 +189,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: agentic-chat-svc
+  namespace: agentic-platform
 spec:
   type: ClusterIP
   selector:
@@ -197,6 +202,7 @@ apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: agentic-chat-hpa
+  namespace: agentic-platform
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
@@ -219,6 +225,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: agentic-rag-agent
+  namespace: agentic-platform
   labels:
     app: agentic-rag-agent
     tier: l3-agent
@@ -252,7 +259,7 @@ spec:
               drop: ["ALL"]
             seccompProfile:
               type: RuntimeDefault
-          image: ghcr.io/agentic-platform/agent:latest
+          image: ghcr.io/agentic-platform/agent:IMMUTABLE_SHA_REQUIRED
           env:
             - name: AGENT_MODULE
               value: "src.agentic.agents.rag.server"
@@ -289,6 +296,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: agentic-rag-svc
+  namespace: agentic-platform
 spec:
   type: ClusterIP
   selector:
@@ -301,6 +309,7 @@ apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: agentic-rag-hpa
+  namespace: agentic-platform
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
@@ -323,6 +332,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: agentic-coding-agent
+  namespace: agentic-platform
   labels:
     app: agentic-coding-agent
     tier: l3-agent
@@ -356,7 +366,7 @@ spec:
               drop: ["ALL"]
             seccompProfile:
               type: RuntimeDefault
-          image: ghcr.io/agentic-platform/agent:latest
+          image: ghcr.io/agentic-platform/agent:IMMUTABLE_SHA_REQUIRED
           env:
             - name: AGENT_MODULE
               value: "src.agentic.agents.coding.server"
@@ -393,6 +403,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: agentic-coding-svc
+  namespace: agentic-platform
 spec:
   type: ClusterIP
   selector:
@@ -405,6 +416,7 @@ apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: agentic-coding-hpa
+  namespace: agentic-platform
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
@@ -427,6 +439,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: agentic-mcp-code-exec
+  namespace: agentic-platform
   labels:
     app: agentic-mcp-code-exec
     tier: l4-tools
@@ -460,7 +473,7 @@ spec:
               drop: ["ALL"]
             seccompProfile:
               type: RuntimeDefault
-          image: ghcr.io/agentic-platform/mcp:latest
+          image: ghcr.io/agentic-platform/mcp:IMMUTABLE_SHA_REQUIRED
           env:
             - name: MCP_SERVER_MODULE
               value: "src.agentic.tools.servers.code_exec_server"
@@ -473,17 +486,22 @@ spec:
                 name: agentic-secrets
           ports:
             - containerPort: 9001
+          # FastMCP servers have no HTTP /health route and require the internal
+          # service token on HTTP routes: auth-free TCP probes + slow-start probe.
           livenessProbe:
-            httpGet:
-              path: /health
+            tcpSocket:
               port: 9001
             initialDelaySeconds: 10
             periodSeconds: 15
           readinessProbe:
-            httpGet:
-              path: /health
+            tcpSocket:
               port: 9001
             initialDelaySeconds: 5
+            periodSeconds: 5
+          startupProbe:
+            tcpSocket:
+              port: 9001
+            failureThreshold: 30
             periodSeconds: 5
           resources:
             requests:
@@ -497,6 +515,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: agentic-mcp-code-exec-svc
+  namespace: agentic-platform
 spec:
   type: ClusterIP
   selector:
@@ -509,6 +528,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: agentic-mcp-repo
+  namespace: agentic-platform
   labels:
     app: agentic-mcp-repo
     tier: l4-tools
@@ -542,7 +562,7 @@ spec:
               drop: ["ALL"]
             seccompProfile:
               type: RuntimeDefault
-          image: ghcr.io/agentic-platform/mcp:latest
+          image: ghcr.io/agentic-platform/mcp:IMMUTABLE_SHA_REQUIRED
           env:
             - name: MCP_SERVER_MODULE
               value: "src.agentic.tools.servers.repo_server"
@@ -556,16 +576,19 @@ spec:
           ports:
             - containerPort: 9002
           livenessProbe:
-            httpGet:
-              path: /health
+            tcpSocket:
               port: 9002
             initialDelaySeconds: 10
             periodSeconds: 15
           readinessProbe:
-            httpGet:
-              path: /health
+            tcpSocket:
               port: 9002
             initialDelaySeconds: 5
+            periodSeconds: 5
+          startupProbe:
+            tcpSocket:
+              port: 9002
+            failureThreshold: 30
             periodSeconds: 5
           resources:
             requests: {cpu: "100m", memory: "256Mi"}
@@ -575,6 +598,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: agentic-mcp-repo-svc
+  namespace: agentic-platform
 spec:
   selector:
     app: agentic-mcp-repo
@@ -586,6 +610,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: agentic-mcp-web-search
+  namespace: agentic-platform
   labels:
     app: agentic-mcp-web-search
     tier: l4-tools
@@ -619,7 +644,7 @@ spec:
               drop: ["ALL"]
             seccompProfile:
               type: RuntimeDefault
-          image: ghcr.io/agentic-platform/mcp:latest
+          image: ghcr.io/agentic-platform/mcp:IMMUTABLE_SHA_REQUIRED
           env:
             - name: MCP_SERVER_MODULE
               value: "src.agentic.tools.servers.web_search_server"
@@ -633,16 +658,19 @@ spec:
           ports:
             - containerPort: 9003
           livenessProbe:
-            httpGet:
-              path: /health
+            tcpSocket:
               port: 9003
             initialDelaySeconds: 10
             periodSeconds: 15
           readinessProbe:
-            httpGet:
-              path: /health
+            tcpSocket:
               port: 9003
             initialDelaySeconds: 5
+            periodSeconds: 5
+          startupProbe:
+            tcpSocket:
+              port: 9003
+            failureThreshold: 30
             periodSeconds: 5
           resources:
             requests: {cpu: "100m", memory: "256Mi"}
@@ -652,6 +680,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: agentic-mcp-web-search-svc
+  namespace: agentic-platform
 spec:
   selector:
     app: agentic-mcp-web-search

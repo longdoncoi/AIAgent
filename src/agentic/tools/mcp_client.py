@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from src.agentic.core.config import get_settings
 from src.agentic.observability.metrics import TOOL_EXECUTION_TOTAL
 from src.agentic.observability.tracing import get_tracer
-from src.agentic.safety.approvals import verify_approval_grant
+from src.agentic.safety.approvals import issue_call_grant, verify_approval_grant
 from src.agentic.safety.guardrails import get_guardrails
 from src.agentic.safety.policy import get_policy_manager
 from src.agentic.tools.execution_context import get_tool_execution_context
@@ -158,19 +158,29 @@ class MCPClientManager:
         # Approval-gated tools require a *server-issued* signed grant. A boolean
         # propagated from the caller (A2A metadata) is never sufficient.
         if policy.is_approval_required(tool_name):
-            grant = (
-                verify_approval_grant(
+            grant = None
+            if context is not None:
+                step_grant = verify_approval_grant(
                     context.approval_token,
                     step_id=context.step_id,
                     fingerprint=context.step_fingerprint or "",
                     owner_id=context.owner_id,
                     agent_name=effective_agent,
                     tool_name=tool_name,
-                    arguments=kwargs,
                 )
-                if context is not None
-                else None
-            )
+                if step_grant is not None:
+                    call_token = issue_call_grant(
+                        step_grant=step_grant, tool_name=tool_name, arguments=kwargs
+                    )
+                    grant = verify_approval_grant(
+                        call_token,
+                        step_id=context.step_id,
+                        fingerprint=context.step_fingerprint or "",
+                        owner_id=context.owner_id,
+                        agent_name=effective_agent,
+                        tool_name=tool_name,
+                        arguments=kwargs,
+                    )
             if grant is None:
                 TOOL_EXECUTION_TOTAL.labels(tool_name=tool_name, status="denied").inc()
                 logger.warning(

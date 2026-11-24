@@ -33,9 +33,9 @@ tools:
     timeout_seconds: 20
 
   code_exec_python:
-    risk_level: medium
-    description: "Execute Python code in isolated sandbox"
-    require_approval: false
+    risk_level: high
+    description: "Execute arbitrary Python code in isolated sandbox"
+    require_approval: true
     timeout_seconds: 30
 
   code_exec_bash:

@@ -1,50 +1,67 @@
+# ==============================================================================
+# !!! NOT FOR PRODUCTION !!!  LOCAL DEVELOPMENT ONLY
+# ==============================================================================
+# Renamed from docker-compose.yml so no production tooling can pick it up.
+# Not referenced by any deployment manifest or CI publish job.
+# For production use deploy/k8s/ (Kustomize base).
+#
+# Auth defaults to TRUE. Set DEV_S2S_TOKEN / DEV_JWT_SECRET /
+# DEV_POSTGRES_PASSWORD / DEV_NEO4J_PASSWORD in a git-ignored .env file.
+# All published ports are bound to 127.0.0.1 only.
+# ------------------------------------------------------------------------------
 version: '3.8'
 
+x-dev-env: &dev-env
+  ENVIRONMENT: development
+  REQUIRE_AUTHENTICATION: "true"
+  S2S_INTERNAL_TOKEN: "${DEV_S2S_TOKEN:-local-dev-s2s-token-change-me}"
+  JWT_SECRET_KEY: "${DEV_JWT_SECRET:-local-dev-jwt-secret-change-me}"
+
 services:
-  # Infrastructure Services
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.4-alpine
     container_name: agentic-postgres
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: "${DEV_POSTGRES_USER:-agentic_user}"
+      POSTGRES_PASSWORD: "${DEV_POSTGRES_PASSWORD:-local-dev-only-change-me}"
       POSTGRES_DB: agentic_db
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U ${DEV_POSTGRES_USER:-agentic_user}"]
       interval: 5s
       timeout: 5s
       retries: 5
 
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.12.1
     container_name: agentic-qdrant
     ports:
-      - "6333:6333"
-      - "6334:6334"
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
 
   neo4j:
-    image: neo4j:5
+    image: neo4j:5.26.0
     container_name: agentic-neo4j
     environment:
-      NEO4J_AUTH: neo4j/agentic_neo4j_password
+      # Dev-only credential; override via DEV_NEO4J_PASSWORD.
+      NEO4J_AUTH: "neo4j/${DEV_NEO4J_PASSWORD:-local-dev-only-change-me}"
       NEO4J_PLUGINS: '["apoc"]'
     ports:
-      - "7474:7474"
-      - "7687:7687"
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
     volumes:
       - neo4j_data:/data
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4-alpine
     container_name: agentic-redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -57,25 +74,25 @@ services:
     image: ghcr.io/berriai/litellm:main-latest
     container_name: agentic-litellm
     ports:
-      - "4000:4000"
+      - "127.0.0.1:4000:4000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ../../configs/litellm_config.yaml:/app/config.yaml
+      - ../../configs/litellm_config.yaml:/app/config.yaml:ro
     command: ["--config", "/app/config.yaml", "--port", "4000"]
 
-  # MCP Tool Servers
+  # MCP Tool Servers -- auth is ON; callers receive the same dev token.
   mcp-code-exec:
     build:
       context: ../../
       dockerfile: deploy/docker/Dockerfile.mcp
     container_name: mcp-code-exec
     environment:
+      <<: *dev-env
       MCP_SERVER_MODULE: "src.agentic.tools.servers.code_exec_server"
       MCP_PORT: 9001
-      REQUIRE_AUTHENTICATION: "false"
     ports:
-      - "9001:9001"
+      - "127.0.0.1:9001:9001"
 
   mcp-repo:
     build:
@@ -83,11 +100,11 @@ services:
       dockerfile: deploy/docker/Dockerfile.mcp
     container_name: mcp-repo
     environment:
+      <<: *dev-env
       MCP_SERVER_MODULE: "src.agentic.tools.servers.repo_server"
       MCP_PORT: 9002
-      REQUIRE_AUTHENTICATION: "false"
     ports:
-      - "9002:9002"
+      - "127.0.0.1:9002:9002"
 
   mcp-web-search:
     build:
@@ -95,11 +112,11 @@ services:
       dockerfile: deploy/docker/Dockerfile.mcp
     container_name: mcp-web-search
     environment:
+      <<: *dev-env
       MCP_SERVER_MODULE: "src.agentic.tools.servers.web_search_server"
       MCP_PORT: 9003
-      REQUIRE_AUTHENTICATION: "false"
     ports:
-      - "9003:9003"
+      - "127.0.0.1:9003:9003"
 
   # A2A Sub-Agents
   agent-chat:
@@ -108,6 +125,7 @@ services:
       dockerfile: deploy/docker/Dockerfile.agent
     container_name: agent-chat
     environment:
+      <<: *dev-env
       AGENT_MODULE: "src.agentic.agents.chat.server"
       AGENT_PORT: 9100
       LITELLM_BASE_URL: http://litellm:4000/v1
@@ -115,7 +133,7 @@ services:
       USE_REMOTE_MCP: "true"
       ALLOW_LOCAL_AGENT_FALLBACK: "false"
     ports:
-      - "9100:9100"
+      - "127.0.0.1:9100:9100"
 
   agent-rag:
     build:
@@ -123,13 +141,14 @@ services:
       dockerfile: deploy/docker/Dockerfile.agent
     container_name: agent-rag
     environment:
+      <<: *dev-env
       AGENT_MODULE: "src.agentic.agents.rag.server"
       AGENT_PORT: 9101
       LITELLM_BASE_URL: http://litellm:4000/v1
       USE_REMOTE_MCP: "true"
       ALLOW_LOCAL_AGENT_FALLBACK: "false"
     ports:
-      - "9101:9101"
+      - "127.0.0.1:9101:9101"
 
   agent-coding:
     build:
@@ -137,6 +156,7 @@ services:
       dockerfile: deploy/docker/Dockerfile.agent
     container_name: agent-coding
     environment:
+      <<: *dev-env
       AGENT_MODULE: "src.agentic.agents.coding.server"
       AGENT_PORT: 9102
       LITELLM_BASE_URL: http://litellm:4000/v1
@@ -145,7 +165,7 @@ services:
       USE_REMOTE_MCP: "true"
       ALLOW_LOCAL_AGENT_FALLBACK: "false"
     ports:
-      - "9102:9102"
+      - "127.0.0.1:9102:9102"
 
   # L1 Interface API
   api:
@@ -154,23 +174,24 @@ services:
       dockerfile: deploy/docker/Dockerfile.api
     container_name: agentic-api
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
-      - POSTGRES_URI=postgresql://postgres:postgres@postgres:5432/agentic_db
-      - QDRANT_HOST=qdrant
-      - REDIS_URL=redis://redis:6379/0
-      - ENABLE_REDIS_RATE_LIMIT=true
-      - ENABLE_REDIS_CACHE=true
-      - LITELLM_BASE_URL=http://litellm:4000/v1
-      - A2A_CHAT_AGENT_URL=http://agent-chat:9100/a2a
-      - A2A_RAG_AGENT_URL=http://agent-rag:9101/a2a
-      - A2A_CODING_AGENT_URL=http://agent-coding:9102/a2a
-      - MCP_CODE_EXEC_URL=http://mcp-code-exec:9001/sse
-      - MCP_REPO_URL=http://mcp-repo:9002/sse
-      - MCP_WEB_SEARCH_URL=http://mcp-web-search:9003/sse
-      - USE_REMOTE_MCP=true
-      - ALLOW_LOCAL_AGENT_FALLBACK=false
-      - USE_POSTGRES_CHECKPOINT=true
+      <<: *dev-env
+      POSTGRES_URI: "postgresql://${DEV_POSTGRES_USER:-agentic_user}:${DEV_POSTGRES_PASSWORD:-local-dev-only-change-me}@postgres:5432/agentic_db"
+      QDRANT_HOST: qdrant
+      REDIS_URL: redis://redis:6379/0
+      ENABLE_REDIS_RATE_LIMIT: "true"
+      ENABLE_REDIS_CACHE: "true"
+      LITELLM_BASE_URL: http://litellm:4000/v1
+      A2A_CHAT_AGENT_URL: http://agent-chat:9100/a2a
+      A2A_RAG_AGENT_URL: http://agent-rag:9101/a2a
+      A2A_CODING_AGENT_URL: http://agent-coding:9102/a2a
+      MCP_CODE_EXEC_URL: http://mcp-code-exec:9001/sse
+      MCP_REPO_URL: http://mcp-repo:9002/sse
+      MCP_WEB_SEARCH_URL: http://mcp-web-search:9003/sse
+      USE_REMOTE_MCP: "true"
+      ALLOW_LOCAL_AGENT_FALLBACK: "false"
+      USE_POSTGRES_CHECKPOINT: "true"
     depends_on:
       postgres:
         condition: service_healthy

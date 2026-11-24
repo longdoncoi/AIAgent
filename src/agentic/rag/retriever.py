@@ -7,7 +7,6 @@ installed. The name is kept honest in code and metrics.
 
 import logging
 import threading
-from collections import defaultdict
 from pathlib import Path
 from typing import Any, cast
 
@@ -18,8 +17,33 @@ from llama_index.core.vector_stores import FilterOperator, MetadataFilter, Metad
 from src.agentic.core.config import get_settings
 from src.agentic.rag.embedding import configure_embedding_model, invalidate_embedding_provider_cache
 from src.agentic.rag.ingestion import load_documents_from_dir
+from src.agentic.rag.metrics import (
+    RAG_DENSE_RETRIEVAL_ERRORS_TOTAL,
+    RAG_RETRIEVAL_DEGRADED_TOTAL,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class RetrievalResult(list[NodeWithScore]):
+    """A list of nodes that also carries a fail-closed degradation signal.
+
+    It remains a plain ``list`` subclass so all existing callers behave
+    identically, while callers that care about quality can check
+    ``result.degraded`` instead of mistaking an empty/fallback result for a
+    healthy one.
+    """
+
+    def __init__(
+        self,
+        nodes: list[NodeWithScore] | None = None,
+        *,
+        degraded: bool = False,
+        degraded_reasons: list[str] | None = None,
+    ) -> None:
+        super().__init__(nodes or [])
+        self.degraded = degraded
+        self.degraded_reasons: list[str] = degraded_reasons or []
 
 
 class HybridRetriever:
@@ -33,7 +57,20 @@ class HybridRetriever:
         self._docstore: Any = None
         self._storage_context: StorageContext | None = None
         self._invalidate_lock = threading.Lock()
+        self._degraded_reasons: list[str] = []
         self._load_storage()
+
+    @property
+    def degraded(self) -> bool:
+        """True when any retrieval backend failed to load or respond."""
+        return bool(self._degraded_reasons)
+
+    def _mark_degraded(self, reason: str, *, metric: Any = None) -> None:
+        """Record a degradation signal (never a silent fallback)."""
+        if reason not in self._degraded_reasons:
+            self._degraded_reasons.append(reason)
+        if metric is not None:
+            metric.inc()
 
     def _load_storage(self) -> None:
         """Attempts to load persisted index from Qdrant vector store or disk.
@@ -67,8 +104,16 @@ class HybridRetriever:
                 )
                 return
             except Exception as e:
-                logger.warning(
-                    f"Could not load index from Qdrant ({e}). Falling back to local storage."
+                # ERROR (not debug/warning): a broken Qdrant load means the
+                # service may serve stale local data without anyone noticing.
+                logger.error(
+                    "Could not load index from Qdrant (%s). Falling back to local storage; "
+                    "results may be STALE.",
+                    e,
+                )
+                self._mark_degraded(
+                    "qdrant_load_failed",
+                    metric=RAG_DENSE_RETRIEVAL_ERRORS_TOTAL.labels(reason="qdrant_load_failed"),
                 )
 
         # 2. Local disk fallback
@@ -82,7 +127,18 @@ class HybridRetriever:
                     "Successfully loaded VectorStoreIndex and StorageContext from persist directory."
                 )
             except Exception as e:
-                logger.warning(f"Could not load index from {self.index_dir}: {e}")
+                logger.error("Could not load index from %s: %s", self.index_dir, e)
+                self._mark_degraded(
+                    "local_index_load_failed",
+                    metric=RAG_DENSE_RETRIEVAL_ERRORS_TOTAL.labels(
+                        reason="local_index_load_failed"
+                    ),
+                )
+        elif qdrant_store is None:
+            self._mark_degraded(
+                "no_vector_store",
+                metric=RAG_DENSE_RETRIEVAL_ERRORS_TOTAL.labels(reason="no_vector_store"),
+            )
 
     def keyword_score(self, query: str, top_k: int = 5) -> list[NodeWithScore]:
         """Lexical keyword-frequency scoring over the docstore (or raw files).
@@ -155,14 +211,22 @@ class HybridRetriever:
         return True
 
     def _dense_search(
-        self, query: str, top_k: int = 5, filters: dict[str, Any] | None = None
+        self,
+        query: str,
+        top_k: int = 5,
+        filters: dict[str, Any] | None = None,
+        degraded_reasons: list[str] | None = None,
     ) -> list[NodeWithScore]:
         """Retrieves top_k nodes via AutoMergingRetriever over hierarchical leaf/parent nodes.
 
         Metadata filters are pushed into the vector-store query where supported
         (Qdrant), so tenant isolation is enforced at the storage boundary too.
+        Failures are logged at ERROR, counted, and recorded in ``degraded_reasons``
+        instead of being silently swallowed.
         """
         if not self._index:
+            if degraded_reasons is not None:
+                degraded_reasons.append("dense_index_unavailable")
             return []
         pushdown = self._build_metadata_filters(filters or {})
         extra_kwargs: dict[str, Any] = {"filters": pushdown} if pushdown is not None else {}
@@ -180,13 +244,19 @@ class HybridRetriever:
             retriever = self._index.as_retriever(similarity_top_k=top_k, **extra_kwargs)
             return cast(list[NodeWithScore], retriever.retrieve(query))
         except Exception as e:
-            logger.debug(
-                f"AutoMergingRetriever not applicable ({e}). Using standard vector retriever."
-            )
+            logger.warning("AutoMergingRetriever not applicable (%s). Using standard retriever.", e)
             try:
                 retriever = self._index.as_retriever(similarity_top_k=top_k, **extra_kwargs)
                 return cast(list[NodeWithScore], retriever.retrieve(query))
-            except Exception:
+            except Exception as exc:
+                logger.error("Dense retrieval channel failed: %s", exc)
+                RAG_DENSE_RETRIEVAL_ERRORS_TOTAL.labels(reason="dense_query_failed").inc()
+                self._mark_degraded(
+                    "dense_query_failed",
+                    metric=RAG_RETRIEVAL_DEGRADED_TOTAL.labels(reason="dense_query_failed"),
+                )
+                if degraded_reasons is not None:
+                    degraded_reasons.append("dense_query_failed")
                 return []
 
     def _reciprocal_rank_fusion(
@@ -194,27 +264,16 @@ class HybridRetriever:
         retrieval_lists: list[list[NodeWithScore]],
         k: int = 60,
     ) -> list[NodeWithScore]:
-        """Merges multiple ranked lists using Reciprocal Rank Fusion (RRF)."""
-        rrf_scores: dict[str, float] = defaultdict(float)
-        node_map: dict[str, Any] = {}
+        """Backward-compatible RRF wrapper around the single fusion engine.
 
-        for rank_list in retrieval_lists:
-            for rank, item in enumerate(rank_list, start=1):
-                node_text = (
-                    item.node.get_content()
-                    if hasattr(item.node, "get_content")
-                    else getattr(item.node, "text", "")
-                )
-                node_id = getattr(item.node, "node_id", node_text[:50])
-                rrf_scores[node_id] += 1.0 / (k + rank)
-                if node_id not in node_map:
-                    node_map[node_id] = item.node
+        The former duplicate implementation here drifted from the weighted
+        fusion used by :meth:`retrieve`; delegate instead of maintaining two.
+        """
+        from src.agentic.rag.fusion import MultiRetrievalFusion
 
-        fused_items: list[NodeWithScore] = [
-            NodeWithScore(node=node_map[nid], score=score) for nid, score in rrf_scores.items()
-        ]
-        fused_items.sort(key=lambda x: x.score or 0.0, reverse=True)
-        return fused_items
+        channels = {f"channel_{idx}": items for idx, items in enumerate(retrieval_lists)}
+        total = sum(len(items) for items in retrieval_lists)
+        return MultiRetrievalFusion(rrf_k=k).fuse(channels, top_k=total)
 
     def retrieve(
         self, query: str, top_k: int = 5, filters: dict[str, Any] | None = None
@@ -225,8 +284,11 @@ class HybridRetriever:
         (defense in depth), and missing tenant tags are excluded in production.
         """
         effective_filters = filters or {}
+        degraded_reasons: list[str] = list(self._degraded_reasons)
         keyword_results = self.keyword_score(query, top_k=top_k * 2)
-        dense_results = self._dense_search(query, top_k=top_k * 2, filters=effective_filters)
+        dense_results = self._dense_search(
+            query, top_k=top_k * 2, filters=effective_filters, degraded_reasons=degraded_reasons
+        )
 
         if effective_filters:
             keyword_results = [
@@ -264,7 +326,11 @@ class HybridRetriever:
         fused = fusion.fuse(channels, top_k=top_k * 2 if effective_filters else top_k)
         if effective_filters:
             fused = [item for item in fused if self._is_permitted(item, effective_filters)]
-        return fused[:top_k]
+        return RetrievalResult(
+            fused[:top_k],
+            degraded=bool(degraded_reasons),
+            degraded_reasons=degraded_reasons,
+        )
 
     def invalidate(self) -> None:
         """Drop cached index/docstore/embedding state and reload fresh storage.
@@ -278,6 +344,7 @@ class HybridRetriever:
             self._index = None
             self._docstore = None
             self._storage_context = None
+            self._degraded_reasons = []
             invalidate_embedding_provider_cache()
             self._load_storage()
 
@@ -344,6 +411,14 @@ def get_qdrant_vector_store(
     if not settings.enable_qdrant and client is None:
         return None
 
+    replication_factor = int(settings.qdrant_replication_factor)
+    write_consistency = int(settings.qdrant_write_consistency_factor)
+    if write_consistency > replication_factor:
+        raise ValueError(
+            "qdrant_write_consistency_factor must be <= qdrant_replication_factor "
+            f"(got {write_consistency} > {replication_factor})."
+        )
+
     target_collection = collection_name or settings.qdrant_collection_name
     try:
         from llama_index.vector_stores.qdrant import QdrantVectorStore
@@ -392,6 +467,21 @@ def get_qdrant_vector_store(
                 f"Configured Qdrant collection '{target_collection}' with HNSW on-disk mmap, INT8 Scalar Quantization, "
                 f"shards={settings.qdrant_shard_number}, replication={settings.qdrant_replication_factor}."
             )
+
+        # Payload indexes make tenant/file filters fast AND enforced at the
+        # storage boundary. Safe to create repeatedly (Qdrant is idempotent).
+        for field_name in ("tenant_id", "file_name"):
+            try:
+                q_client.create_payload_index(
+                    collection_name=target_collection,
+                    field_name=field_name,
+                    field_schema=qmodels.PayloadSchemaType.KEYWORD,
+                    wait=True,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Could not create Qdrant payload index for %s: %s", field_name, exc
+                )
 
         return QdrantVectorStore(client=q_client, collection_name=target_collection)
     except Exception as e:

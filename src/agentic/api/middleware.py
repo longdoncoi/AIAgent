@@ -7,7 +7,6 @@ import threading
 import time
 import uuid
 from collections import defaultdict
-from contextvars import ContextVar
 from typing import Any
 
 from fastapi import Request, Response
@@ -19,12 +18,13 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.responses import StreamingResponse
 
 from src.agentic.core.config import get_settings
+from src.agentic.core.context import REQUEST_ID_VAR
 from src.agentic.observability.metrics import REQUEST_DURATION
 from src.agentic.safety.policy import get_policy_manager
 
 logger = logging.getLogger(__name__)
 
-REQUEST_ID_VAR: ContextVar[str] = ContextVar("agentic_request_id", default="-")
+# REQUEST_ID_VAR is defined in core/context and re-exported here.
 
 _MAX_BODY_BYTES = 2 * 1024 * 1024
 _RATE_LIMIT_SCRIPT = """

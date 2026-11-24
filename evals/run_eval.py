@@ -195,8 +195,14 @@ async def run_benchmark(mode: str | None = None) -> bool:
 
             # Groundedness: is the generated answer faithful to the reference?
             g_score = await evaluate_groundedness(
-                question=q, generated_answer=answer.answer, ground_truth=gt
+                question=q, generated_answer=answer.answer, ground_truth=gt, mode=mode
             )
+            if mode == "release":
+                print(
+                    ">> RELEASE GATE FAILED: evaluate_faithfulness is a token-overlap "
+                    "proxy; use the official RAGAS metric for release faithfulness."
+                )
+                return False
             # Faithfulness: are claims in the generated answer supported by context?
             f_score = evaluate_faithfulness(
                 generated_answer=answer.answer, retrieved_context=retrieved_context

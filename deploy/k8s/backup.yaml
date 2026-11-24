@@ -1,0 +1,86 @@
+# Logical database backups (REVIEW_SRE 10.2 — PARTIAL).
+# HONEST SCOPE: nightly logical dumps with 14-day retention on a PVC. This is
+# NOT PITR (RPO=0). True PITR needs WAL archiving + off-cluster replication,
+# owned by the managed DB provider. The DR runbook must state this gap.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agentic-db-backups
+  namespace: agentic-platform
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: standard
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: agentic-db-backup
+  namespace: agentic-platform
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: agentic-db-backup
+            tier: backup
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+          containers:
+            - name: pg-dump
+              image: postgres:16-alpine
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: agentic-secrets
+                      key: POSTGRES_PASSWORD
+                - name: POSTGRES_URI
+                  valueFrom:
+                    secretKeyRef:
+                      name: agentic-secrets
+                      key: POSTGRES_URI
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+                  OUT="/backups/agentic-${STAMP}.dump"
+                  echo "Starting logical backup at ${STAMP}"
+                  pg_dump --format=custom --no-owner --no-privileges \
+                    --dbname="${POSTGRES_URI}" --file="${OUT}"
+                  gzip -f "${OUT}"
+                  echo "Backup complete: ${OUT}.gz"
+                  find /backups -type f -name 'agentic-*.dump.gz' -mtime +14 -delete
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: agentic-db-backups

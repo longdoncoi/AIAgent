@@ -25,7 +25,8 @@ mcp = FastMCP(
     "code_exec_server", instructions="Executes Python and shell code in a controlled environment."
 )
 
-# Prohibited destructive shell patterns & reverse shells
+# UX-only guardrails. A substring denylist is NOT a security boundary for a
+# general-purpose execution tool; real isolation is the gVisor/Docker sandbox.
 PROHIBITED_COMMAND_PATTERNS = [
     "rm -rf /",
     "mkfs",

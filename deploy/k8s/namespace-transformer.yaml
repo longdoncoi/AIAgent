@@ -1,3 +1,6 @@
+# DEPRECATED / UNUSED: referenced via `transformers:` this builtin transformer
+# is silently ignored by kubectl kustomize. All platform manifests now declare
+# `namespace: agentic-platform` explicitly. Do not re-add to kustomization.yaml.
 apiVersion: builtin
 kind: NamespaceTransformer
 metadata:

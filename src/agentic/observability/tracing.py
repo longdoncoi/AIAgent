@@ -43,6 +43,11 @@ if not isinstance(trace.get_tracer_provider(), TracerProvider):
             except Exception as e:
                 OBSERVABILITY_ERRORS_TOTAL.labels(component="otel_otlp").inc()
                 logger.error("OTLPSpanExporter unavailable: %s", e)
+                if _settings.is_production:
+                    raise RuntimeError(
+                        "Production tracing requires a working OTLP exporter: "
+                        "install opentelemetry-exporter-otlp and verify the collector."
+                    ) from e
         elif _settings.debug and _settings.environment != "production":
             provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
             logger.warning("Using ConsoleSpanExporter — traces are NOT sent to a backend")

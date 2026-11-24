@@ -269,15 +269,15 @@ async def planner_node(state: AgentState) -> dict[str, Any]:
                     res["approval_granted"] = None
                 return res
         except Exception as e:
-            logger.warning(f"Structured planning failed ({e}). Using heuristic planner fallback.")
+            logger.error(f"Structured planning failed ({e}). Using heuristic planner fallback.")
 
         fallback_plan = _heuristic_planner(user_query)
         fallback_res: dict[str, Any] = {
             "plan": fallback_plan,
             "current_step_index": 0,
             "messages": trimmed_msgs,
-            "degraded": False,
-            "degraded_reason": None,
+            "degraded": True,
+            "degraded_reason": "planner_model_failure_heuristic_fallback",
         }
         if state.reflection_notes:
             fallback_res["approved_step_ids"] = []

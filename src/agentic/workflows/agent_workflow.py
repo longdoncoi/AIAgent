@@ -4,6 +4,7 @@ from datetime import timedelta
 from typing import Any
 
 from temporalio import activity, workflow
+from temporalio.common import RetryPolicy
 
 from src.agentic.a2a.client import get_a2a_client
 
@@ -35,11 +36,11 @@ class AgentExecutionWorkflow:
             step_id = step_data["id"]
             instruction = step_data["instruction"]
 
-            # Execute with activity retry policy
             step_output = await workflow.execute_activity(
                 execute_plan_step,
                 args=[agent, step_id, instruction],
                 start_to_close_timeout=timedelta(seconds=180),
+                retry_policy=RetryPolicy(maximum_attempts=3),
             )
             results.append(step_output)
 

@@ -3,7 +3,7 @@
 from src.agentic.rag.ingestion import ingest_documents
 from src.agentic.rag.reranker import CrossEncoderReranker
 from src.agentic.rag.retriever import HybridRetriever, get_hybrid_retriever
-from src.agentic.rag.tools import get_rag_tool, search_policy
+from src.agentic.rag.tools import get_rag_tool, search_policy, validate_citations
 
 __all__ = [
     "ingest_documents",
@@ -12,4 +12,5 @@ __all__ = [
     "CrossEncoderReranker",
     "search_policy",
     "get_rag_tool",
+    "validate_citations",
 ]
