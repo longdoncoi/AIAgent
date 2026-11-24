@@ -480,6 +480,17 @@ def test_ci_actions_are_immutable_node24_compatible_pins() -> None:
         assert action in text, f"CI action is not on the reviewed Node 24 pin: {action}"
 
 
+def test_ci_build_and_trivy_are_mandatory_on_pull_requests() -> None:
+    text = CI.read_text(encoding="utf-8")
+    build_block = text.split("build-and-scan:", 1)[1].split("\n  # ---", 1)[0]
+    job_header = build_block.split("steps:", 1)[0]
+
+    assert "github.event_name == 'push'" not in job_header
+    assert "docker/build-push-action@" in build_block
+    assert "aquasecurity/trivy-action@" in build_block
+    assert "exit-code: '1'" in build_block
+
+
 def test_ci_signoff_uses_a_non_self_referential_two_commit_attestation() -> None:
     text = CI.read_text(encoding="utf-8")
     publish_block = text.split("publish-and-deploy:", 1)[1]

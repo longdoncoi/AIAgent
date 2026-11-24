@@ -73,3 +73,9 @@
 - Triệu chứng: cả ba image fail với `invalid reference format` tại `COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION}`.
 - Nguyên nhân: `COPY --from` chỉ nhận tên stage hoặc image reference tĩnh; Dockerfile frontend không mở rộng build ARG tại vị trí này.
 - Khắc phục: khai báo `FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv`, sau đó dùng `COPY --from=uv`; regression kiểm tra named stage tồn tại và cấm lại mẫu cũ.
+
+## Pull request bỏ qua container build/Trivy
+
+- Triệu chứng: lint/test/manifest của PR xanh nhưng job `build-and-scan` bị `SKIPPED`; lỗi Dockerfile chỉ xuất hiện sau khi merge/push `main`.
+- Nguyên nhân: job có điều kiện `if: github.event_name == 'push'` dù workflow đã nhận sự kiện pull request.
+- Khắc phục: bỏ điều kiện push-only và thêm regression bắt buộc Docker build + Trivy fail-closed trên PR; publish/CD vẫn giữ tag-only riêng biệt.

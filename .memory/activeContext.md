@@ -27,6 +27,7 @@
 - Publish/CD chỉ chạy cho release tag sau strict gate; tải PRR artifact của đúng workflow/commit thay vì tin bản tracked có thể cũ.
 - Release sign-off dùng giao thức hai commit không tự-tham-chiếu: Hội đồng ký source commit `C`; tag trỏ commit attestation `A` chỉ chứa `release-board.json`; CI xác minh `A` có đúng một parent `C` và không có path thay đổi khác.
 - Dockerfiles dùng named stage `uv` cho image UV đã pin digest; không nội suy ARG trong `COPY --from`, vốn bị BuildKit từ chối.
+- Container build + Trivy là merge gate bắt buộc cho cả pull request và push; không còn điều kiện push-only khiến PR bỏ qua image validation.
 
 ## Xác minh mới nhất
 

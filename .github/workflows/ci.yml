@@ -274,7 +274,6 @@ jobs:
   build-and-scan:
     name: Container Build & Trivy Vulnerability Scan
     needs: [test-and-eval, validate-deploy]
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
