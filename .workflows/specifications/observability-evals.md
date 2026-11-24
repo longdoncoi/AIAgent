@@ -1,7 +1,7 @@
-﻿# AGENTS_OBSERVABILITY_EVALS.md — Quan Sát & Đánh Giá Chất Lượng (Observability & Evals - L9)
+# AGENTS_OBSERVABILITY_EVALS.md — Quan Sát & Đánh Giá Chất Lượng (Observability & Evals - L9)
 
 > **Tài liệu tham chiếu chuyên sâu** thuộc phân vùng kiến trúc Multi-Agent trong hệ sinh thái `agentic-platform`.  
-> Tài liệu gốc: [AGENTS.md](file:///f:/PROJECTS/AIAgent/AGENTS.md) · [Architecture.md](file:///f:/PROJECTS/AIAgent/Architecture.md).
+> Tài liệu gốc: [AGENTS.md](../../AGENTS.md) · [ARCHITECTURE.md](../../Architecture.md).
 
 ---
 
@@ -38,6 +38,6 @@ Tự động chạy trong CI/CD pipeline (`ci.yml`):
 
 ## 4. Tài Liệu Kiểm Định & Tham Chiếu Liên Quan
 
-- **Kiểm định khả năng quan sát, giám sát & cảnh báo**: [REVIEW_OBSERVABILITY & ALERTING.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_OBSERVABILITY%20&%20ALERTING.md)
-- **Kiểm định cổng đánh giá chất lượng tác tử (DeepEval & RAGAS)**: [REVIEW_QUALITY GATES - DEEPEVAL & RAGAS.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_QUALITY%20GATES%20-%20DEEPEVAL%20&%20RAGAS.md)
-- **Kiểm định chiến lược kiểm thử toàn diện & QA**: [REVIEW_TESTING & QA STRATEGY.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_TESTING%20&%20QA%20STRATEGY.md)
+- **Kiểm định khả năng quan sát, giám sát & cảnh báo**: [REVIEW_OBSERVABILITY & ALERTING.md](../../.workflows/reviews/REVIEW_OBSERVABILITY%20&%20ALERTING.md)
+- **Kiểm định cổng đánh giá chất lượng tác tử (DeepEval & RAGAS)**: [REVIEW_QUALITY GATES - DEEPEVAL & RAGAS.md](../../.workflows/reviews/REVIEW_QUALITY%20GATES%20-%20DEEPEVAL%20&%20RAGAS.md)
+- **Kiểm định chiến lược kiểm thử toàn diện & QA**: [REVIEW_TESTING & QA STRATEGY.md](../../.workflows/reviews/REVIEW_TESTING%20&%20QA%20STRATEGY.md)

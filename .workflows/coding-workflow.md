@@ -1,68 +1,24 @@
-# coding-workflow.md — Quy Trình & Quy Chuẩn Lập Trình Cho AI & Kỹ Sư
+# Coding workflow
 
-> **Quy trình lập trình chuẩn** trong hệ sinh thái `agentic-platform`.  
-> Tham chiếu: [Architecture.md](file:///f:/PROJECTS/AIAgent/Architecture.md) · [agent-instructions.md](file:///f:/PROJECTS/AIAgent/.context/agent-instructions.md) · [.skills/](file:///f:/PROJECTS/AIAgent/.skills/).
+## Trước khi sửa
 
----
+1. Xác định contract ở code, schema, test và config; kiểm tra `git status --short`.
+2. Tìm implementation bằng `rg`; đọc đúng specification/skill nếu chạm biên A2A, MCP, persistence, safety hoặc eval.
+3. Nêu giả định chỉ khi chưa thể xác minh từ repo.
 
-## 1. Chuẩn Viết Code Bắt Buộc
+## Khi triển khai
 
-- **Môi trường & Ngôn ngữ**: Python 3.12+ quản lý dependencies qua `uv`.
-- **Type Annotations**: Bắt buộc gắn type hints 100% cho mọi tham số và giá trị trả về của hàm (`mypy --strict` compliant).
-- **Schema Validation**: Sử dụng `Pydantic v2` cho toàn bộ DTO, State, Request/Response payload, Model Configuration.
-- **Bất đồng bộ (Async-First)**: Mọi thao tác I/O, network call (A2A), MCP tool call, database query, vector search đều phải sử dụng `async` / `await`. Tuyệt đối không block event loop bằng các hàm blocking đồng bộ.
-- **Dependency Rule**: Tuân thủ nghiêm ngặt thứ tự phân tầng kiến trúc:
-  - Tầng trên (L1 API $\rightarrow$ L2 Supervisor $\rightarrow$ L3 Sub-Agents $\rightarrow$ L4/L5 Tools/RAG $\rightarrow$ L6 Memory/L7 Gateway).
-  - Tầng dưới tuyệt đối không import ngược tầng trên. Thư mục `src/agentic/core/` là kernel độc lập.
+- Giữ dependency một chiều và service stateless.
+- Dùng async cho I/O; không chặn event loop bằng sync/CPU work.
+- Giữ type strict và validate payload ở boundary bằng Pydantic v2.
+- Fail closed cho auth, tenant, policy, capability, HITL và production transports.
+- Tránh refactor ngoài phạm vi trừ khi bắt buộc để sửa đúng nguyên nhân.
 
----
+## Khi xác minh
 
-## 2. Quy Tắc Thêm Mới Một Sub-Agent (L3)
+1. Chạy test/lint hẹp cho vòng lặp nhanh.
+2. Chạy gate rộng theo blast radius: `make lint`, `make test`, eval hoặc audit khi phần tương ứng thay đổi.
+3. Soát diff, generated files, link/docs và secret.
+4. Ghi rõ lệnh đã chạy, kết quả và kiểm tra chưa chạy.
 
-Khi phát triển thêm Sub-Agent mới (chi tiết tại [.skills/skill-add-subagent.md](file:///f:/PROJECTS/AIAgent/.skills/skill-add-subagent.md)):
-1. Tạo thư mục `src/agentic/agents/<tên_agent>/`.
-2. Tạo `graph.py` kế thừa từ `build_react_graph()` tại `src/agentic/agents/base.py`.
-3. Định nghĩa `AgentCard` tại `src/agentic/a2a/cards.py` với danh sách kỹ năng cụ thể.
-4. Tạo `server.py` bọc graph bằng `A2A AgentExecutor` và cấp phát một Port chưa sử dụng (dải `910x`).
-5. Khai báo Sub-Agent mới vào `configs/prompts/planner.md` và `src/agentic/orchestrator/nodes/dispatch.py`.
-6. Viết integration test tương ứng tại `tests/integration/test_<tên_agent>.py`.
-
----
-
-## 3. Quy Tắc Thêm Mới Một MCP Tool (L4)
-
-Khi phát triển thêm MCP Tool mới (chi tiết tại [.skills/skill-add-mcp-tool.md](file:///f:/PROJECTS/AIAgent/.skills/skill-add-mcp-tool.md)):
-1. Triển khai tool trong `src/agentic/tools/servers/` bằng thư viện `fastmcp`.
-2. Khai báo schema và gán phân loại mức độ rủi ro (`risk_level: low | medium | high`) trong `configs/policies.yaml`.
-3. Cập nhật `mcp_client.py` để tool được mount chính xác vào Sub-Agent có quyền truy cập.
-4. Đảm bảo tool có timeout cứng và bọc bắt lỗi chuẩn hóa thành `AgentError`.
-
----
-
-## 4. Các Lệnh Vận Hành Dự Án (Makefile Commands)
-
-```bash
-# Cài đặt môi trường và dependencies
-make install
-
-# Khởi chạy hạ tầng phụ trợ (Docker: Postgres, Qdrant, Redis, Neo4j, LiteLLM)
-make infra-up
-
-# Chạy cụm Model Serving nội bộ
-make serve-vllm        # vLLM GPU worker (Port 8001)
-make serve-llama-chat  # llama.cpp chat (Port 8080)
-make serve-llama-embed # llama.cpp embedding (Port 8081)
-
-# Khởi chạy các Agents và MCP Servers (chế độ phát triển)
-make serve-mcp         # 3 MCP servers (9001, 9002, 9003)
-make serve-agents      # 3 A2A sub-agents (9100, 9101, 9102)
-make dev               # L1 FastAPI interface server (Port 8000)
-
-# Kiểm thử & Đánh giá chất lượng
-make lint              # Kiểm tra code style (ruff, mypy)
-make test              # Chạy unit & integration tests
-make eval              # Chạy bộ đánh giá LLM-judge
-make eval-deep         # Chạy bộ benchmark DeepEval
-make eval-ragas        # Chạy bộ benchmark RAGAS
-make ingest            # Đọc tài liệu và lập chỉ mục RAG
-```
+Lệnh canonical nằm trong `Makefile`; không sao chép danh sách lệnh vào workflow này.

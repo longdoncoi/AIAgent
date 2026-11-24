@@ -1,87 +1,48 @@
-# AGENTS.md — Cẩm Nang & Đặc Tả Hệ Thống Multi-Agent (Agentic Platform)
+# AGENTS.md — Chỉ dẫn làm việc trong `agentic-platform`
 
-> **Tài liệu tham chiếu chuẩn** dành cho các kỹ sư phát triển và các AI Coding Agent làm việc trong kho mã nguồn `agentic-platform`.  
-> Xây dựng dựa trên kiến trúc tham chiếu tại [Architecture.md](file:///f:/PROJECTS/AIAgent/Architecture.md).  
-> 💡 **Chỉ dẫn tác chiến cho AI Coding Agent**: Xem chi tiết tại [agent-instructions.md](file:///f:/PROJECTS/AIAgent/.context/agent-instructions.md).
+Tệp này là hợp đồng thao tác ngắn gọn cho coding agent. Chỉ nạp tài liệu chi tiết khi nhiệm vụ cần; không đọc toàn bộ `.memory/`, `.workflows/` hoặc `ARCHITECTURE.md` ở đầu mỗi phiên.
 
----
+## Quy tắc bắt buộc
 
-## 1. Tổng Quan Hệ Thống & Triết Lý Thiết Kế
+1. **Bằng chứng trước giả định**: kiểm tra code, test và cấu hình liên quan trước khi sửa. Nếu tài liệu mâu thuẫn với runtime, coi code/config/test là trạng thái hiện hành và sửa tài liệu cùng thay đổi.
+2. **Phụ thuộc một chiều**: `L1 API → L2 Supervisor → L3 Sub-Agents → L4 Tools / L5 RAG → L6 Memory / L7 Gateway`. `src/agentic/core/` không phụ thuộc tầng trên.
+3. **Async tại biên I/O**: dùng `async`/`await` cho network, DB, cache và model calls. Đưa công việc đồng bộ/CPU-bound có thể chặn event loop qua worker (`asyncio.to_thread` hoặc executor phù hợp).
+4. **Kiểu dữ liệu rõ ràng**: code mới phải tương thích `mypy --strict`; dùng Pydantic v2 cho DTO, state và payload ở ranh giới hệ thống.
+5. **Fail closed**: không bỏ qua tenant isolation, tool allowlist, capability theo run/step, HITL hay kiểm tra chữ ký. Không ghi secret thật vào repo.
+6. **Thay đổi tối thiểu, kiểm chứng tương xứng**: chạy test hẹp trước, sau đó mở rộng theo rủi ro. Không bắt buộc chạy full suite cho thay đổi chỉ có tài liệu; phải nói rõ những kiểm tra chưa chạy.
+7. **Giữ nguyên thay đổi của người dùng**: xem `git status`, không hoàn tác hay ghi đè phần ngoài phạm vi.
 
-Hệ thống được thiết kế theo mô hình **Hierarchical Multi-Agent (Đa tác tử phân cấp)**:
+## Nạp ngữ cảnh theo nhiệm vụ
 
-- **L2 Supervisor (LangGraph)** đóng vai trò tổng chỉ huy (Orchestrator): Lập kế hoạch (Plan), điều phối song song (Dispatch/Fan-out), vòng lặp suy luận - hành động (ReAct), tự phản tỉnh (Reflection) và tạm dừng chờ duyệt (HITL).
-- **L3 Sub-Agents** hoạt động như các microservices độc lập giao tiếp qua chuẩn **A2A (Agent-to-Agent)** protocol.
-- **L4 Tools** kết nối chuẩn hóa qua **Model Context Protocol (MCP)**, chạy trong sandbox cách ly.
-- **L5 Knowledge (RAG)** vận hành qua **LlamaIndex** với cơ chế chunking phân cấp, hybrid search và cross-encoder reranking.
-- **L7 Model Gateway** trừu tượng hóa mô hình nền tảng qua **LiteLLM**, trỏ tới cụm GPU (vLLM) hoặc CPU/edge (llama.cpp).
+| Khi cần | Chỉ đọc |
+| --- | --- |
+| Tiếp tục công việc dở, release hoặc blocker | [`.memory/activeContext.md`](.memory/activeContext.md) |
+| Quy ước thao tác chung | [`.context/agent-instructions.md`](.context/agent-instructions.md) |
+| Tính năng mới / sửa lỗi / chuẩn bị PR | workflow tương ứng trong [`.workflows/README.md`](.workflows/README.md) |
+| Test, lint, migration, eval, thêm agent/tool | skill tương ứng trong [`.skills/README.md`](.skills/README.md) |
+| Quyết định hoặc mẫu kiến trúc | tệp liên quan trong [`.memory/README.md`](.memory/README.md) |
+| Thay đổi kiến trúc/giao thức | phần liên quan của [`Architecture.md`](Architecture.md) và [`.workflows/specifications/`](.workflows/specifications/) |
+| Production Readiness Review | [`.workflows/reviews/REVIEW.md`](.workflows/reviews/REVIEW.md), rồi đúng một trụ cột cần đánh giá |
 
-### Các Nguyên Tắc Bất Biến (Design Inviolables)
+Tìm theo symbol/path trước (`rg`/`rg --files`), rồi chỉ mở đoạn hoặc tài liệu liên quan. Không dùng README hay memory làm bằng chứng duy nhất cho hành vi runtime.
 
-1. **Dependency Rule**: Tầng trên gọi tầng dưới theo đúng thứ tự phân lớp. Tầng dưới tuyệt đối không import hay phụ thuộc ngược tầng trên (`core/` là kernel độc lập).
-2. **Stateless Services**: Mọi Agent và Sub-agent đều stateless. State duy nhất của phiên làm việc do LangGraph Supervisor quản lý và lưu trữ ngoại vi (Postgres Checkpointer, Qdrant/FAISS).
-3. **Chuẩn hóa Giao thức**:
-   - Agent ↔ Agent: **A2A protocol** (HTTP/gRPC với `AgentCard` định nghĩa capabilities).
-   - Agent ↔ Tool: **MCP (Model Context Protocol)**.
-   - Agent ↔ Model: **OpenAI-compatible API** qua LiteLLM Gateway.
-4. **Resumable & Replayable**: Tất cả các bước đều được checkpoint. HITL, retry và replay lỗi đều dùng chung cơ chế snapshot của LangGraph.
-5. **Cross-cutting Safety & Observability**: Guardrails, PII check, Tracing (OpenTelemetry/LangSmith) và Metrics được tích hợp đồng bộ ở mọi tầng ranh giới.
+## Bản đồ hệ thống tối thiểu
 
----
+- L1 FastAPI/SSE: `src/agentic/api/`
+- L2 LangGraph Supervisor: `src/agentic/orchestrator/`
+- L3 A2A agents: `src/agentic/agents/`, `src/agentic/a2a/` (`9100–9102`)
+- L4 MCP tools: `src/agentic/tools/` (`9001–9003`)
+- L5 RAG: `src/agentic/rag/`
+- L6 state/memory: `src/agentic/memory/`
+- L7 model gateway: `src/agentic/llm/`
+- L8 safety: `src/agentic/safety/`
+- L9 observability/evals: `src/agentic/observability/`, `evals/`
 
-## 2. Bảng Tổng Hợp Danh Mục Tác Tử (Agent Registry Matrix)
+Nguồn sự thật: dependencies/runtime ở `pyproject.toml` + `uv.lock`; lệnh ở `Makefile`; policy ở `configs/policies.yaml`; port/URL ở `src/agentic/core/config.py` và deployment manifests.
 
-| Tác Tử (Agent Name) | Phân Tầng | Giao Thức / Port | LLM Alias | Vai Trò & Trách Nhiệm Chính | Bộ Công Cụ (MCP / RAG Tools) |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Supervisor** | L2 Orchestration | Internal LangGraph | `reasoning-llm` (Qwen3-72B / DeepSeek-R1) | Phân tích bài toán, lập DAG kế hoạch, dispatch song song, tổng hợp kết quả, HITL | A2A Client to Sub-Agents |
-| **ChatAgent** | L3 Sub-Agent | A2A / `http://localhost:9100` | `fast-llm` (Qwen3-14B) | Đàm thoại ngữ cảnh thông thường, tóm tắt, giải thích, làm rõ yêu cầu người dùng | Web Search Tool (tùy chọn) |
-| **RAGAgent** | L3 Sub-Agent | A2A / `http://localhost:9101` | `reasoning-llm` | Truy xuất tri thức nội bộ, chính sách, tài liệu kỹ thuật, bảo đảm căn cứ (groundedness) | `search_policy`, LlamaIndex Hybrid Retriever |
-| **CodingAgent** | L3 Sub-Agent | A2A / `http://localhost:9102` | `coding-llm` (Qwen3-Coder / Claude) | Đọc hiểu mã nguồn, sinh code, chạy thử nghiệm trong sandbox, sửa lỗi và refactor | `code_exec_server`, `repo_server` |
-| **Planner (Node)** | L2 Internal Node | LangGraph Node | `reasoning-llm` | Phân rã câu hỏi phức tạp thành danh sách các bước (`Plan` gồm các `Step`) | None (Pure Reasoning) |
-| **Reflector (Node)** | L2 Internal Node | LangGraph Node | `reasoning-llm` | Đánh giá tính chính xác, phát hiện hallucination, quyết định hoàn thành hay retry/re-plan | None (Self-Correction Critique) |
+## Hoàn tất nhiệm vụ
 
----
-
-## 3. Bản Đồ Phân Vùng Kiến Trúc Chuyên Sâu (Agent Subsystem Domains)
-
-Để đảm bảo tính module hóa cao độ và triệt tiêu trùng lặp dữ liệu, toàn bộ các đặc tả kỹ thuật chi tiết của hệ thống được phân rã thành 6 domain độc lập đặt tại thư mục [.workflows/specifications/](file:///f:/PROJECTS/AIAgent/.workflows/specifications/):
-
-| STT | Domain Kiến Trúc | Tài Liệu Chi Tiết | Tóm Tắt Phạm Vi & Nhiệm Vụ |
-| :---: | :--- | :--- | :--- |
-| **01** | **Đặc Tả Chi Tiết Từng Agent** | [agent-specifications.md](file:///f:/PROJECTS/AIAgent/.workflows/specifications/agent-specifications.md) | Đặc tả cấu trúc LangGraph, State Schema (Step, Plan, AgentState), luồng thực thi, A2A endpoints và capabilities của Supervisor, ChatAgent, RAGAgent, CodingAgent. |
-| **02** | **Giao Thức Tương Tác & Kết Nối** | [protocols-networking.md](file:///f:/PROJECTS/AIAgent/.workflows/specifications/protocols-networking.md) | Đặc tả giao thức A2A (JSON schema), công cụ MCP (FastMCP & Allowlist), Bản đồ phân phối cổng mạng, Caching đa tầng (RAG, Prompt, KV-Cache) và tối ưu kết nối tải cao. |
-| **03** | **Quản Lý Bộ Nhớ & Trạng Thái** | [state-memory.md](file:///f:/PROJECTS/AIAgent/.workflows/specifications/state-memory.md) | Kiến trúc bộ nhớ L6: Short-term checkpointer (Postgres/Redis HMAC), Long-term memory (Semantic, Episodic, Procedural), quản lý lược đồ Alembic và Consolidation Node. |
-| **04** | **Chính Sách An Toàn & Phê Duyệt** | [safety-hitl.md](file:///f:/PROJECTS/AIAgent/.workflows/specifications/safety-hitl.md) | Cơ chế phòng thủ chiều sâu L8: Input/Output Guardrails, phân loại 3 mức độ rủi ro (Low/Medium/High) và quy trình tạm dừng duyệt can thiệp của con người (HITL). |
-| **05** | **Quan Sát & Đánh Giá Chất Lượng** | [observability-evals.md](file:///f:/PROJECTS/AIAgent/.workflows/specifications/observability-evals.md) | Giám sát toàn trình L9: Truy vết phân tán qua OpenTelemetry/LangSmith, chỉ số Prometheus định lượng và khung đánh giá chất lượng tự động RAGAS & DeepEval. |
-| **06** | **Hướng Dẫn Phát Triển Cho AI & Dev** | [developer-guidelines.md](file:///f:/PROJECTS/AIAgent/.workflows/specifications/developer-guidelines.md) | Bộ quy chuẩn lập trình Python 3.12, quy trình thêm mới Sub-Agent, thêm mới MCP Tool và danh mục các lệnh vận hành dự án qua Makefile. |
-
----
-
-## 4. Hệ Thống Báo Cáo Kiểm Định Vận Hành (Production Readiness Reviews)
-
-Hệ thống tài liệu kiểm định độ sẵn sàng vận hành Production (PRR) gồm 14 trụ cột kỹ thuật chuyên biệt và 4 quy trình quản trị vận hành được quản lý tập trung tại thư mục [.workflows/reviews/](file:///f:/PROJECTS/AIAgent/.workflows/reviews/), kết nối trực tiếp với cẩm nang tổng thể tại [REVIEW.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md):
-
-- **14 Trụ Cột Kỹ Thuật**:
-  - **Kiến Trúc & Giao Thức**: [REVIEW_ARCHITECTURE & PROTOCOLS.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_ARCHITECTURE%20&%20PROTOCOLS.md)
-  - **Bộ Nhớ & Dữ Liệu**: [REVIEW_STATE, MEMORY & PERSISTENCE.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_STATE,%20MEMORY%20&%20PERSISTENCE.md)
-  - **Bộ Đệm Đa Tầng**: [REVIEW_MULTI-TIER CACHING SUBSYSTEM.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_MULTI-TIER%20CACHING%20SUBSYSTEM.md)
-  - **Bảo Mật & HITL**: [REVIEW_SECURITY, GUARDRAILS & HITL.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_SECURITY,%20GUARDRAILS%20&%20HITL.md)
-  - **Cổng Mô Hình (LLM)**: [REVIEW_MODEL GATEWAY & INFERENCE.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_MODEL%20GATEWAY%20&%20INFERENCE.md)
-  - **Chất Lượng Tác Tử (AI)**: [REVIEW_QUALITY GATES - DEEPEVAL & RAGAS.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_QUALITY%20GATES%20-%20DEEPEVAL%20&%20RAGAS.md)
-  - **Hạ Tầng Kubernetes & SRE**: [REVIEW_KUBERNETES & SRE.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_KUBERNETES%20&%20SRE.md)
-  - **Giám Sát & Cảnh Báo**: [REVIEW_OBSERVABILITY & ALERTING.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_OBSERVABILITY%20&%20ALERTING.md)
-  - **Quy Trình CI/CD & GitOps**: [REVIEW_CI-CD & GITOPS.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_CI-CD%20&%20GITOPS.md)
-  - **Vận Hành & Khôi Phục Thảm Họa**: [REVIEW_SRE & DISASTER RECOVERY.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_SRE%20&%20DISASTER%20RECOVERY.md)
-  - **Chiến Lược Kiểm Thử Toàn Diện**: [REVIEW_TESTING & QA STRATEGY.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_TESTING%20&%20QA%20STRATEGY.md)
-  - **Tuân Thủ Pháp Lý & Đạo Đức AI**: [REVIEW_COMPLIANCE, PRIVACY & AI ETHICS.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_COMPLIANCE,%20PRIVACY%20&%20AI%20ETHICS.md)
-  - **Quản Trị Chi Phí (FinOps)**: [REVIEW_FINOPS & COST GOVERNANCE.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_FINOPS%20&%20COST%20GOVERNANCE.md)
-  - **Quản Trị Dữ Liệu & Phân Quyền RAG**: [REVIEW_DATA GOVERNANCE & RAG RBAC.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_DATA%20GOVERNANCE%20&%20RAG%20RBAC.md)
-- **4 Khung Quản Trị & Vận Hành**:
-  - **Quy Chuẩn Kiểm Định & Phân Quyền RACI**: [REVIEW_GOVERNANCE & AUDIT STANDARDS.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_GOVERNANCE%20&%20AUDIT%20STANDARDS.md)
-  - **Quy Trình 5 Cổng Diễn Tập Trước Giờ G**: [REVIEW_PRE-FLIGHT STAGE GATES.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_PRE-FLIGHT%20STAGE%20GATES.md)
-  - **Quản Trị Giám Sát Sau Triển Khai (Hypercare)**: [REVIEW_HYPERCARE & INCIDENT ESCALATION.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_HYPERCARE%20&%20INCIDENT%20ESCALATION.md)
-  - **Biên Bản Nghiệm Thu & Phê Chuẩn Go-Live**: [REVIEW_SIGN-OFF & GO-LIVE APPROVAL.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_SIGN-OFF%20&%20GO-LIVE%20APPROVAL.md)
-
----
-
-*Tài liệu này được bảo trì đồng bộ cùng kiến trúc hệ thống. Mọi thay đổi về phân tầng hoặc giao thức mạng bắt buộc phải cập nhật lại tài liệu này và các tài liệu thành phần trong thư mục [.workflows/](file:///f:/PROJECTS/AIAgent/.workflows/) trước khi tạo Pull Request.*
+- Chạy kiểm tra được định tuyến trong skill/workflow liên quan.
+- Cập nhật tài liệu chỉ khi contract, kiến trúc, runbook hoặc trạng thái hiện tại thực sự đổi; không ghi nhật ký phiên vào nhiều tệp.
+- Thay đổi kiến trúc/giao thức phải cập nhật `Architecture.md` và specification liên quan. Quyết định bền vững mới cần ADR trong `.memory/architectureDecisions.md`.
+- Chỉ cập nhật `.memory/activeContext.md` khi thay đổi ưu tiên, blocker, baseline kiểm chứng hoặc công việc cần bàn giao.

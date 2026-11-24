@@ -1,8 +1,8 @@
-﻿# REVIEW_ARCHITECTURE & PROTOCOLS.md — Trụ Cột 1: Kiến Trúc Phân Tầng & Ranh Giới Giao Thức
+# REVIEW_ARCHITECTURE & PROTOCOLS.md — Trụ Cột 1: Kiến Trúc Phân Tầng & Ranh Giới Giao Thức
 
 > **Tài liệu kiểm định chuyên biệt (Production Readiness Review - Pillar 01 / 14)**  
 > **Đơn vị phụ trách**: Chief AI Architect & Lead Backend Engineer  
-> **Tài liệu tham chiếu**: [REVIEW.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md) · [Architecture.md](file:///f:/PROJECTS/AIAgent/Architecture.md) · [AGENTS.md](file:///f:/PROJECTS/AIAgent/AGENTS.md)
+> **Tài liệu tham chiếu**: [REVIEW.md](../../.workflows/reviews/REVIEW.md) · [ARCHITECTURE.md](../../Architecture.md) · [AGENTS.md](../../AGENTS.md)
 
 ---
 
@@ -21,12 +21,12 @@ Trụ cột này đánh giá sự tuân thủ nghiêm ngặt các nguyên tắc 
 
 | ID | Trạng Thái | Mức Độ | Tiêu Chí Kiểm Tra (Verification Criteria) | Tệp Mã Nguồn / Cấu Hình | Phương Pháp & Lệnh Kiểm Chứng |
 | :---: | :---: | :---: | :--- | :--- | :--- |
-| **1.1** | `[ ]` | **P0** | **Quy tắc phân tầng một chiều (Dependency Rule)**: Tầng trên chỉ gọi tầng dưới qua interface. Kernel `src/agentic/core/` tuyệt đối độc lập, không import bất kỳ module nào thuộc `api`, `orchestrator`, `agents`, `rag`, `tools`, `memory`. | [src/agentic/core/](file:///f:/PROJECTS/AIAgent/src/agentic/core/) | Chạy kiểm tra tĩnh AST/Import:<br>`python -c "import src.agentic.core as c; print('Core imports OK')"` |
+| **1.1** | `[ ]` | **P0** | **Quy tắc phân tầng một chiều (Dependency Rule)**: Tầng trên chỉ gọi tầng dưới qua interface. Kernel `src/agentic/core/` tuyệt đối độc lập, không import bất kỳ module nào thuộc `api`, `orchestrator`, `agents`, `rag`, `tools`, `memory`. | [src/agentic/core/](../../src/agentic/core/) | Chạy kiểm tra tĩnh AST/Import:<br>`python -c "import src.agentic.core as c; print('Core imports OK')"` |
 | **1.2** | `[ ]` | **P0** | **Phi trạng thái của Microservices (Stateless Services)**: Mọi Agent Pod (`api`, `chat`, `rag`, `coding`) không lưu state cục bộ trong biến toàn cục hay bộ nhớ tiến trình. Mọi trạng thái phiên đều được lưu ra Postgres/Redis ngoại vi. | `src/agentic/orchestrator/state.py` | Kiểm tra scale ngang 2+ replicas không bị lệch hoặc mất state giữa các request cùng `thread_id`. |
-| **1.3** | `[ ]` | **P0** | **Chuẩn hóa Giao thức A2A (Agent-to-Agent)**: Giao tiếp giữa Supervisor và Sub-Agents qua HTTP/gRPC A2A Protocol đúng cổng (`9100`: Chat, `9101`: RAG, `9102`: Coding). `AgentCard` được khai báo đầy đủ danh mục capabilities. | [src/agentic/a2a/cards.py](file:///f:/PROJECTS/AIAgent/src/agentic/a2a/cards.py)<br>[src/agentic/a2a/client.py](file:///f:/PROJECTS/AIAgent/src/agentic/a2a/client.py) | Gửi A2A Ping:<br>`curl -f -X GET http://localhost:9100/a2a/card`<br>`curl -f -X GET http://localhost:9101/a2a/card`<br>`curl -f -X GET http://localhost:9102/a2a/card` |
-| **1.4** | `[ ]` | **P0** | **Chuẩn hóa Giao thức MCP & Phân quyền Allowlist**: Công cụ FastMCP chạy độc lập trên các cổng (`9001`: code exec, `9002`: repo, `9003`: web search). Phân quyền Allowlist nghiêm ngặt tại `policies.yaml` (Sub-agent không thể gọi tool ngoài danh sách cấp phép). | [configs/policies.yaml](file:///f:/PROJECTS/AIAgent/configs/policies.yaml)<br>[src/agentic/tools/mcp_client.py](file:///f:/PROJECTS/AIAgent/src/agentic/tools/mcp_client.py) | Chạy integration test kiểm tra chặn tool trái phép:<br>`pytest tests/unit/test_production_hardening.py -k test_tool_allowlist_enforcement` |
-| **1.5** | `[ ]` | **P1** | **Xử lý Bất đồng bộ Non-blocking (Async RAG Offloading)**: Các tác vụ nặng về CPU/Disk I/O của LlamaIndex, BM25, Cross-Encoder phải được bọc trong `asyncio.to_thread()`, không làm block event loop chính của FastAPI. | [src/agentic/rag/tools.py](file:///f:/PROJECTS/AIAgent/src/agentic/rag/tools.py) | Kiểm tra mã nguồn: Hàm `search_policy` trong `tools.py` phải gọi `await asyncio.to_thread(...)`. |
-| **1.6** | `[ ]` | **P1** | **Connection Pooling Tải Cao (A2A Client Pooling)**: Sử dụng singleton `httpx.AsyncClient` với cấu hình pool tối ưu (`max_keepalive_connections=50`, `max_connections=200`, `keepalive_expiry=30.0`), triệt tiêu chi phí handshake TCP/SSL. | [src/agentic/a2a/client.py](file:///f:/PROJECTS/AIAgent/src/agentic/a2a/client.py) | Kiểm tra lifecycle shutdown có gọi `await client.aclose()` để giải phóng socket sạch sẽ. |
+| **1.3** | `[ ]` | **P0** | **Chuẩn hóa Giao thức A2A (Agent-to-Agent)**: Giao tiếp giữa Supervisor và Sub-Agents qua HTTP/gRPC A2A Protocol đúng cổng (`9100`: Chat, `9101`: RAG, `9102`: Coding). `AgentCard` được khai báo đầy đủ danh mục capabilities. | [src/agentic/a2a/cards.py](../../src/agentic/a2a/cards.py)<br>[src/agentic/a2a/client.py](../../src/agentic/a2a/client.py) | Gửi A2A Ping:<br>`curl -f -X GET http://localhost:9100/a2a/card`<br>`curl -f -X GET http://localhost:9101/a2a/card`<br>`curl -f -X GET http://localhost:9102/a2a/card` |
+| **1.4** | `[ ]` | **P0** | **Chuẩn hóa Giao thức MCP & Phân quyền Allowlist**: Công cụ FastMCP chạy độc lập trên các cổng (`9001`: code exec, `9002`: repo, `9003`: web search). Phân quyền Allowlist nghiêm ngặt tại `policies.yaml` (Sub-agent không thể gọi tool ngoài danh sách cấp phép). | [configs/policies.yaml](../../configs/policies.yaml)<br>[src/agentic/tools/mcp_client.py](../../src/agentic/tools/mcp_client.py) | Chạy integration test kiểm tra chặn tool trái phép:<br>`pytest tests/unit/test_production_hardening.py -k test_tool_allowlist_enforcement` |
+| **1.5** | `[ ]` | **P1** | **Xử lý Bất đồng bộ Non-blocking (Async RAG Offloading)**: Các tác vụ nặng về CPU/Disk I/O của LlamaIndex, BM25, Cross-Encoder phải được bọc trong `asyncio.to_thread()`, không làm block event loop chính của FastAPI. | [src/agentic/rag/tools.py](../../src/agentic/rag/tools.py) | Kiểm tra mã nguồn: Hàm `search_policy` trong `tools.py` phải gọi `await asyncio.to_thread(...)`. |
+| **1.6** | `[ ]` | **P1** | **Connection Pooling Tải Cao (A2A Client Pooling)**: Sử dụng singleton `httpx.AsyncClient` với cấu hình pool tối ưu (`max_keepalive_connections=50`, `max_connections=200`, `keepalive_expiry=30.0`), triệt tiêu chi phí handshake TCP/SSL. | [src/agentic/a2a/client.py](../../src/agentic/a2a/client.py) | Kiểm tra lifecycle shutdown có gọi `await client.aclose()` để giải phóng socket sạch sẽ. |
 
 ---
 
@@ -98,4 +98,4 @@ Sau khi hệ thống tiếp nhận lưu lượng truy cập thực tế:
 - **Đạt**: _____ / 6
 - **Kết luận**: [ ] ĐẠT (PASS) &nbsp;&nbsp;&nbsp; [ ] CẦN KHẮC PHỤC (REJECT)
 
-> 🎯 **Biên Bản Ký Duyệt**: Kết quả đánh giá của Trụ cột này được tổng hợp và ký duyệt chính thức tại [Bảng Chữ Ký Phê Chuẩn Của Hội Đồng Đánh Giá (Mục 6.3 - REVIEW.md)](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md#63-bảng-chữ-ký-phê-chuẩn-của-hội-đồng-đánh-giá).
+> 🎯 **Biên Bản Ký Duyệt**: Kết quả đánh giá của Trụ cột này được tổng hợp và ký duyệt chính thức tại [Bảng Chữ Ký Phê Chuẩn Của Hội Đồng Đánh Giá (Mục 6.3 - REVIEW.md)](../../.workflows/reviews/REVIEW.md#63-bảng-chữ-ký-phê-chuẩn-của-hội-đồng-đánh-giá).

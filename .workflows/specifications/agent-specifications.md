@@ -1,7 +1,7 @@
-﻿# AGENTS_AGENT_SPECIFICATIONS.md — Đặc Tả Chi Tiết Từng Agent
+# AGENTS_AGENT_SPECIFICATIONS.md — Đặc Tả Chi Tiết Từng Agent
 
 > **Tài liệu tham chiếu chuyên sâu** thuộc phân vùng kiến trúc Multi-Agent trong hệ sinh thái `agentic-platform`.  
-> Tài liệu gốc: [AGENTS.md](file:///f:/PROJECTS/AIAgent/AGENTS.md) · [Architecture.md](file:///f:/PROJECTS/AIAgent/Architecture.md).
+> Tài liệu gốc: [AGENTS.md](../../AGENTS.md) · [ARCHITECTURE.md](../../Architecture.md).
 
 ---
 
@@ -96,6 +96,6 @@
 
 ## 5. Tài Liệu Kiểm Định & Tham Chiếu Liên Quan
 
-- **Kiểm định kiến trúc và giao thức A2A**: [REVIEW_ARCHITECTURE & PROTOCOLS.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_ARCHITECTURE%20&%20PROTOCOLS.md)
-- **Kiểm định chính sách bảo mật và HITL**: [REVIEW_SECURITY, GUARDRAILS & HITL.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_SECURITY,%20GUARDRAILS%20&%20HITL.md)
-- **Kiểm định chất lượng mô hình & RAG**: [REVIEW_QUALITY GATES - DEEPEVAL & RAGAS.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_QUALITY%20GATES%20-%20DEEPEVAL%20&%20RAGAS.md)
+- **Kiểm định kiến trúc và giao thức A2A**: [REVIEW_ARCHITECTURE & PROTOCOLS.md](../../.workflows/reviews/REVIEW_ARCHITECTURE%20&%20PROTOCOLS.md)
+- **Kiểm định chính sách bảo mật và HITL**: [REVIEW_SECURITY, GUARDRAILS & HITL.md](../../.workflows/reviews/REVIEW_SECURITY,%20GUARDRAILS%20&%20HITL.md)
+- **Kiểm định chất lượng mô hình & RAG**: [REVIEW_QUALITY GATES - DEEPEVAL & RAGAS.md](../../.workflows/reviews/REVIEW_QUALITY%20GATES%20-%20DEEPEVAL%20&%20RAGAS.md)

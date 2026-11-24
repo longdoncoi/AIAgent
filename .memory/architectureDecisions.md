@@ -1,31 +1,33 @@
-# architectureDecisions.md — Nhật Ký Quyết Định Kiến Trúc (ADR Log)
+# Architecture Decision Log
 
-> Tệp này ghi lại các quyết định kỹ thuật cốt lõi (Architecture Decision Records) và lý do đằng sau các lựa chọn thiết kế của hệ thống.
+Chỉ ghi quyết định bền vững và đánh đổi. Implementation chi tiết thuộc `ARCHITECTURE.md` hoặc specification tương ứng.
 
----
+## ADR-001 — Hierarchical multi-agent
 
-## ADR-001: Lựa Chọn Mô Hình Hierarchical Multi-Agent Thay Vì Single-Agent Hoặc Swarm Phẳng
-- **Bối cảnh**: Hệ thống xử lý các tác vụ phức tạp của doanh nghiệp bao gồm đàm thoại, tra cứu chính sách RAG và lập trình/thực thi mã nguồn sandbox.
-- **Quyết định**: Triển khai mô hình phân cấp với L2 Supervisor (LangGraph) làm tổng chỉ huy, điều phối các L3 Sub-Agents chuyên biệt (Chat, RAG, Coding) qua A2A protocol.
-- **Hệ quả**: Đảm bảo tính kiểm soát, khả năng phản tỉnh (reflection), quản lý checkpoint tập trung và kích hoạt Human-in-the-Loop (HITL) rõ ràng.
+- **Quyết định**: L2 LangGraph Supervisor điều phối các L3 Chat/RAG/Coding agents qua A2A.
+- **Lý do**: cần checkpoint, reflection, fan-out và HITL tập trung thay vì swarm phẳng khó kiểm soát.
+- **Hệ quả**: sub-agent stateless; orchestration state thuộc Supervisor và external stores.
 
----
+## ADR-002 — MCP cho biên công cụ
 
-## ADR-002: Chuẩn Hóa Công Cụ Qua Model Context Protocol (MCP) Thay Vì Custom Function Calling
-- **Bối cảnh**: Cần cung cấp các công cụ thực thi mã nguồn, truy cập git repo và tìm kiếm ngoài sandbox cho Agent.
-- **Quyết định**: Sử dụng FastMCP để chuẩn hóa giao tiếp tool over HTTP/JSON-RPC.
-- **Hệ quả**: Phân lập tool vào các tiến trình độc lập (cổng 9001, 9002, 9003), dễ dàng áp dụng Allowlist và thiết lập ranh giới bảo mật cho sandbox.
+- **Quyết định**: chuẩn hóa tool bằng MCP/FastMCP thay vì function-calling riêng từng agent.
+- **Lý do**: cần process isolation, schema thống nhất, allowlist và policy enforcement tại biên.
+- **Hệ quả**: tool server độc lập; high-risk call cần capability/HITL hợp lệ.
 
----
+## ADR-003 — Externalized, resumable state
 
-## ADR-003: Kiến Trúc Bộ Nhớ L6 & Checkpointer Đa Tầng
-- **Bối cảnh**: Phiên làm việc của Agent cần có khả năng pause/resume (cho HITL) và khôi phục khi có sự cố.
-- **Quyết định**: Kết hợp PostgresSaver và RedisSaver (có xác thực HMAC-SHA256) cho Short-term checkpointer, kết hợp cơ sở dữ liệu quan hệ + Vector DB cho Long-term memory. Quản lý schema bằng Alembic.
-- **Hệ quả**: State luôn bền vững, có thể replay từng bước của DAG và tương thích với PgBouncer.
+- **Quyết định**: dùng async Postgres checkpointer; Redis payload có HMAC; long-term memory dùng relational/vector stores và Alembic.
+- **Lý do**: hỗ trợ pause/resume/replay và scale ngang an toàn.
+- **Hệ quả**: service không sở hữu session state; migration và tenant scope là contract production.
 
----
+## ADR-004 — Repo-local agent guidance
 
-## ADR-004: Kiến Trúc Workflow, Skills và Memory Dành Cho AI Coding Agents
-- **Bối cảnh**: Cần một môi trường làm việc chuẩn hóa cho các AI Coding Agent tham gia phát triển dự án, tránh mất ngữ cảnh giữa các phiên làm việc.
-- **Quyết định**: Thiết lập hệ thống thư mục `.workflows/`, `.skills/`, `.memory/` và chỉ dẫn tác chiến `.context/agent-instructions.md`.
-- **Hệ quả**: Bất kỳ AI Agent hay developer nào mở repo đều nắm được ngay persona, quy tắc bất biến, quy trình kiểm thử và ngữ cảnh dự án mà không cần giải thích lại.
+- **Quyết định**: tách chỉ dẫn, memory, skill và workflow thành `.context/`, `.memory/`, `.skills/`, `.workflows/`.
+- **Lý do**: giữ kiến thức dự án gần code và dùng được qua nhiều coding agent.
+- **Hệ quả**: tài liệu phải có owner rõ và không trùng lặp.
+
+## ADR-005 — Progressive context disclosure
+
+- **Quyết định**: `AGENTS.md` chỉ chứa invariant + router; skill dùng `<name>/SKILL.md`; tài liệu kiến trúc/review chỉ nạp theo domain.
+- **Lý do**: giảm token khởi tạo, tránh số liệu cũ lấn át bằng chứng runtime và giảm chi phí bảo trì.
+- **Hệ quả**: không preload toàn bộ docs; link tương đối; `make docs-check` bảo vệ cấu trúc và link.

@@ -1,40 +1,31 @@
-# techStack.md — Tổng Hợp Công Nghệ, Phiên Bản & Cổng Dịch Vụ
+# Tech stack và topology
 
-> Tệp này tổng hợp toàn bộ các thông số kỹ thuật, phiên bản runtime, thư viện và quy hoạch cổng mạng của hệ sinh thái `agentic-platform`.
+Không chép version package vào đây. Dùng `pyproject.toml` cho constraint, `uv.lock` cho version chính xác, `.env.example`/`src/agentic/core/config.py` cho setting và deployment manifests cho production topology.
 
----
+## Thành phần
 
-## 1. Môi Trường Runtime & Core Libraries
+| Lớp | Công nghệ / vị trí |
+| --- | --- |
+| API | FastAPI, Uvicorn, SSE — `src/agentic/api/` |
+| Orchestration | LangGraph — `src/agentic/orchestrator/` |
+| A2A agents | Chat, RAG, Coding — `src/agentic/agents/` |
+| Tools | MCP/FastMCP — `src/agentic/tools/` |
+| Knowledge | LlamaIndex, Qdrant, hybrid retrieval — `src/agentic/rag/` |
+| State | PostgreSQL, Redis, Alembic — `src/agentic/memory/`, `migrations/` |
+| Models | LiteLLM → vLLM / llama.cpp — `src/agentic/llm/`, `deploy/serving/` |
+| Quality | Pytest, Ruff, Mypy, DeepEval/RAGAS — `tests/`, `evals/` |
+| Observability | OpenTelemetry, Prometheus, LangSmith — `src/agentic/observability/` |
 
-- **Ngôn ngữ**: Python 3.12+
-- **Quản lý gói & Virtualenv**: `uv`
-- **Web Framework (L1 API)**: FastAPI + Uvicorn
-- **Orchestration Framework (L2)**: LangGraph (StateGraph, ReAct loop, Interruptible HITL)
-- **Tool Protocol (L4)**: FastMCP (Model Context Protocol)
-- **Knowledge Engine (L5)**: LlamaIndex (Hierarchical Chunking, Auto-merging retrieval, Hybrid Search, Cross-Encoder reranker)
-- **Memory & State (L6)**: LangGraph PostgresSaver / RedisSaver (HMAC-SHA256 authenticated)
-- **Model Gateway (L7)**: LiteLLM (OpenAI-compatible unified routing)
-- **Inference Engines**: vLLM (GPU / Port 8001), llama.cpp (CPU / Ports 8080, 8081)
-- **Testing & Quality Gates**: Pytest, Ruff, Mypy, DeepEval, RAGAS Framework
-- **Observability (L9)**: OpenTelemetry, Jaeger, Prometheus, LangSmith
+Runtime chuẩn: Python 3.12, package manager `uv`.
 
----
+## Port mặc định local
 
-## 2. Bảng Phân Bổ Cổng Mạng (Port Allocation)
+| Dịch vụ | Port |
+| --- | ---: |
+| API / LiteLLM / vLLM | `8000` / `4000` / `8001` |
+| llama.cpp chat / embedding | `8080` / `8081` |
+| MCP code / repo / web | `9001` / `9002` / `9003` |
+| A2A chat / RAG / coding | `9100` / `9101` / `9102` |
+| PostgreSQL / Qdrant / Redis / Temporal | `5432` / `6333` / `6379` / `7233` |
 
-| Dịch vụ / Tiến trình | Cổng (Port) | Giao thức | Mô tả |
-| :--- | :--- | :--- | :--- |
-| **L1 Interface API** | `8000` | HTTP / SSE | REST API & Server-Sent Events cho Client/UI |
-| **MCP Code Exec Server** | `9001` | FastMCP / HTTP | Sandbox thực thi code Python/Bash |
-| **MCP Repo Server** | `9002` | FastMCP / HTTP | Thao tác git / file / symbol |
-| **MCP Web Search Server**| `9003` | FastMCP / HTTP | Tìm kiếm web bên ngoài |
-| **A2A ChatAgent** | `9100` | A2A / HTTP | Đàm thoại ngữ cảnh thông thường |
-| **A2A RAGAgent** | `9101` | A2A / HTTP | Truy xuất tài liệu & chính sách nội bộ |
-| **A2A CodingAgent** | `9102` | A2A / HTTP | Đọc mã nguồn, sinh code, gỡ lỗi sandbox |
-| **LiteLLM Gateway** | `4000` | HTTP / OpenAI | Cổng điều phối mô hình |
-| **vLLM Engine** | `8001` | HTTP / OpenAI | High-throughput GPU inference |
-| **llama-server (Chat)**| `8080` | HTTP / OpenAI | CPU/Edge GGUF chat inference |
-| **llama-server (Embed)**| `8081` | HTTP / OpenAI | BGE Embedding generation service |
-| **PostgreSQL** | `5432` | TCP | Checkpoint store, long-term memory |
-| **Qdrant Vector DB** | `6333` | HTTP / gRPC | Vector collection cho RAG |
-| **Temporal Server** | `7233` | gRPC | Durable execution engine cho workflows |
+Xác minh port trước khi sửa bằng `Makefile`, `src/agentic/core/config.py` và `deploy/`; bảng này chỉ là bản đồ tra cứu.

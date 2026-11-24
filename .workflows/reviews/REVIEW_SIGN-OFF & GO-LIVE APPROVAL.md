@@ -1,8 +1,8 @@
-﻿# REVIEW_SIGN-OFF & GO-LIVE APPROVAL.md — Biên Bản Nghiệm Thu & Phê Chuẩn Go-Live Cấp Quản Lý
+# REVIEW_SIGN-OFF & GO-LIVE APPROVAL.md — Biên Bản Nghiệm Thu & Phê Chuẩn Go-Live Cấp Quản Lý
 
 > **Tài liệu kiểm định chuyên biệt (Production Readiness Review - Governance Domain 04 / 04)**  
 > **Đơn vị phụ trách**: Ban Đánh Giá Phát Hành (Release Board)  
-> **Tài liệu tham chiếu**: [REVIEW.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md) · [Architecture.md](file:///f:/PROJECTS/AIAgent/Architecture.md) · [AGENTS.md](file:///f:/PROJECTS/AIAgent/AGENTS.md)
+> **Tài liệu tham chiếu**: [REVIEW.md](../../.workflows/reviews/REVIEW.md) · [ARCHITECTURE.md](../../Architecture.md) · [AGENTS.md](../../AGENTS.md)
 
 ---
 

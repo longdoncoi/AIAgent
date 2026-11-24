@@ -1,7 +1,7 @@
-﻿# AGENTS_SAFETY_HITL.md — Chính Sách An Toàn & Phê Duyệt Con Người (Safety & HITL - L8)
+# AGENTS_SAFETY_HITL.md — Chính Sách An Toàn & Phê Duyệt Con Người (Safety & HITL - L8)
 
 > **Tài liệu tham chiếu chuyên sâu** thuộc phân vùng kiến trúc Multi-Agent trong hệ sinh thái `agentic-platform`.  
-> Tài liệu gốc: [AGENTS.md](file:///f:/PROJECTS/AIAgent/AGENTS.md) · [Architecture.md](file:///f:/PROJECTS/AIAgent/Architecture.md).
+> Tài liệu gốc: [AGENTS.md](../../AGENTS.md) · [ARCHITECTURE.md](../../Architecture.md).
 
 ---
 
@@ -54,6 +54,6 @@ Input Stream ──► [Input Guardrail: PII, Jailbreak, Injection]
 
 ## 3. Tài Liệu Kiểm Định & Tham Chiếu Liên Quan
 
-- **Kiểm định an toàn, bảo mật & phòng thủ chiều sâu**: [REVIEW_SECURITY, GUARDRAILS & HITL.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_SECURITY,%20GUARDRAILS%20&%20HITL.md)
-- **Kiểm định tuân thủ pháp lý, quyền riêng tư & đạo đức AI**: [REVIEW_COMPLIANCE, PRIVACY & AI ETHICS.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_COMPLIANCE,%20PRIVACY%20&%20AI%20ETHICS.md)
-- **Kiểm định quản trị chi phí & giới hạn hạn ngạch**: [REVIEW_FINOPS & COST GOVERNANCE.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_FINOPS%20&%20COST%20GOVERNANCE.md)
+- **Kiểm định an toàn, bảo mật & phòng thủ chiều sâu**: [REVIEW_SECURITY, GUARDRAILS & HITL.md](../../.workflows/reviews/REVIEW_SECURITY,%20GUARDRAILS%20&%20HITL.md)
+- **Kiểm định tuân thủ pháp lý, quyền riêng tư & đạo đức AI**: [REVIEW_COMPLIANCE, PRIVACY & AI ETHICS.md](../../.workflows/reviews/REVIEW_COMPLIANCE,%20PRIVACY%20&%20AI%20ETHICS.md)
+- **Kiểm định quản trị chi phí & giới hạn hạn ngạch**: [REVIEW_FINOPS & COST GOVERNANCE.md](../../.workflows/reviews/REVIEW_FINOPS%20&%20COST%20GOVERNANCE.md)

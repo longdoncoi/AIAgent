@@ -1,8 +1,8 @@
-﻿# REVIEW_GOVERNANCE & AUDIT STANDARDS.md — Quy Chuẩn Kiểm Định, Phân Cấp Rủi Ro & Ma Trận Phân Quyền RACI
+# REVIEW_GOVERNANCE & AUDIT STANDARDS.md — Quy Chuẩn Kiểm Định, Phân Cấp Rủi Ro & Ma Trận Phân Quyền RACI
 
 > **Tài liệu kiểm định chuyên biệt (Production Readiness Review - Governance Domain 01 / 04)**  
 > **Đơn vị phụ trách**: Chief AI Architect & SecOps / Cyber Security Lead  
-> **Tài liệu tham chiếu**: [REVIEW.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md) · [Architecture.md](file:///f:/PROJECTS/AIAgent/Architecture.md) · [AGENTS.md](file:///f:/PROJECTS/AIAgent/AGENTS.md)
+> **Tài liệu tham chiếu**: [REVIEW.md](../../.workflows/reviews/REVIEW.md) · [ARCHITECTURE.md](../../Architecture.md) · [AGENTS.md](../../AGENTS.md)
 
 ---
 

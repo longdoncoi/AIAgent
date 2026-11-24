@@ -1,8 +1,8 @@
-﻿# REVIEW_SRE & DISASTER RECOVERY.md — Trụ Cột 10: Vận Hành, SRE Runbook & Khôi Phục Thảm Họa
+# REVIEW_SRE & DISASTER RECOVERY.md — Trụ Cột 10: Vận Hành, SRE Runbook & Khôi Phục Thảm Họa
 
 > **Tài liệu kiểm định chuyên biệt (Production Readiness Review - Pillar 10 / 14)**  
 > **Đơn vị phụ trách**: Incident Commander & Lead SRE Engineer  
-> **Tài liệu tham chiếu**: [REVIEW.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md) · [Architecture.md](file:///f:/PROJECTS/AIAgent/Architecture.md) · [AGENTS.md](file:///f:/PROJECTS/AIAgent/AGENTS.md)
+> **Tài liệu tham chiếu**: [REVIEW.md](../../.workflows/reviews/REVIEW.md) · [ARCHITECTURE.md](../../Architecture.md) · [AGENTS.md](../../AGENTS.md)
 
 ---
 
@@ -65,4 +65,4 @@ Sau khi hệ thống vận hành chính thức:
 - **Đạt**: _____ / 4
 - **Kết luận**: [ ] ĐẠT (PASS) &nbsp;&nbsp;&nbsp; [ ] CẦN KHẮC PHỤC (REJECT)
 
-> 🎯 **Biên Bản Ký Duyệt**: Kết quả đánh giá của Trụ cột này được tổng hợp và ký duyệt chính thức tại [Bảng Chữ Ký Phê Chuẩn Của Hội Đồng Đánh Giá (Mục 6.3 - REVIEW.md)](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md#63-bảng-chữ-ký-phê-chuẩn-của-hội-đồng-đánh-giá).
+> 🎯 **Biên Bản Ký Duyệt**: Kết quả đánh giá của Trụ cột này được tổng hợp và ký duyệt chính thức tại [Bảng Chữ Ký Phê Chuẩn Của Hội Đồng Đánh Giá (Mục 6.3 - REVIEW.md)](../../.workflows/reviews/REVIEW.md#63-bảng-chữ-ký-phê-chuẩn-của-hội-đồng-đánh-giá).

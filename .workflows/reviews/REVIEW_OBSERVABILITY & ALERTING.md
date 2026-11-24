@@ -1,8 +1,8 @@
-﻿# REVIEW_OBSERVABILITY & ALERTING.md — Trụ Cột 8: Khả Năng Quan Sát, Giám Sát & Cảnh Báo
+# REVIEW_OBSERVABILITY & ALERTING.md — Trụ Cột 8: Khả Năng Quan Sát, Giám Sát & Cảnh Báo
 
 > **Tài liệu kiểm định chuyên biệt (Production Readiness Review - Pillar 08 / 14)**  
 > **Đơn vị phụ trách**: SRE Monitoring Lead & Lead Backend Engineer  
-> **Tài liệu tham chiếu**: [REVIEW.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md) · [Architecture.md](file:///f:/PROJECTS/AIAgent/Architecture.md) · [AGENTS.md](file:///f:/PROJECTS/AIAgent/AGENTS.md) · [deploy/monitoring/](file:///f:/PROJECTS/AIAgent/deploy/monitoring/)
+> **Tài liệu tham chiếu**: [REVIEW.md](../../.workflows/reviews/REVIEW.md) · [ARCHITECTURE.md](../../Architecture.md) · [AGENTS.md](../../AGENTS.md) · [deploy/monitoring/](../../deploy/monitoring/)
 
 ---
 
@@ -21,10 +21,10 @@ Trụ cột này bảo đảm hệ thống có đầy đủ khả năng quan sá
 
 | ID | Trạng Thái | Mức Độ | Tiêu Chí Kiểm Tra (Verification Criteria) | Tệp Mã Nguồn / Cấu Hình | Phương Pháp & Lệnh Kiểm Chứng |
 | :---: | :---: | :---: | :--- | :--- | :--- |
-| **8.1** | `[ ]` | **P0** | **Truy Vết Phân Tán Xuyên Suốt (Distributed Tracing)**: Toàn bộ A2A Client calls và MCP tool executions phải đính kèm header chuẩn W3C `traceparent`. Trace ID liên kết chính xác giữa Jaeger và LangSmith. | [src/agentic/observability/tracing.py](file:///f:/PROJECTS/AIAgent/src/agentic/observability/tracing.py)<br>[src/agentic/a2a/client.py](file:///f:/PROJECTS/AIAgent/src/agentic/a2a/client.py) | Gửi request chat và kiểm tra trace trên Jaeger UI:<br>`curl http://localhost:16686/api/traces?service=agentic-supervisor` |
-| **8.2** | `[ ]` | **P0** | **Đo Lường Chỉ Số Đa Chiều (Prometheus Metrics SLA)**: Cung cấp endpoint `/metrics` thu thập đầy đủ: `agent_request_duration_seconds`, `agent_tokens_total`, `agent_hitl_approvals_total`, `cache_hits_total`. | [src/agentic/observability/metrics.py](file:///f:/PROJECTS/AIAgent/src/agentic/observability/metrics.py) | Kiểm tra metrics export:<br>`curl -s <http://localhost:8000/metrics> | grep agent_` |
-| **8.3** | `[ ]` | **P1** | **Cảnh Báo Tự Động Sản Xuất (Alertmanager Rules)**: 5 quy tắc alert trong `deploy/monitoring/alerts.yaml` (`HighLatencyAlert`, `HighErrorRateAlert`, `GPUOOMAlert`, `CircuitBreakerOpenAlert`, `HITLBacklogAlert`) đã kiểm tra cú pháp bằng `promtool`. | [deploy/monitoring/alerts.yaml](file:///f:/PROJECTS/AIAgent/deploy/monitoring/alerts.yaml) | Chạy kiểm tra quy tắc alert:<br>`promtool check rules deploy/monitoring/alerts.yaml` |
-| **8.4** | `[ ]` | **P1** | **Tích Hợp Nền Tảng LangSmith Observability**: Khi bật `LANGCHAIN_TRACING_V2=true`, hệ thống tự động ghi nhận spans, tokens, và feedback loops trực tiếp lên LangSmith project. | [src/agentic/observability/langsmith_tracer.py](file:///f:/PROJECTS/AIAgent/src/agentic/observability/langsmith_tracer.py) | Chạy unit test tích hợp LangSmith:<br>`pytest tests/unit/test_ragas_and_langsmith.py` |
+| **8.1** | `[ ]` | **P0** | **Truy Vết Phân Tán Xuyên Suốt (Distributed Tracing)**: Toàn bộ A2A Client calls và MCP tool executions phải đính kèm header chuẩn W3C `traceparent`. Trace ID liên kết chính xác giữa Jaeger và LangSmith. | [src/agentic/observability/tracing.py](../../src/agentic/observability/tracing.py)<br>[src/agentic/a2a/client.py](../../src/agentic/a2a/client.py) | Gửi request chat và kiểm tra trace trên Jaeger UI:<br>`curl http://localhost:16686/api/traces?service=agentic-supervisor` |
+| **8.2** | `[ ]` | **P0** | **Đo Lường Chỉ Số Đa Chiều (Prometheus Metrics SLA)**: Cung cấp endpoint `/metrics` thu thập đầy đủ: `agent_request_duration_seconds`, `agent_tokens_total`, `agent_hitl_approvals_total`, `cache_hits_total`. | [src/agentic/observability/metrics.py](../../src/agentic/observability/metrics.py) | Kiểm tra metrics export:<br>`curl -s <http://localhost:8000/metrics> | grep agent_` |
+| **8.3** | `[ ]` | **P1** | **Cảnh Báo Tự Động Sản Xuất (Alertmanager Rules)**: 5 quy tắc alert trong `deploy/monitoring/alerts.yaml` (`HighLatencyAlert`, `HighErrorRateAlert`, `GPUOOMAlert`, `CircuitBreakerOpenAlert`, `HITLBacklogAlert`) đã kiểm tra cú pháp bằng `promtool`. | [deploy/monitoring/alerts.yaml](../../deploy/monitoring/alerts.yaml) | Chạy kiểm tra quy tắc alert:<br>`promtool check rules deploy/monitoring/alerts.yaml` |
+| **8.4** | `[ ]` | **P1** | **Tích Hợp Nền Tảng LangSmith Observability**: Khi bật `LANGCHAIN_TRACING_V2=true`, hệ thống tự động ghi nhận spans, tokens, và feedback loops trực tiếp lên LangSmith project. | [src/agentic/observability/langsmith_tracer.py](../../src/agentic/observability/langsmith_tracer.py) | Chạy unit test tích hợp LangSmith:<br>`pytest tests/unit/test_ragas_and_langsmith.py` |
 
 ---
 
@@ -67,4 +67,4 @@ Sau khi hệ thống tiếp nhận lưu lượng truy cập thực tế:
 - **Đạt**: _____ / 4
 - **Kết luận**: [ ] ĐẠT (PASS) &nbsp;&nbsp;&nbsp; [ ] CẦN KHẮC PHỤC (REJECT)
 
-> 🎯 **Biên Bản Ký Duyệt**: Kết quả đánh giá của Trụ cột này được tổng hợp và ký duyệt chính thức tại [Bảng Chữ Ký Phê Chuẩn Của Hội Đồng Đánh Giá (Mục 6.3 - REVIEW.md)](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md#63-bảng-chữ-ký-phê-chuẩn-của-hội-đồng-đánh-giá).
+> 🎯 **Biên Bản Ký Duyệt**: Kết quả đánh giá của Trụ cột này được tổng hợp và ký duyệt chính thức tại [Bảng Chữ Ký Phê Chuẩn Của Hội Đồng Đánh Giá (Mục 6.3 - REVIEW.md)](../../.workflows/reviews/REVIEW.md#63-bảng-chữ-ký-phê-chuẩn-của-hội-đồng-đánh-giá).

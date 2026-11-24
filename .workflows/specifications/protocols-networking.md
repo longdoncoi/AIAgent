@@ -1,7 +1,7 @@
-﻿# AGENTS_PROTOCOLS_NETWORKING.md — Giao Thức Tương Tác & Kết Nối Mạng
+# AGENTS_PROTOCOLS_NETWORKING.md — Giao Thức Tương Tác & Kết Nối Mạng
 
 > **Tài liệu tham chiếu chuyên sâu** thuộc phân vùng kiến trúc Multi-Agent trong hệ sinh thái `agentic-platform`.  
-> Tài liệu gốc: [AGENTS.md](file:///f:/PROJECTS/AIAgent/AGENTS.md) · [Architecture.md](file:///f:/PROJECTS/AIAgent/Architecture.md).
+> Tài liệu gốc: [AGENTS.md](../../AGENTS.md) · [ARCHITECTURE.md](../../Architecture.md).
 
 ---
 
@@ -100,7 +100,7 @@ Hệ thống triển khai kiến trúc bộ đệm đa tầng (Multi-Tier Cachin
 
 ## 6. Tài Liệu Kiểm Định & Tham Chiếu Liên Quan
 
-- **Kiểm định kiến trúc phân tầng & ranh giới giao thức**: [REVIEW_ARCHITECTURE & PROTOCOLS.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_ARCHITECTURE%20&%20PROTOCOLS.md)
-- **Kiểm định hệ thống bộ đệm đa tầng**: [REVIEW_MULTI-TIER CACHING SUBSYSTEM.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_MULTI-TIER%20CACHING%20SUBSYSTEM.md)
-- **Kiểm định cổng mô hình & phục vụ suy luận**: [REVIEW_MODEL GATEWAY & INFERENCE.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_MODEL%20GATEWAY%20&%20INFERENCE.md)
-- **Kiểm định hạ tầng mạng Kubernetes & mTLS**: [REVIEW_KUBERNETES & SRE.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_KUBERNETES%20&%20SRE.md)
+- **Kiểm định kiến trúc phân tầng & ranh giới giao thức**: [REVIEW_ARCHITECTURE & PROTOCOLS.md](../../.workflows/reviews/REVIEW_ARCHITECTURE%20&%20PROTOCOLS.md)
+- **Kiểm định hệ thống bộ đệm đa tầng**: [REVIEW_MULTI-TIER CACHING SUBSYSTEM.md](../../.workflows/reviews/REVIEW_MULTI-TIER%20CACHING%20SUBSYSTEM.md)
+- **Kiểm định cổng mô hình & phục vụ suy luận**: [REVIEW_MODEL GATEWAY & INFERENCE.md](../../.workflows/reviews/REVIEW_MODEL%20GATEWAY%20&%20INFERENCE.md)
+- **Kiểm định hạ tầng mạng Kubernetes & mTLS**: [REVIEW_KUBERNETES & SRE.md](../../.workflows/reviews/REVIEW_KUBERNETES%20&%20SRE.md)

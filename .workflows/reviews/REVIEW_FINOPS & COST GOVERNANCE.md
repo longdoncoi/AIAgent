@@ -1,8 +1,8 @@
-﻿# REVIEW_FINOPS & COST GOVERNANCE.md — Trụ Cột 13: Quản Trị Chi Phí & Tối Ưu Hóa Tài Nguyên Đám Mây
+# REVIEW_FINOPS & COST GOVERNANCE.md — Trụ Cột 13: Quản Trị Chi Phí & Tối Ưu Hóa Tài Nguyên Đám Mây
 
 > **Tài liệu kiểm định chuyên biệt (Production Readiness Review - Pillar 13 / 14)**  
 > **Đơn vị phụ trách**: FinOps Lead & Cloud Cost Architect & AI Infrastructure Engineer  
-> **Tài liệu tham chiếu**: [REVIEW.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md) · [Architecture.md](file:///f:/PROJECTS/AIAgent/Architecture.md) · [AGENTS.md](file:///f:/PROJECTS/AIAgent/AGENTS.md) · [configs/litellm_config.yaml](file:///f:/PROJECTS/AIAgent/configs/litellm_config.yaml)
+> **Tài liệu tham chiếu**: [REVIEW.md](../../.workflows/reviews/REVIEW.md) · [ARCHITECTURE.md](../../Architecture.md) · [AGENTS.md](../../AGENTS.md) · [configs/litellm_config.yaml](../../configs/litellm_config.yaml)
 
 ---
 
@@ -21,11 +21,11 @@ Trụ cột này bảo đảm hệ thống vận hành bền vững về mặt k
 
 | ID | Trạng Thái | Mức Độ | Tiêu Chí Kiểm Tra (Verification Criteria) | Tệp Mã Nguồn / Cấu Hình | Phương Pháp & Lệnh Kiểm Chứng |
 | :---: | :---: | :---: | :--- | :--- | :--- |
-| **13.1** | `[ ]` | **P0** | **Kiểm Soát Hạn Mức Token Cứng (Hard Token Quota per Tenant)**: LiteLLM cấu hình `max_budget` và `budget_duration` cho từng API Key của tenant. Khi chạm ngưỡng 100% hạn mức, request bị từ chối với mã lỗi `429 Too Many Requests`. | [configs/litellm_config.yaml](file:///f:/PROJECTS/AIAgent/configs/litellm_config.yaml) | Kiểm tra file cấu hình LiteLLM và test vượt hạn mức token. |
-| **13.2** | `[ ]` | **P0** | **Tự Động Thu Gom Checkpoint Cũ (Storage TTL & Compaction)**: Bảng `checkpoints` trên PostgreSQL và Redis session keys có cơ chế TTL/Compaction định kỳ (mặc định xóa hoặc archive sang S3 sau 30 ngày), chống phình to dung lượng đĩa. | [src/agentic/memory/short_term.py](file:///f:/PROJECTS/AIAgent/src/agentic/memory/short_term.py) | Kiểm tra Redis TTL của checkpoint keys:<br>`redis-cli TTL "checkpoint:thread_id_test"` |
-| **13.3** | `[ ]` | **P1** | **Tự Động Scale-Down GPU Ngoài Giờ (GPU Autoscaling Schedule)**: HPA hoặc CronJob Kubernetes cấu hình scale giảm số replicas của vLLM Pods từ 4 xuống 1 trong khung giờ từ 23h đến 6h sáng hôm sau. | [deploy/k8s/deployment.yaml](file:///f:/PROJECTS/AIAgent/deploy/k8s/deployment.yaml) | Review manifest CronJob hoặc KEDA scaledobject. |
-| **13.4** | `[ ]` | **P1** | **Gắn Thẻ Phân Bổ Chi Phí (Cost Allocation Tagging)**: Mọi request qua API Supervisor và LiteLLM Gateway đều đính kèm metadata: `client_id`, `department`, `env: production` trong trường metadata. | [src/agentic/llm/gateway.py](file:///f:/PROJECTS/AIAgent/src/agentic/llm/gateway.py) | Gửi request và kiểm tra trường metadata lưu trong audit log và metrics. |
-| **13.5** | `[ ]` | **P2** | **Cảnh Báo Tiêu Hao Đột Biến (FinOps Anomaly Alerting)**: Alertmanager cấu hình rule `TokenSpikeAnomalyAlert`: Khi tổng số token tiêu thụ trong 15 phút tăng gấp đôi so với cùng kỳ tuần trước, kích hoạt thông báo kênh Slack FinOps. | [deploy/monitoring/alerts.yaml](file:///f:/PROJECTS/AIAgent/deploy/monitoring/alerts.yaml) | Kiểm tra cú pháp rule trong `alerts.yaml`. |
+| **13.1** | `[ ]` | **P0** | **Kiểm Soát Hạn Mức Token Cứng (Hard Token Quota per Tenant)**: LiteLLM cấu hình `max_budget` và `budget_duration` cho từng API Key của tenant. Khi chạm ngưỡng 100% hạn mức, request bị từ chối với mã lỗi `429 Too Many Requests`. | [configs/litellm_config.yaml](../../configs/litellm_config.yaml) | Kiểm tra file cấu hình LiteLLM và test vượt hạn mức token. |
+| **13.2** | `[ ]` | **P0** | **Tự Động Thu Gom Checkpoint Cũ (Storage TTL & Compaction)**: Bảng `checkpoints` trên PostgreSQL và Redis session keys có cơ chế TTL/Compaction định kỳ (mặc định xóa hoặc archive sang S3 sau 30 ngày), chống phình to dung lượng đĩa. | [src/agentic/memory/short_term.py](../../src/agentic/memory/short_term.py) | Kiểm tra Redis TTL của checkpoint keys:<br>`redis-cli TTL "checkpoint:thread_id_test"` |
+| **13.3** | `[ ]` | **P1** | **Tự Động Scale-Down GPU Ngoài Giờ (GPU Autoscaling Schedule)**: HPA hoặc CronJob Kubernetes cấu hình scale giảm số replicas của vLLM Pods từ 4 xuống 1 trong khung giờ từ 23h đến 6h sáng hôm sau. | [deploy/k8s/deployment.yaml](../../deploy/k8s/deployment.yaml) | Review manifest CronJob hoặc KEDA scaledobject. |
+| **13.4** | `[ ]` | **P1** | **Gắn Thẻ Phân Bổ Chi Phí (Cost Allocation Tagging)**: Mọi request qua API Supervisor và LiteLLM Gateway đều đính kèm metadata: `client_id`, `department`, `env: production` trong trường metadata. | [src/agentic/llm/gateway.py](../../src/agentic/llm/gateway.py) | Gửi request và kiểm tra trường metadata lưu trong audit log và metrics. |
+| **13.5** | `[ ]` | **P2** | **Cảnh Báo Tiêu Hao Đột Biến (FinOps Anomaly Alerting)**: Alertmanager cấu hình rule `TokenSpikeAnomalyAlert`: Khi tổng số token tiêu thụ trong 15 phút tăng gấp đôi so với cùng kỳ tuần trước, kích hoạt thông báo kênh Slack FinOps. | [deploy/monitoring/alerts.yaml](../../deploy/monitoring/alerts.yaml) | Kiểm tra cú pháp rule trong `alerts.yaml`. |
 
 ---
 
@@ -66,4 +66,4 @@ Sau khi hệ thống vận hành chính thức:
 - **Đạt**: _____ / 5
 - **Kết luận**: [ ] ĐẠT (PASS) &nbsp;&nbsp;&nbsp; [ ] CẦN KHẮC PHỤC (REJECT)
 
-> 🎯 **Biên Bản Ký Duyệt**: Kết quả đánh giá của Trụ cột này được tổng hợp và ký duyệt chính thức tại [Bảng Chữ Ký Phê Chuẩn Của Hội Đồng Đánh Giá (Mục 6.3 - REVIEW.md)](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md#63-bảng-chữ-ký-phê-chuẩn-của-hội-đồng-đánh-giá).
+> 🎯 **Biên Bản Ký Duyệt**: Kết quả đánh giá của Trụ cột này được tổng hợp và ký duyệt chính thức tại [Bảng Chữ Ký Phê Chuẩn Của Hội Đồng Đánh Giá (Mục 6.3 - REVIEW.md)](../../.workflows/reviews/REVIEW.md#63-bảng-chữ-ký-phê-chuẩn-của-hội-đồng-đánh-giá).

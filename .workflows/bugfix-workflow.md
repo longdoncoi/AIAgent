@@ -1,47 +1,9 @@
-# bugfix-workflow.md — Quy Trình Tái Hiện & Vá Lỗi Chuẩn
+# Bugfix workflow
 
-> **Quy trình chuẩn hóa 5 bước** dành cho việc điều tra, tái hiện và khắc phục sự cố trong `agentic-platform`.  
-> Tham chiếu: [coding-workflow.md](file:///f:/PROJECTS/AIAgent/.workflows/coding-workflow.md) · [.memory/troubleshooting.md](file:///f:/PROJECTS/AIAgent/.memory/troubleshooting.md).
+1. **Tái hiện**: thu input/log/trace tối thiểu và tạo failing test khi khả thi. Xác nhận test fail đúng triệu chứng trước khi sửa.
+2. **Khoanh vùng**: lần theo boundary và state; phân biệt root cause với exception cuối. Kiểm tra async blocking, schema drift, tenant/capability scope, cache key và lifecycle resource.
+3. **Sửa tối thiểu**: giữ API compatibility và không che lỗi bằng fallback làm yếu security/durability.
+4. **Chứng minh**: test tái hiện phải pass; thêm negative test cho failure mode; chạy regression theo blast radius.
+5. **Ghi tri thức**: chỉ thêm vào `.memory/troubleshooting.md` nếu gotcha có khả năng lặp lại và fix đã được kiểm chứng. Cập nhật `activeContext.md` chỉ khi blocker/next step đổi.
 
----
-
-## Sơ Đồ Quy Trình Vá Lỗi
-
-```
-[1. Tái Hiện Lỗi (Failing Test)] ──► [2. Định Vị Nguyên Nhân Gốc] ──► [3. Bản Vá Tối Thiểu (Minimal Fix)]
-                                                                               │
-[5. Ghi Chép Vào Troubleshooting] ◄── [4. Kiểm Thử Hồi Quy (make test)] ◄──────┘
-```
-
----
-
-## Chi Tiết Các Bước
-
-### Bước 1: Viết Test Tái Hiện Lỗi (Reproduce)
-- Tuyệt đối không sửa mã nguồn trước khi có test tái hiện được bug.
-- Viết test case cô lập lỗi trong `tests/unit/` hoặc `tests/integration/` phản ánh đúng input gây crash/lỗi.
-- Chạy test và xác nhận lỗi xuất hiện chính xác như mô tả.
-
-### Bước 2: Định Vị Nguyên Nhân Gốc (Root Cause Analysis)
-- Đọc log truy vết (OpenTelemetry/Jaeger/LangSmith) nếu lỗi xuất hiện trong quá trình inference hoặc A2A dispatch.
-- Kiểm tra các nguyên nhân thường gặp:
-  - Vi phạm Async (ví dụ gọi hàm sync I/O trong async event loop).
-  - Lệch schema Pydantic giữa các phiên bản checkpoint hoặc payload A2A.
-  - Race condition trong Connection Pool (Postgres, Redis).
-  - Lỗi deserialization state hoặc checkpoint HMAC mismatch.
-
-### Bước 3: Triển Khai Bản Vá Tối Thiểu (Minimal & Precise Fix)
-- Sửa lỗi tập trung tại đúng điểm phát sinh, không thay đổi lan man các file không liên quan.
-- Giữ nguyên giao diện API và tính tương thích ngược (backward compatibility).
-
-### Bước 4: Kiểm Thử Hồi Quy Toàn Diện
-- Chạy test tái hiện: Đảm bảo test đã PASS (Green phase).
-- Chạy toàn bộ test suite để đảm bảo không phát sinh lỗi phụ:
-  ```bash
-  make lint
-  make test
-  ```
-
-### Bước 5: Ghi Chép Vào Bộ Nhớ (Knowledge Retention)
-- Bổ sung trường hợp lỗi, nguyên nhân gốc và giải pháp vào [.memory/troubleshooting.md](file:///f:/PROJECTS/AIAgent/.memory/troubleshooting.md).
-- Cập nhật [.memory/activeContext.md](file:///f:/PROJECTS/AIAgent/.memory/activeContext.md).
+Tuân thủ [`coding-workflow.md`](coding-workflow.md); dùng skill test hoặc quality phù hợp từ [`.skills`](../.skills/README.md).

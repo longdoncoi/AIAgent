@@ -1,7 +1,7 @@
-﻿# AGENTS_STATE_MEMORY.md — Quản Lý Bộ Nhớ & Trạng Thái (Memory & State)
+# AGENTS_STATE_MEMORY.md — Quản Lý Bộ Nhớ & Trạng Thái (Memory & State)
 
 > **Tài liệu tham chiếu chuyên sâu** thuộc phân vùng kiến trúc Multi-Agent trong hệ sinh thái `agentic-platform`.  
-> Tài liệu gốc: [AGENTS.md](file:///f:/PROJECTS/AIAgent/AGENTS.md) · [Architecture.md](file:///f:/PROJECTS/AIAgent/Architecture.md).
+> Tài liệu gốc: [AGENTS.md](../../AGENTS.md) · [ARCHITECTURE.md](../../Architecture.md).
 
 ---
 
@@ -55,9 +55,9 @@
 
 ## 3. Tài Liệu Kiểm Định & Tham Chiếu Liên Quan
 
-- **Kiểm định quản lý trạng thái, bộ nhớ & dữ liệu**: [REVIEW_STATE, MEMORY & PERSISTENCE.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_STATE,%20MEMORY%20&%20PERSISTENCE.md)
-- **Kiểm định quản trị dữ liệu & phân quyền tri thức**: [REVIEW_DATA GOVERNANCE & RAG RBAC.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_DATA%20GOVERNANCE%20&%20RAG%20RBAC.md)
-- **Kiểm định tuân thủ pháp lý & quyền được lãng quên (Right to be Forgotten)**: [REVIEW_COMPLIANCE, PRIVACY & AI ETHICS.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW_COMPLIANCE,%20PRIVACY%20&%20AI%20ETHICS.md)
+- **Kiểm định quản lý trạng thái, bộ nhớ & dữ liệu**: [REVIEW_STATE, MEMORY & PERSISTENCE.md](../../.workflows/reviews/REVIEW_STATE,%20MEMORY%20&%20PERSISTENCE.md)
+- **Kiểm định quản trị dữ liệu & phân quyền tri thức**: [REVIEW_DATA GOVERNANCE & RAG RBAC.md](../../.workflows/reviews/REVIEW_DATA%20GOVERNANCE%20&%20RAG%20RBAC.md)
+- **Kiểm định tuân thủ pháp lý & quyền được lãng quên (Right to be Forgotten)**: [REVIEW_COMPLIANCE, PRIVACY & AI ETHICS.md](../../.workflows/reviews/REVIEW_COMPLIANCE,%20PRIVACY%20&%20AI%20ETHICS.md)
 # Bổ sung hardening persistence và tenant isolation
 
 - Supervisor async sử dụng `AsyncPostgresSaver`; lifecycle connection được quản lý bởi FastAPI lifespan.

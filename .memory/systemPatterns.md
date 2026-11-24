@@ -1,44 +1,33 @@
-# systemPatterns.md — Các Mẫu Thiết Kế Chuẩn Hóa & Quy Ước Bất Biến
+# System patterns
 
-> Tệp này ghi chép các quy ước lập trình, mẫu kiến trúc (patterns) chuẩn hóa của codebase `agentic-platform`.
+Chỉ dùng các pattern dưới đây khi code hiện hữu xác nhận chúng phù hợp.
 
----
+## LangGraph state và DAG
 
-## 1. Mẫu Thiết Kế L2 LangGraph State & DAG
-- Mọi node trong LangGraph Supervisor nhận `AgentState` và trả về dict update tương ứng.
-- Phải duy trì danh sách message bất biến thông qua `Annotated[list, add_messages]`.
-- Logic điều phối song song (fan-out) sử dụng danh sách `Step` trong `Plan`, chỉ những step độc lập dữ liệu mới được dispatch cùng lúc.
+- Node nhận `AgentState`, trả về dict update; schema ở `src/agentic/orchestrator/state.py`.
+- Dispatch chỉ fan-out các step độc lập có dependency đã hoàn tất; DAG invalid/deadlock phải fail rõ ràng.
+- Approval gắn với `step_id`; reset run-scoped state ở đầu lượt chat.
 
----
+## A2A và execution identity
 
-## 2. Mẫu Xử Lý A2A (Agent-to-Agent Protocol)
-- Sử dụng singleton `httpx.AsyncClient` với connection pool (`max_keepalive_connections=50, max_connections=200`).
-- Mọi request A2A phải mang `trace_id` trong header metadata để liên kết OpenTelemetry trace.
-- Xử lý timeout chuẩn hóa:
-  ```python
-  try:
-      response = await a2a_client.dispatch_task(task_payload, timeout=30.0)
-  except httpx.TimeoutException:
-      raise AgentTimeoutError(f"Sub-agent {target} timed out after 30s")
-  ```
+- Tái sử dụng singleton `httpx.AsyncClient` trong `src/agentic/a2a/client.py`.
+- Lan truyền owner/run/step và trace metadata; production remote call phải fail closed.
+- Capability ngắn hạn được ký và kiểm lại ở cả A2A executor lẫn MCP boundary.
 
----
+## MCP tool
 
-## 3. Mẫu FastMCP Tool Server
-- Mọi tool triển khai bằng decorator `@mcp.tool()` của FastMCP.
-- Tool trả về chuỗi JSON string hoặc văn bản đã định dạng rõ ràng, không raise uncaught exception ra ngoài mà bọc thành `AgentError`.
+- Policy owner là `configs/policies.yaml`: risk, approval và per-agent allowlist.
+- Schema/tool binding owner là `src/agentic/tools/mcp_client.py`; server vẫn phải tự xác thực S2S/capability.
+- Hàm sync được gọi từ async path phải qua `asyncio.to_thread`; không nuốt exception bảo mật.
 
----
+## Persistence và tenant isolation
 
-## 4. Mẫu Caching Đa Tầng (Two-Tier LRU + Redis)
-- Kiểm tra Tier 1 (In-Memory LRU) trước. Nếu miss, kiểm tra Tier 2 (Redis).
-- Key luôn được hash chuẩn hóa:
-  - RAG Cache: `SHA256(normalized_query + top_k)`
-  - Prompt Cache: `SHA256(model + temperature + messages)`
-- TTL mặc định 3600s, cơ chế dọn dẹp LRU tự động khi vượt quá dung lượng.
+- Production checkpoint dùng `AsyncPostgresSaver`; pool PostgreSQL đặt `prepare_threshold=None` khi qua PgBouncer transaction mode.
+- Cache, retrieval, checkpoint và long-term memory key/filter phải chứa tenant/owner scope.
+- Production không fallback sang local state nếu điều đó làm yếu isolation hoặc durability.
 
----
+## RAG và cache
 
-## 5. Quy Ước Tách Biệt CPU-Bound & Non-blocking Event Loop
-- Các tác vụ tính toán nặng (LlamaIndex ingestion, BM25 ranking, Cross-encoder inference) không được chạy trực tiếp trên event loop của FastAPI.
-- Bắt buộc dùng `await asyncio.to_thread(sync_heavy_function, ...)`.
+- Áp tenant/filter trước lexical/vector fusion và rerank.
+- Cache key phải bao gồm mọi input ảnh hưởng kết quả (query chuẩn hóa, model/config, filter/tenant).
+- Ingestion/CDC resolve path dưới data root, hỗ trợ upsert/delete và invalidation/rebuild nhất quán.

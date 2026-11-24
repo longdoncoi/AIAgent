@@ -1,8 +1,8 @@
-﻿# REVIEW_SECURITY, GUARDRAILS & HITL.md — Trụ Cột 4: An Toàn, Bảo Mật & Phòng Thủ Chiều Sâu
+# REVIEW_SECURITY, GUARDRAILS & HITL.md — Trụ Cột 4: An Toàn, Bảo Mật & Phòng Thủ Chiều Sâu
 
 > **Tài liệu kiểm định chuyên biệt (Production Readiness Review - Pillar 04 / 14)**  
 > **Đơn vị phụ trách**: SecOps / Security Lead & Cyber Security Architect  
-> **Tài liệu tham chiếu**: [REVIEW.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md) · [Architecture.md](file:///f:/PROJECTS/AIAgent/Architecture.md) · [AGENTS.md](file:///f:/PROJECTS/AIAgent/AGENTS.md) · [configs/policies.yaml](file:///f:/PROJECTS/AIAgent/configs/policies.yaml)
+> **Tài liệu tham chiếu**: [REVIEW.md](../../.workflows/reviews/REVIEW.md) · [ARCHITECTURE.md](../../Architecture.md) · [AGENTS.md](../../AGENTS.md) · [configs/policies.yaml](../../configs/policies.yaml)
 
 ---
 
@@ -21,12 +21,12 @@ Trụ cột này thiết lập hệ thống phòng thủ chiều sâu (Defense-i
 
 | ID | Trạng Thái | Mức Độ | Tiêu Chí Kiểm Tra (Verification Criteria) | Tệp Mã Nguồn / Cấu Hình | Phương Pháp & Lệnh Kiểm Chứng |
 | :---: | :---: | :---: | :--- | :--- | :--- |
-| **4.1** | `[ ]` | **P0** | **Ngăn Chặn Prompt Injection & Jailbreak (Input Guardrail)**: Bộ lọc đầu vào phải nhận diện và chặn đứng các mẫu injection phổ biến (system prompt override, roleplay jailbreak, base64 payload). | [src/agentic/safety/guardrails.py](file:///f:/PROJECTS/AIAgent/src/agentic/safety/guardrails.py) | Chạy test suite an toàn đầu vào:<br>`pytest tests/unit/test_guardrails.py -k test_prompt_injection` |
-| **4.2** | `[ ]` | **P0** | **Cô Lập Môi Trường Thực Thi Code (Sandbox Execution)**: MCP `code_exec_server` chạy mã Python/Bash hoàn toàn trong container gVisor/Docker không có quyền root (`non-root user`), read-only rootfs, cấm truy cập mạng host. | [src/agentic/tools/servers/code_exec_server.py](file:///f:/PROJECTS/AIAgent/src/agentic/tools/servers/code_exec_server.py) | Chạy unit test kiểm tra sandbox escape:<br>`pytest tests/unit/test_security.py -k test_sandbox_isolation` |
-| **4.3** | `[ ]` | **P0** | **Cơ Chế Phê Duyệt Khi Rủi Ro Cao (HITL Interrupt Node)**: Khi step có `risk_level == 'high'`, LangGraph bắt buộc gọi `interrupt()`, lưu trạng thái checkpoint và trả về trạng thái `WAITING_APPROVAL` ra API. | [src/agentic/orchestrator/nodes/hitl.py](file:///f:/PROJECTS/AIAgent/src/agentic/orchestrator/nodes/hitl.py) | Chạy integration test kiểm tra ngắt HITL:<br>`pytest tests/unit/test_production_hardening.py -k test_hitl_interrupt` |
-| **4.4** | `[ ]` | **P0** | **Che Giấu Dữ Liệu Nhạy Cảm Trên Luồng SSE (PII Stream Buffer)**: Dùng buffer trượt để phát hiện và che giấu (redact) số CMND/CCCD, email, token API trước khi stream ra client. | [src/agentic/safety/pii.py](file:///f:/PROJECTS/AIAgent/src/agentic/safety/pii.py) | Chạy unit test cắt lọc PII trên streaming:<br>`pytest tests/unit/test_caching_and_security.py -k test_pii_sse_buffer` |
-| **4.5** | `[ ]` | **P0** | **Ràng Buộc Nguồn Gốc CORS (Zero-Trust CORS)**: Khai báo danh sách domain nguồn cụ thể (`allowed_origins`). Nghiêm cấm wildcard `*` trên môi trường Production khi bật `allow_credentials: true`. | [src/agentic/api/main.py](file:///f:/PROJECTS/AIAgent/src/agentic/api/main.py)<br>[src/agentic/core/config.py](file:///f:/PROJECTS/AIAgent/src/agentic/core/config.py) | Chạy unit test bảo vệ CORS:<br>`pytest tests/unit/test_caching_and_security.py -k test_cors_origin_strict` |
-| **4.6** | `[ ]` | **P1** | **Chính Sách Phân Quyền Công Cụ (MCP Tool Allowlist)**: File cấu hình `policies.yaml` phân bổ rõ ràng: `ChatAgent` không có tool thực thi lệnh; `CodingAgent` chỉ có tool đọc repo & chạy code trong sandbox. | [configs/policies.yaml](file:///f:/PROJECTS/AIAgent/configs/policies.yaml) | Kiểm tra `policies.yaml` và test `test_tool_allowlist_enforcement`. |
+| **4.1** | `[ ]` | **P0** | **Ngăn Chặn Prompt Injection & Jailbreak (Input Guardrail)**: Bộ lọc đầu vào phải nhận diện và chặn đứng các mẫu injection phổ biến (system prompt override, roleplay jailbreak, base64 payload). | [src/agentic/safety/guardrails.py](../../src/agentic/safety/guardrails.py) | Chạy test suite an toàn đầu vào:<br>`pytest tests/unit/test_guardrails.py -k test_prompt_injection` |
+| **4.2** | `[ ]` | **P0** | **Cô Lập Môi Trường Thực Thi Code (Sandbox Execution)**: MCP `code_exec_server` chạy mã Python/Bash hoàn toàn trong container gVisor/Docker không có quyền root (`non-root user`), read-only rootfs, cấm truy cập mạng host. | [src/agentic/tools/servers/code_exec_server.py](../../src/agentic/tools/servers/code_exec_server.py) | Chạy unit test kiểm tra sandbox escape:<br>`pytest tests/unit/test_security.py -k test_sandbox_isolation` |
+| **4.3** | `[ ]` | **P0** | **Cơ Chế Phê Duyệt Khi Rủi Ro Cao (HITL Interrupt Node)**: Khi step có `risk_level == 'high'`, LangGraph bắt buộc gọi `interrupt()`, lưu trạng thái checkpoint và trả về trạng thái `WAITING_APPROVAL` ra API. | [src/agentic/orchestrator/nodes/hitl.py](../../src/agentic/orchestrator/nodes/hitl.py) | Chạy integration test kiểm tra ngắt HITL:<br>`pytest tests/unit/test_production_hardening.py -k test_hitl_interrupt` |
+| **4.4** | `[ ]` | **P0** | **Che Giấu Dữ Liệu Nhạy Cảm Trên Luồng SSE (PII Stream Buffer)**: Dùng buffer trượt để phát hiện và che giấu (redact) số CMND/CCCD, email, token API trước khi stream ra client. | [src/agentic/safety/guardrails.py](../../src/agentic/safety/guardrails.py) | Chạy unit test cắt lọc PII trên streaming:<br>`pytest tests/unit/test_caching_and_security.py -k test_pii_sse_buffer` |
+| **4.5** | `[ ]` | **P0** | **Ràng Buộc Nguồn Gốc CORS (Zero-Trust CORS)**: Khai báo danh sách domain nguồn cụ thể (`allowed_origins`). Nghiêm cấm wildcard `*` trên môi trường Production khi bật `allow_credentials: true`. | [src/agentic/api/main.py](../../src/agentic/api/main.py)<br>[src/agentic/core/config.py](../../src/agentic/core/config.py) | Chạy unit test bảo vệ CORS:<br>`pytest tests/unit/test_caching_and_security.py -k test_cors_origin_strict` |
+| **4.6** | `[ ]` | **P1** | **Chính Sách Phân Quyền Công Cụ (MCP Tool Allowlist)**: File cấu hình `policies.yaml` phân bổ rõ ràng: `ChatAgent` không có tool thực thi lệnh; `CodingAgent` chỉ có tool đọc repo & chạy code trong sandbox. | [configs/policies.yaml](../../configs/policies.yaml) | Kiểm tra `policies.yaml` và test `test_tool_allowlist_enforcement`. |
 
 ---
 
@@ -77,4 +77,4 @@ Sau khi hệ thống vận hành chính thức:
 - **Đạt**: _____ / 6
 - **Kết luận**: [ ] ĐẠT (PASS) &nbsp;&nbsp;&nbsp; [ ] CẦN KHẮC PHỤC (REJECT)
 
-> 🎯 **Biên Bản Ký Duyệt**: Kết quả đánh giá của Trụ cột này được tổng hợp và ký duyệt chính thức tại [Bảng Chữ Ký Phê Chuẩn Của Hội Đồng Đánh Giá (Mục 6.3 - REVIEW.md)](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md#63-bảng-chữ-ký-phê-chuẩn-của-hội-đồng-đánh-giá).
+> 🎯 **Biên Bản Ký Duyệt**: Kết quả đánh giá của Trụ cột này được tổng hợp và ký duyệt chính thức tại [Bảng Chữ Ký Phê Chuẩn Của Hội Đồng Đánh Giá (Mục 6.3 - REVIEW.md)](../../.workflows/reviews/REVIEW.md#63-bảng-chữ-ký-phê-chuẩn-của-hội-đồng-đánh-giá).

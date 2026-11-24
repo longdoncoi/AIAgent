@@ -1,51 +1,37 @@
-# troubleshooting.md — Sổ Tay Xử Lý Lỗi & Bẫy Thường Gặp (Gotchas)
+# Troubleshooting đã kiểm chứng
 
-> Tệp này ghi lại các sự cố thực tế, các cạm bẫy đã gặp trong quá trình phát triển dự án và giải pháp đã kiểm chứng.
+## PgBouncer báo lỗi prepared statement
 
----
+- **Triệu chứng**: `prepared statement already exists/does not exist` ở transaction pooling.
+- **Fix**: giữ `prepare_threshold=None` trong PostgreSQL connections/pool; xem `src/agentic/memory/short_term.py` và `long_term.py`.
 
-## 1. Lỗi: PgBouncer "Prepared Statement Already Exists" Hoặc "Prepared Statement Does Not Exist"
-- **Hiện tượng**: Khi chạy connection pool kết nối tới PostgreSQL thông qua PgBouncer ở chế độ `transaction pooling`, phát sinh lỗi liên quan đến prepared statements.
-- **Nguyên nhân**: PgBouncer ở transaction mode chia sẻ kết nối giữa các transaction khác nhau, prepared statement tạo ở connection này không tồn tại hoặc bị trùng lặp ở connection khác.
-- **Giải pháp**:
-  - Trong `short_term.py` và `long_term.py`, khi khởi tạo `ConnectionPool`, thiết lập `prepare_threshold=None`.
-  - Cấu hình PgBouncer `POOL_MODE: transaction` kết hợp `MAX_PREPARED_STATEMENTS: 100`.
+## Redis checkpoint bị từ chối
 
----
+- **Triệu chứng**: HMAC mismatch hoặc payload cũ/không ký không deserialize được.
+- **Fix**: không bypass validation; dùng cùng secret/format ở writer và reader, migrate hoặc xóa checkpoint cũ có chủ đích. Xem `redis_saver.py`.
 
-## 2. Lỗi: Redis Checkpointer Deserialization Security Alert
-- **Hiện tượng**: Kiểm tra an ninh cảnh báo rủi ro deserialization giả mạo (tampering) trên Redis cache lưu state của LangGraph.
-- **Nguyên nhân**: State checkpoint serialize bằng pickle hoặc JSON có thể bị can thiệp nếu hạ tầng mạng Redis bị xâm nhập.
-- **Giải pháp**:
-  - Trong `redis_saver.py`, bổ sung lớp xác thực chữ ký số **HMAC-SHA256** trên dữ liệu serialized trước khi `SET` vào Redis.
-  - Khi đọc (`GET`), xác thực lại chữ ký HMAC trước khi deserialize. Nếu chữ ký không khớp, từ chối nạp và ghi log security incident.
+## Async graph lỗi với checkpointer
 
----
+- **Triệu chứng**: `ainvoke`/`astream_events` gọi async method chưa có.
+- **Nguyên nhân**: compile graph async bằng saver đồng bộ.
+- **Fix**: khởi tạo `AsyncPostgresSaver` trong FastAPI lifespan và giữ context đến shutdown.
 
-## 3. Lỗi: Event Loop Lagging Khi Query RAG Lớn
-- **Hiện tượng**: Khi RAGAgent thực hiện BM25 lexical search hoặc Cross-Encoder reranking trên tập tài liệu lớn, toàn bộ API L1 bị giật lag và response time tăng đột biến.
-- **Nguyên nhân**: BM25 và Cross-Encoder chạy đồng bộ trên main thread, chiếm dụng Python GIL và làm nghẽn asyncio event loop.
-- **Giải pháp**:
-  - Chuyển toàn bộ lời gọi CPU-bound sang worker thread pool bằng `asyncio.to_thread()`.
-# Hardening review — 2026-11-23
+## Event loop lag khi RAG lớn
 
-## LangGraph async API với PostgresSaver sync
+- **Triệu chứng**: API latency tăng khi BM25, reranker hoặc ingestion chạy.
+- **Fix**: đưa phần sync/CPU-bound qua worker thread/process; đo lại latency, không chỉ đổi cú pháp thành `async`.
 
-- Triệu chứng: `ainvoke`/`astream_events` gọi `aget_tuple` chưa được triển khai.
-- Nguyên nhân: graph async được compile bằng `PostgresSaver` đồng bộ.
-- Khắc phục: khởi tạo `AsyncPostgresSaver` trong FastAPI lifespan, giữ async context đến shutdown, và dùng `aget_state` ở API.
+## Approval không bảo vệ tool boundary
 
-## Approval không bảo vệ biên tool
+- **Triệu chứng**: step đã duyệt nhưng tool có thể bị gọi ngoài step hoặc dùng lại approval.
+- **Fix**: capability phải khóa theo run/step/owner/agent/tool, có expiry và được kiểm ở A2A + MCP. Không tin metadata owner nếu capability invalid.
 
-- Triệu chứng: planner/HITL có thể duyệt step nhưng MCP tool vẫn bị gọi trực tiếp hoặc một approval mở khóa nhiều step.
-- Khắc phục: lưu `approved_step_ids`, truyền capability qua A2A metadata/ContextVar và kiểm tra allowlist + approval tại mọi MCP invocation.
+## Trùng `thread_id` giữa principal
 
-## Thread ID do client cung cấp
+- **Triệu chứng**: nguy cơ đọc/ghi chung checkpoint.
+- **Fix**: resolve owner qua atomic registry và dùng internal checkpoint identity đã scope/ký; approval phải khớp pending step.
 
-- Triệu chứng: hai principal có thể dùng cùng `thread_id` để đọc/ghi chung checkpoint.
-- Khắc phục: atomic ownership registry và HMAC-scoped internal checkpoint ID; approval resolve owner từ registry và xác thực đúng pending step.
+## CDC path traversal hoặc index stale
 
-## CDC path traversal và stale index
-
-- Triệu chứng: `file_path` có thể thoát `data/raw`; `_load_storage()` không index nội dung mới.
-- Khắc phục: `resolve/relative_to`, hỗ trợ delete, rebuild persisted index trong worker thread rồi reset retriever singleton.
+- **Triệu chứng**: input path thoát `data/raw` hoặc tài liệu sửa/xóa không phản ánh trong retrieval.
+- **Fix**: `resolve()` + `relative_to()` dưới data root; xử lý upsert/delete, rebuild/invalidate index và reset retriever singleton.

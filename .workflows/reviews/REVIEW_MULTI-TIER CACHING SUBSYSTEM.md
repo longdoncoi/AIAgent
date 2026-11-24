@@ -1,8 +1,8 @@
-﻿# REVIEW_MULTI-TIER CACHING SUBSYSTEM.md — Trụ Cột 3: Hệ Thống Bộ Đệm Đa Tầng
+# REVIEW_MULTI-TIER CACHING SUBSYSTEM.md — Trụ Cột 3: Hệ Thống Bộ Đệm Đa Tầng
 
 > **Tài liệu kiểm định chuyên biệt (Production Readiness Review - Pillar 03 / 14)**  
 > **Đơn vị phụ trách**: Performance Lead & Lead Backend Engineer  
-> **Tài liệu tham chiếu**: [REVIEW.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md) · [Architecture.md](file:///f:/PROJECTS/AIAgent/Architecture.md) · [AGENTS.md](file:///f:/PROJECTS/AIAgent/AGENTS.md)
+> **Tài liệu tham chiếu**: [REVIEW.md](../../.workflows/reviews/REVIEW.md) · [ARCHITECTURE.md](../../Architecture.md) · [AGENTS.md](../../AGENTS.md)
 
 ---
 
@@ -21,10 +21,10 @@ Trụ cột này đánh giá hiệu năng, tính nhất quán và cơ chế gi�
 
 | ID | Trạng Thái | Mức Độ | Tiêu Chí Kiểm Tra (Verification Criteria) | Tệp Mã Nguồn / Cấu Hình | Phương Pháp & Lệnh Kiểm Chứng |
 | :---: | :---: | :---: | :--- | :--- | :--- |
-| **3.1** | `[ ]` | **P0** | **Kiến Trúc Bộ Đệm 2 Tầng (Two-Tier L1/L2 Caching)**: Cả RAG Cache và Prompt Cache phải triển khai mô hình 2 tầng: L1 In-Memory LRU (phản hồi $< 1$ms) kết hợp L2 Redis phân tán. Tự động thăng cấp (promote) dữ liệu từ L2 lên L1 khi cache hit. | [src/agentic/cache/rag_cache.py](file:///f:/PROJECTS/AIAgent/src/agentic/cache/rag_cache.py)<br>[src/agentic/cache/prompt_cache.py](file:///f:/PROJECTS/AIAgent/src/agentic/cache/prompt_cache.py) | Chạy unit test bộ đệm 2 tầng:<br>`pytest tests/unit/test_caching_and_security.py -k test_two_tier` |
-| **3.2** | `[ ]` | **P0** | **Tối Ưu KV-Cache GPU (Automatic Prefix Caching - APC)**: System message phải là chuỗi tĩnh ghim ở index 0 (không chứa timestamp/UUID động). Request gắn header cache phù hợp (`X-Cache-Control: ephemeral`) để router vLLM/SGLang tận dụng bộ nhớ GPU. | [src/agentic/cache/kv_cache.py](file:///f:/PROJECTS/AIAgent/src/agentic/cache/kv_cache.py) | Chạy unit test kiểm tra prompt format cho KV-cache:<br>`pytest tests/unit/test_caching_and_security.py -k test_kv_cache_optimizer` |
-| **3.3** | `[ ]` | **P1** | **Vô Hiệu Hóa Cache Hướng Sự Kiện (CDC Invalidation)**: Khi tài liệu RAG cập nhật hoặc bị thu hồi, workflow Temporal (`rag_workflow.py`) phải tự động kích hoạt xóa cache tương ứng trên Redis cluster mà không cần restart services. | [src/agentic/workflows/rag_workflow.py](file:///f:/PROJECTS/AIAgent/src/agentic/workflows/rag_workflow.py) | Kiểm tra test vô hiệu hóa cache khi tài liệu thay đổi:<br>`pytest tests/unit/test_ten_out_of_ten.py -k test_rag_workflow_invalidation` |
-| **3.4** | `[ ]` | **P1** | **Chỉ Số Đo Lường Hiệu Suất Bộ Đệm (Cache Hit/Miss Metrics)**: Tích hợp đầy đủ Prometheus metrics: `cache_hits_total`, `cache_misses_total` phân biệt theo từng tầng L1 và L2. | [src/agentic/observability/metrics.py](file:///f:/PROJECTS/AIAgent/src/agentic/observability/metrics.py) | Xác thực các nhãn metrics trên endpoint `/metrics`:<br>`curl -s http://localhost:8000/metrics | grep cache_` |
+| **3.1** | `[ ]` | **P0** | **Kiến Trúc Bộ Đệm 2 Tầng (Two-Tier L1/L2 Caching)**: Cả RAG Cache và Prompt Cache phải triển khai mô hình 2 tầng: L1 In-Memory LRU (phản hồi $< 1$ms) kết hợp L2 Redis phân tán. Tự động thăng cấp (promote) dữ liệu từ L2 lên L1 khi cache hit. | [src/agentic/cache/rag_cache.py](../../src/agentic/cache/rag_cache.py)<br>[src/agentic/cache/prompt_cache.py](../../src/agentic/cache/prompt_cache.py) | Chạy unit test bộ đệm 2 tầng:<br>`pytest tests/unit/test_caching_and_security.py -k test_two_tier` |
+| **3.2** | `[ ]` | **P0** | **Tối Ưu KV-Cache GPU (Automatic Prefix Caching - APC)**: System message phải là chuỗi tĩnh ghim ở index 0 (không chứa timestamp/UUID động). Request gắn header cache phù hợp (`X-Cache-Control: ephemeral`) để router vLLM/SGLang tận dụng bộ nhớ GPU. | [src/agentic/cache/kv_cache.py](../../src/agentic/cache/kv_cache.py) | Chạy unit test kiểm tra prompt format cho KV-cache:<br>`pytest tests/unit/test_caching_and_security.py -k test_kv_cache_optimizer` |
+| **3.3** | `[ ]` | **P1** | **Vô Hiệu Hóa Cache Hướng Sự Kiện (CDC Invalidation)**: Khi tài liệu RAG cập nhật hoặc bị thu hồi, workflow Temporal (`rag_workflow.py`) phải tự động kích hoạt xóa cache tương ứng trên Redis cluster mà không cần restart services. | [src/agentic/workflows/rag_workflow.py](../../src/agentic/workflows/rag_workflow.py) | Kiểm tra test vô hiệu hóa cache khi tài liệu thay đổi:<br>`pytest tests/unit/test_ten_out_of_ten.py -k test_rag_workflow_invalidation` |
+| **3.4** | `[ ]` | **P1** | **Chỉ Số Đo Lường Hiệu Suất Bộ Đệm (Cache Hit/Miss Metrics)**: Tích hợp đầy đủ Prometheus metrics: `cache_hits_total`, `cache_misses_total` phân biệt theo từng tầng L1 và L2. | [src/agentic/observability/metrics.py](../../src/agentic/observability/metrics.py) | Xác thực các nhãn metrics trên endpoint `/metrics`:<br>`curl -s http://localhost:8000/metrics | grep cache_` |
 
 ---
 
@@ -68,4 +68,4 @@ Sau khi hệ thống tiếp nhận lưu lượng truy cập thực tế:
 - **Đạt**: _____ / 4
 - **Kết luận**: [ ] ĐẠT (PASS) &nbsp;&nbsp;&nbsp; [ ] CẦN KHẮC PHỤC (REJECT)
 
-> 🎯 **Biên Bản Ký Duyệt**: Kết quả đánh giá của Trụ cột này được tổng hợp và ký duyệt chính thức tại [Bảng Chữ Ký Phê Chuẩn Của Hội Đồng Đánh Giá (Mục 6.3 - REVIEW.md)](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md#63-bảng-chữ-ký-phê-chuẩn-của-hội-đồng-đánh-giá).
+> 🎯 **Biên Bản Ký Duyệt**: Kết quả đánh giá của Trụ cột này được tổng hợp và ký duyệt chính thức tại [Bảng Chữ Ký Phê Chuẩn Của Hội Đồng Đánh Giá (Mục 6.3 - REVIEW.md)](../../.workflows/reviews/REVIEW.md#63-bảng-chữ-ký-phê-chuẩn-của-hội-đồng-đánh-giá).

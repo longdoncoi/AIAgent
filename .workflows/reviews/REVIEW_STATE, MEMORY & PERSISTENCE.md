@@ -1,8 +1,8 @@
-﻿# REVIEW_STATE, MEMORY & PERSISTENCE.md — Trụ Cột 2: Quản Lý Trạng Thái, Bộ Nhớ & Dữ Liệu
+# REVIEW_STATE, MEMORY & PERSISTENCE.md — Trụ Cột 2: Quản Lý Trạng Thái, Bộ Nhớ & Dữ Liệu
 
 > **Tài liệu kiểm định chuyên biệt (Production Readiness Review - Pillar 02 / 14)**  
 > **Đơn vị phụ trách**: Lead Backend Engineer & Database Administrator (DBA)  
-> **Tài liệu tham chiếu**: [REVIEW.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md) · [Architecture.md](file:///f:/PROJECTS/AIAgent/Architecture.md) · [AGENTS.md](file:///f:/PROJECTS/AIAgent/AGENTS.md)
+> **Tài liệu tham chiếu**: [REVIEW.md](../../.workflows/reviews/REVIEW.md) · [ARCHITECTURE.md](../../Architecture.md) · [AGENTS.md](../../AGENTS.md)
 
 ---
 
@@ -21,12 +21,12 @@ Trụ cột này thẩm định độ bền vững, tính toàn vẹn và an to�
 
 | ID | Trạng Thái | Mức Độ | Tiêu Chí Kiểm Tra (Verification Criteria) | Tệp Mã Nguồn / Cấu Hình | Phương Pháp & Lệnh Kiểm Chứng |
 | :---: | :---: | :---: | :--- | :--- | :--- |
-| **2.1** | `[ ]` | **P0** | **Tương Thích PgBouncer & Tránh Lỗi Prepared Statements**: Thiết lập `prepare_threshold=None` trong connection pool Postgres, loại bỏ hoàn toàn lỗi duplicate statement name khi scale qua PgBouncer transaction pooling. | [src/agentic/memory/short_term.py](file:///f:/PROJECTS/AIAgent/src/agentic/memory/short_term.py) | Chạy unit test kiểm tra pool Postgres:<br>`pytest tests/unit/test_ten_out_of_ten_hardening.py -k test_pgbouncer_compatibility` |
-| **2.2** | `[ ]` | **P0** | **Chữ Ký Toàn Vẹn Dữ Liệu Redis (HMAC-SHA256)**: Kiểm tra chữ ký HMAC trên toàn bộ payload tuần tự hóa trước khi nạp vào RedisSaver, ngăn ngừa tuyệt đối tấn công deserialization injection. | [src/agentic/memory/redis_saver.py](file:///f:/PROJECTS/AIAgent/src/agentic/memory/redis_saver.py) | Chạy unit test bảo mật chữ ký HMAC:<br>`pytest tests/unit/test_caching_and_security.py -k test_redis_saver_hmac_tampering` |
-| **2.3** | `[ ]` | **P0** | **Đồng Bộ Quản Trị Lược Đồ CSDL (Alembic Migrations)**: Toàn bộ bảng hệ thống (`long_term_memories`, `checkpoints`, `checkpoint_blobs`, `checkpoint_writes`) được quản lý qua migration script; đã test nâng cấp và rollback. | [migrations/](file:///f:/PROJECTS/AIAgent/migrations/)<br>[scripts/migrate_db.py](file:///f:/PROJECTS/AIAgent/scripts/migrate_db.py) | Chạy dry-run migration:<br>`alembic upgrade head --sql` |
-| **2.4** | `[ ]` | **P1** | **Thời Hạn Sống Dữ Liệu & Context Trim (Token Budget Trim)**: Khởi tạo cơ chế trim message tokens theo ngưỡng cấu hình (`max_tokens=4000`), kèm TTL tự động xóa checkpoints quá hạn trên Redis (mặc định 7 ngày). | [src/agentic/memory/short_term.py](file:///f:/PROJECTS/AIAgent/src/agentic/memory/short_term.py) | Chạy unit test token trim:<br>`pytest tests/unit/test_production_hardening.py -k test_token_trimming` |
-| **2.5** | `[ ]` | **P1** | **Tái Sử Dụng Connection Pool Cho LTM (No Connection Leaks)**: `long_term.py` phải tái sử dụng `_get_pg_conn()` từ pool của `short_term.py`, không tạo kết nối TCP mới cho mỗi transaction. | [src/agentic/memory/long_term.py](file:///f:/PROJECTS/AIAgent/src/agentic/memory/long_term.py) | Kiểm tra mã nguồn và chạy stress test kiểm tra số lượng connection mở trong Postgres. |
-| **2.6** | `[ ]` | **P1** | **Cơ Chế Dead-Letter Fallback Khi Postgres Mất Kết Nối**: Khi Postgres gián đoạn kết nối, LTM tự động ghi nhận dữ liệu vào local SQLite WAL buffer và đồng bộ lại khi Postgres online. | [src/agentic/memory/long_term.py](file:///f:/PROJECTS/AIAgent/src/agentic/memory/long_term.py) | Chạy chaos test mô phỏng mất kết nối DB:<br>`pytest tests/unit/test_ten_out_of_ten_hardening.py -k test_ltm_dead_letter_fallback` |
+| **2.1** | `[ ]` | **P0** | **Tương Thích PgBouncer & Tránh Lỗi Prepared Statements**: Thiết lập `prepare_threshold=None` trong connection pool Postgres, loại bỏ hoàn toàn lỗi duplicate statement name khi scale qua PgBouncer transaction pooling. | [src/agentic/memory/short_term.py](../../src/agentic/memory/short_term.py) | Chạy unit test kiểm tra pool Postgres:<br>`pytest tests/unit/test_ten_out_of_ten_hardening.py -k test_pgbouncer_compatibility` |
+| **2.2** | `[ ]` | **P0** | **Chữ Ký Toàn Vẹn Dữ Liệu Redis (HMAC-SHA256)**: Kiểm tra chữ ký HMAC trên toàn bộ payload tuần tự hóa trước khi nạp vào RedisSaver, ngăn ngừa tuyệt đối tấn công deserialization injection. | [src/agentic/memory/redis_saver.py](../../src/agentic/memory/redis_saver.py) | Chạy unit test bảo mật chữ ký HMAC:<br>`pytest tests/unit/test_caching_and_security.py -k test_redis_saver_hmac_tampering` |
+| **2.3** | `[ ]` | **P0** | **Đồng Bộ Quản Trị Lược Đồ CSDL (Alembic Migrations)**: Toàn bộ bảng hệ thống (`long_term_memories`, `checkpoints`, `checkpoint_blobs`, `checkpoint_writes`) được quản lý qua migration script; đã test nâng cấp và rollback. | [migrations/](../../migrations/)<br>[scripts/migrate_db.py](../../scripts/migrate_db.py) | Chạy dry-run migration:<br>`alembic upgrade head --sql` |
+| **2.4** | `[ ]` | **P1** | **Thời Hạn Sống Dữ Liệu & Context Trim (Token Budget Trim)**: Khởi tạo cơ chế trim message tokens theo ngưỡng cấu hình (`max_tokens=4000`), kèm TTL tự động xóa checkpoints quá hạn trên Redis (mặc định 7 ngày). | [src/agentic/memory/short_term.py](../../src/agentic/memory/short_term.py) | Chạy unit test token trim:<br>`pytest tests/unit/test_production_hardening.py -k test_token_trimming` |
+| **2.5** | `[ ]` | **P1** | **Tái Sử Dụng Connection Pool Cho LTM (No Connection Leaks)**: `long_term.py` phải tái sử dụng `_get_pg_conn()` từ pool của `short_term.py`, không tạo kết nối TCP mới cho mỗi transaction. | [src/agentic/memory/long_term.py](../../src/agentic/memory/long_term.py) | Kiểm tra mã nguồn và chạy stress test kiểm tra số lượng connection mở trong Postgres. |
+| **2.6** | `[ ]` | **P1** | **Cơ Chế Dead-Letter Fallback Khi Postgres Mất Kết Nối**: Khi Postgres gián đoạn kết nối, LTM tự động ghi nhận dữ liệu vào local SQLite WAL buffer và đồng bộ lại khi Postgres online. | [src/agentic/memory/long_term.py](../../src/agentic/memory/long_term.py) | Chạy chaos test mô phỏng mất kết nối DB:<br>`pytest tests/unit/test_ten_out_of_ten_hardening.py -k test_ltm_dead_letter_fallback` |
 
 ---
 
@@ -68,4 +68,4 @@ Sau khi hệ thống tiếp nhận lưu lượng truy cập thực tế:
 - **Đạt**: _____ / 6
 - **Kết luận**: [ ] ĐẠT (PASS) &nbsp;&nbsp;&nbsp; [ ] CẦN KHẮC PHỤC (REJECT)
 
-> 🎯 **Biên Bản Ký Duyệt**: Kết quả đánh giá của Trụ cột này được tổng hợp và ký duyệt chính thức tại [Bảng Chữ Ký Phê Chuẩn Của Hội Đồng Đánh Giá (Mục 6.3 - REVIEW.md)](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md#63-bảng-chữ-ký-phê-chuẩn-của-hội-đồng-đánh-giá).
+> 🎯 **Biên Bản Ký Duyệt**: Kết quả đánh giá của Trụ cột này được tổng hợp và ký duyệt chính thức tại [Bảng Chữ Ký Phê Chuẩn Của Hội Đồng Đánh Giá (Mục 6.3 - REVIEW.md)](../../.workflows/reviews/REVIEW.md#63-bảng-chữ-ký-phê-chuẩn-của-hội-đồng-đánh-giá).

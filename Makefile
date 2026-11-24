@@ -1,4 +1,4 @@
-.PHONY: install infra-up infra-down serve-vllm serve-llama-chat serve-llama-embed serve-mcp serve-agents dev lint audit test eval eval-deep eval-ragas ingest docker-build load-test db-migrate db-upgrade clean memory-status pre-flight
+.PHONY: install infra-up infra-down serve-vllm serve-llama-chat serve-llama-embed serve-mcp serve-agents dev lint audit test eval eval-deep eval-ragas ingest docker-build load-test db-migrate db-upgrade docs-check clean memory-status pre-flight
 
 install:
 	uv pip install -e ".[dev]"
@@ -67,6 +67,9 @@ docker-build:
 load-test:
 	locust -f tests/load/locustfile.py --host http://localhost:8000
 
+docs-check:
+	python scripts/check_docs.py
+
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 	find . -type d -name ".pytest_cache" -exec rm -rf {} +
@@ -74,5 +77,5 @@ clean:
 memory-status:
 	@cat .memory/activeContext.md
 
-pre-flight: lint test audit
+pre-flight: lint test audit docs-check
 	@echo "All pre-flight quality gates passed successfully!"

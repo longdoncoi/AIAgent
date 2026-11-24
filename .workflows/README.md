@@ -1,35 +1,23 @@
-# .workflows — Quy Trình Thao Tác Chuẩn (Standard Operating Procedures)
+# `.workflows` — bộ định tuyến quy trình
 
-> Thư mục này định nghĩa các quy trình vận hành chuẩn (SOP), các tài liệu đặc tả kỹ thuật và tiêu chuẩn kiểm định độ sẵn sàng phát hành (PRR) dành cho toàn bộ kỹ sư và AI Coding Agent trong dự án `agentic-platform`.
+Chỉ đọc workflow khớp loại thay đổi; skill cung cấp thao tác chuyên biệt.
 
----
+| Nhu cầu | Tài liệu |
+| --- | --- |
+| Quy tắc triển khai chung | [`coding-workflow.md`](coding-workflow.md) |
+| Tính năng/hành vi mới | [`feature-lifecycle.md`](feature-lifecycle.md) |
+| Điều tra và sửa bug | [`bugfix-workflow.md`](bugfix-workflow.md) |
+| Chuẩn bị PR/release | [`pr-preflight.md`](pr-preflight.md) |
+| Kiến trúc theo domain | [`specifications/`](specifications/) |
+| Production Readiness Review | [`reviews/REVIEW.md`](reviews/REVIEW.md) rồi đúng một checklist liên quan |
 
-## 1. Bản Đồ Quy Trình (Workflow Directory Map)
+## Specification routing
 
-| Danh mục | Tài liệu | Mô tả |
-| :--- | :--- | :--- |
-| **Quy trình Lập trình** | [coding-workflow.md](file:///f:/PROJECTS/AIAgent/.workflows/coding-workflow.md) | Quy chuẩn viết code Python 3.12, quy tắc thêm Sub-Agent, MCP Tool và các lệnh vận hành. |
-| **Vòng đời Tính năng** | [feature-lifecycle.md](file:///f:/PROJECTS/AIAgent/.workflows/feature-lifecycle.md) | Vòng đời 5 bước phát triển tính năng mới: Khảo sát -> Spec -> TDD -> Implement -> Verify. |
-| **Quy trình Sửa lỗi** | [bugfix-workflow.md](file:///f:/PROJECTS/AIAgent/.workflows/bugfix-workflow.md) | Quy trình tái hiện lỗi, định vị nguyên nhân gốc, vá lỗi tối thiểu và cập nhật memory. |
-| **Kiểm tra Pre-flight** | [pr-preflight.md](file:///f:/PROJECTS/AIAgent/.workflows/pr-preflight.md) | Checklist kiểm soát chất lượng nghiêm ngặt trước khi tạo Pull Request. |
+- Agent, graph, A2A endpoint: [`specifications/agent-specifications.md`](specifications/agent-specifications.md)
+- A2A/MCP/network/cache: [`specifications/protocols-networking.md`](specifications/protocols-networking.md)
+- Checkpoint/long-term memory: [`specifications/state-memory.md`](specifications/state-memory.md)
+- Guardrail/capability/HITL: [`specifications/safety-hitl.md`](specifications/safety-hitl.md)
+- Trace/metric/eval: [`specifications/observability-evals.md`](specifications/observability-evals.md)
+- Bản đồ phát triển: [`specifications/developer-guidelines.md`](specifications/developer-guidelines.md)
 
----
-
-## 2. Thư Mục Đặc Tả Kỹ Thuật (Specifications)
-
-Toàn bộ đặc tả kỹ thuật chi tiết của hệ thống Multi-Agent nằm tại [specifications/](file:///f:/PROJECTS/AIAgent/.workflows/specifications/):
-- [agent-specifications.md](file:///f:/PROJECTS/AIAgent/.workflows/specifications/agent-specifications.md): Đặc tả LangGraph Supervisor, ChatAgent, RAGAgent, CodingAgent.
-- [protocols-networking.md](file:///f:/PROJECTS/AIAgent/.workflows/specifications/protocols-networking.md): Giao thức A2A, FastMCP Tools, Port Allocation, Caching đa tầng.
-- [state-memory.md](file:///f:/PROJECTS/AIAgent/.workflows/specifications/state-memory.md): Phân tầng bộ nhớ L6, Checkpointer (Postgres/Redis HMAC), Alembic.
-- [safety-hitl.md](file:///f:/PROJECTS/AIAgent/.workflows/specifications/safety-hitl.md): Phòng vệ đa tầng L8, Guardrails, phân cấp rủi ro và Human-in-the-Loop.
-- [observability-evals.md](file:///f:/PROJECTS/AIAgent/.workflows/specifications/observability-evals.md): OpenTelemetry, LangSmith, Prometheus Metrics, DeepEval, RAGAS.
-- [developer-guidelines.md](file:///f:/PROJECTS/AIAgent/.workflows/specifications/developer-guidelines.md): Hướng dẫn chi tiết cho AI & Kỹ sư phát triển.
-
----
-
-## 3. Khung Đánh Giá Sẵn Sàng Vận Hành (Production Readiness Reviews)
-
-Hội đồng kiểm định PRR và toàn bộ 14 trụ cột kiểm định kỹ thuật & 4 khung quản trị nằm tại [reviews/](file:///f:/PROJECTS/AIAgent/.workflows/reviews/):
-- **Cẩm Nang & Dashboard Tổng Thể**: [REVIEW.md](file:///f:/PROJECTS/AIAgent/.workflows/reviews/REVIEW.md) (Master Orchestrator, P0/P1 Criteria & Readiness Dashboard).
-- **14 Trụ cột Kỹ thuật**: Architecture & Protocols, State & Persistence, Caching, Security & HITL, Model Gateway, Quality Gates (DeepEval & RAGAS), Kubernetes & SRE, Observability, CI/CD & GitOps, Disaster Recovery, Testing & QA, Compliance & Privacy, FinOps, Data Governance.
-- **4 Khung Quản trị**: Governance & RACI, Pre-flight Stage Gates, Hypercare & Escalation, Sign-off & Go-Live Approval.
+Không nạp cả `specifications/` hoặc `reviews/` để xử lý một thay đổi cục bộ.
