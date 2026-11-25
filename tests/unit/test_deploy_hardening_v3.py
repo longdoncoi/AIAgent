@@ -354,8 +354,8 @@ def test_dockerfiles_are_pinned_frozen_and_healthchecked(name: str) -> None:
     ]
     body = "\n".join(directives)
     assert (
-        "ARG PYTHON_BASE=python:3.12-slim-bookworm@"
-        "sha256:44cf1793efa7c7a476bb0f2cff81443f4a072c90c1cb127e2924933daa3e8c64"
+        "ARG PYTHON_BASE=python:3.12-slim-trixie@"
+        "sha256:191083cdf6c7bda8c76158983163ead5d5cf7b77cf3033e805bb0f5296f51b4b"
     ) in body
     assert not re.search(r"^FROM python:3\.12-slim\b", body, re.MULTILINE)
     assert "ghcr.io/astral-sh/uv:latest" not in body

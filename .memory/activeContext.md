@@ -28,11 +28,11 @@
 - Release sign-off dùng giao thức hai commit không tự-tham-chiếu: Hội đồng ký source commit `C`; tag trỏ commit attestation `A` chỉ chứa `release-board.json`; CI xác minh `A` có đúng một parent `C` và không có path thay đổi khác.
 - Dockerfiles dùng named stage `uv` cho image UV đã pin digest; không nội suy ARG trong `COPY --from`, vốn bị BuildKit từ chối.
 - Container build + Trivy là merge gate bắt buộc cho cả pull request và push; không còn điều kiện push-only khiến PR bỏ qua image validation.
-- Base runtime Python đã chuyển từ digest Debian 12.12 cũ sang OCI index hiện hành `python:3.12-slim-bookworm@sha256:44cf1793...`; regression buộc cả ba image dùng cùng digest đã rà soát.
+- Base runtime Python đã chuyển từ Bookworm có CVE chưa vá sang OCI index hiện hành `python:3.12-slim-trixie@sha256:191083c...`; regression buộc cả ba image dùng cùng digest đã rà soát.
 
 ## Xác minh mới nhất
 
-- Current committed HEAD là `5c6479e17445c996358e9a73527130ee0903913e`; base-image refresh chưa commit đang ở nhánh `codex/go-live-container-fix`. `evidence/prr/latest.json` tracked không được coi là attestation cho working tree; CI phải tái sinh artifact sau commit.
+- Current committed HEAD là `dba4a5244400fd720fce52cc274fe841fba8920e`; Trixie base migration chưa commit đang ở nhánh `codex/go-live-container-fix`. `evidence/prr/latest.json` tracked không được coi là attestation cho working tree; CI phải tái sinh artifact sau commit.
 - `ruff check .`: PASS.
 - `mypy src/` strict: PASS, 82 source files.
 - Full CI-equivalent suite: `383 passed, 1 skipped in 212.85s`; skip là kiểm thử symlink đặc quyền trên Windows.
@@ -43,7 +43,7 @@
 - YAML parse và `kubectl kustomize deploy/k8s`: PASS.
 - `uv lock --check`: PASS.
 - Production-only `pip-audit` theo lockfile: không phát hiện vulnerability đã biết.
-- PR run `45513419075`: lint/audit, test/eval và validate-deploy PASS; container build đã qua lỗi BuildKit nhưng Trivy chặn base Debian 12.12 cũ vì HIGH/CRITICAL CVE. Digest base hiện hành đã được ghim cục bộ; cần PR CI build/Trivy xanh để xác nhận.
+- PR run `45517004815`: lint/audit, test/eval và validate-deploy PASS; Trivy chặn Bookworm 12.15 với `101` OS vulnerabilities (`99 HIGH`, `2 CRITICAL`). Trixie digest hiện hành đã được ghim cục bộ; cần PR CI build/Trivy xanh để xác nhận.
 - GitHub runtime audit ngày 2026-11-25: repo/staging/production đều có 0 secret và 0 variable; `production` chỉ có 1 required reviewer, `staging` không có reviewer; `main` không có branch protection khả dụng.
 - Runtime preflight ngày 2026-11-24: Docker CLI có nhưng daemon không chạy; `kubectl` không có current context/cluster; không có service production lắng nghe trên các cổng phụ thuộc; các biến kết nối/secret production đều vắng mặt.
 - Strict `python evals/release_gate.py`: FAIL đúng thiết kế với `LLM gateway unreachable — no real generation or LLM judging possible`.
