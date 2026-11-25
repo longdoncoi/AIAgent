@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # Multi-architecture OCI indexes pinned by digest for reproducible builds.
-ARG PYTHON_BASE=python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7
+ARG PYTHON_BASE=python:3.12-slim-bookworm@sha256:44cf1793efa7c7a476bb0f2cff81443f4a072c90c1cb127e2924933daa3e8c64
 ARG UV_VERSION=0.7.13@sha256:6c1e19020ec221986a210027040044a5df8de762eb36d5240e382bc41d7a9043
 
 FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv

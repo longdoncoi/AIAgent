@@ -353,6 +353,10 @@ def test_dockerfiles_are_pinned_frozen_and_healthchecked(name: str) -> None:
         if line.strip() and not line.lstrip().startswith("#")
     ]
     body = "\n".join(directives)
+    assert (
+        "ARG PYTHON_BASE=python:3.12-slim-bookworm@"
+        "sha256:44cf1793efa7c7a476bb0f2cff81443f4a072c90c1cb127e2924933daa3e8c64"
+    ) in body
     assert not re.search(r"^FROM python:3\.12-slim\b", body, re.MULTILINE)
     assert "ghcr.io/astral-sh/uv:latest" not in body
     assert re.search(r"^FROM ghcr\.io/astral-sh/uv:\$\{UV_VERSION\} AS uv$", body, re.MULTILINE)

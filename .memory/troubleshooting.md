@@ -79,3 +79,9 @@
 - Triệu chứng: lint/test/manifest của PR xanh nhưng job `build-and-scan` bị `SKIPPED`; lỗi Dockerfile chỉ xuất hiện sau khi merge/push `main`.
 - Nguyên nhân: job có điều kiện `if: github.event_name == 'push'` dù workflow đã nhận sự kiện pull request.
 - Khắc phục: bỏ điều kiện push-only và thêm regression bắt buộc Docker build + Trivy fail-closed trên PR; publish/CD vẫn giữ tag-only riêng biệt.
+
+## Trivy chặn image do digest base đã cũ
+
+- Triệu chứng: image build thành công nhưng Trivy báo hàng loạt HIGH/CRITICAL OS CVE, ví dụ `apt 2.6.1`, dù tag Python vẫn thuộc dòng 3.12/bookworm.
+- Nguyên nhân: digest bất biến đang trỏ tới snapshot Debian 12.12 cũ; pin digest bảo đảm tái lập nhưng không tự nhận bản vá bảo mật.
+- Khắc phục: tra OCI index hiện hành từ registry, cập nhật đồng bộ cả ba Dockerfile sang digest đã rà soát và thêm regression exact-reference. Không dùng `ignore-unfixed`, severity waiver hoặc hạ `exit-code`; CI phải chứng minh Trivy sạch theo policy hiện hữu.
