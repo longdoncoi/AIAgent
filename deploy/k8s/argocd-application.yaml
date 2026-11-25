@@ -1,0 +1,36 @@
+# ==============================================================================
+# ArgoCD GitOps Application Definition (Zero-Downtime Continuous Delivery)
+# ==============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: agentic-platform-prod
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: agentic-platform
+    env: production
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    # Override repoURL for the target organization before applying this template.
+    repoURL: 'https://github.com/agentic-platform/agentic-platform.git'
+    targetRevision: main
+    path: deploy/overlays/production
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: agentic-platform
+  # GOVERNANCE: production deploys require explicit Release Board sign-off.
+  # Auto-sync/prune/self-heal were removed; sync is MANUAL after attestation.
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - PruneLast=true
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

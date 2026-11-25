@@ -1,0 +1,122 @@
+# ==============================================================================
+# Initial RAG Corpus Bootstrap Job (ArgoCD PostSync / One-Shot Indexer)
+# ------------------------------------------------------------------------------
+# Ensures the shared agentic-rag-data PVC and Qdrant collection are populated
+# on fresh cluster deployments before user queries arrive.
+# ==============================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: agentic-rag-bootstrap
+  namespace: agentic-platform
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+  labels:
+    app: agentic-rag-bootstrap
+    tier: maintenance
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "true"
+        proxy.istio.io/config: '{"holdApplicationUntilProxyStarts":true,"terminationDrainDuration":"5s"}'
+      labels:
+        app: agentic-rag-bootstrap
+        tier: maintenance
+    spec:
+      serviceAccountName: agentic-maintenance-sa
+      automountServiceAccountToken: false
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: rag-data
+          persistentVolumeClaim:
+            claimName: agentic-rag-data
+      initContainers:
+        - name: seed-rag-corpus
+          image: ghcr.io/agentic-platform/agent:IMMUTABLE_SHA_REQUIRED
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -c
+            - >
+              import pathlib, shutil;
+              src = pathlib.Path('/app/data/raw');
+              dst = pathlib.Path('/mnt/rag-data/raw');
+              idx = pathlib.Path('/mnt/rag-data/index');
+              dst.mkdir(parents=True, exist_ok=True);
+              idx.mkdir(parents=True, exist_ok=True);
+              [shutil.copy2(p, dst / p.relative_to(src)) for p in src.rglob('*') if p.is_file() and not (dst / p.relative_to(src)).exists() and ((dst / p.relative_to(src)).parent.mkdir(parents=True, exist_ok=True) or True)]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: rag-data
+              mountPath: /mnt/rag-data
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+      containers:
+        - name: rag-bootstrap
+          image: ghcr.io/agentic-platform/agent:IMMUTABLE_SHA_REQUIRED
+          imagePullPolicy: IfNotPresent
+          command: ["python", "scripts/ingest.py"]
+          env:
+            - name: SERVICE_ROLE
+              value: "maintenance"
+            - name: HF_HOME
+              value: "/opt/hf-cache"
+            - name: HF_HUB_OFFLINE
+              value: "1"
+          envFrom:
+            - configMapRef:
+                name: agentic-config
+            - secretRef:
+                name: agentic-maintenance-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: rag-data
+              mountPath: /app/data/raw
+              subPath: raw
+            - name: rag-data
+              mountPath: /app/data/index
+              subPath: index
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "2Gi"

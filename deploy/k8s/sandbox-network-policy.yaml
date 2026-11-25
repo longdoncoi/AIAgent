@@ -1,0 +1,41 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-default-deny
+  namespace: agentic-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      sandbox: untrusted
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: sandbox-quota
+  namespace: agentic-sandbox
+spec:
+  hard:
+    pods: "20"
+    requests.cpu: "4"
+    requests.memory: "4Gi"
+    limits.cpu: "10"
+    limits.memory: "8Gi"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: sandbox-limits
+  namespace: agentic-sandbox
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: "100m"
+        memory: "64Mi"
+      default:
+        cpu: "500m"
+        memory: "256Mi"
+      max:
+        cpu: "1000m"
+        memory: "512Mi"

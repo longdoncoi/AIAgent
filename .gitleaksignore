@@ -1,0 +1,25 @@
+# Reviewed false-positive fingerprints only. These are historical documentation
+# examples and deterministic unit-test fixtures, not live credentials. Keeping
+# exact fingerprints ensures that any changed or newly introduced value is
+# scanned again instead of suppressing an entire path or detector rule.
+dffd6d9e404f1ade8339feb1fc9bd492be70135f:tests/unit/test_chief_architect_remediations.py:generic-api-key:285
+dffd6d9e404f1ade8339feb1fc9bd492be70135f:tests/unit/test_chief_architect_remediations.py:generic-api-key:1098
+167a9fa010a5187ed33cddc0e02f5f67ca4f7892:tests/unit/test_security_hardening_v3.py:generic-api-key:25
+259c7b352f713ed23959ffd1c8d055e6e23fb6d2:tests/unit/test_full_coverage.py:generic-api-key:465
+259c7b352f713ed23959ffd1c8d055e6e23fb6d2:tests/unit/test_full_coverage.py:generic-api-key:500
+259c7b352f713ed23959ffd1c8d055e6e23fb6d2:tests/unit/test_production_hardening.py:generic-api-key:153
+259c7b352f713ed23959ffd1c8d055e6e23fb6d2:tests/unit/test_security_hardening_v3.py:generic-api-key:152
+259c7b352f713ed23959ffd1c8d055e6e23fb6d2:tests/unit/test_security_hardening_v3.py:generic-api-key:240
+259c7b352f713ed23959ffd1c8d055e6e23fb6d2:tests/unit/test_security_hardening_v3.py:generic-api-key:29
+259c7b352f713ed23959ffd1c8d055e6e23fb6d2:tests/unit/test_security_hardening_v3.py:generic-api-key:77
+b8da545bdb08696cde78bc30d267040784659fcd:.workflows/reviews/REVIEW_MODEL GATEWAY & INFERENCE.md:curl-auth-header:40
+b8da545bdb08696cde78bc30d267040784659fcd:tests/unit/test_ragas_and_langsmith.py:generic-api-key:52
+e0358bbb3b7b22ea88da8b3169162d2d4674eb10:.workflows/reviews/REVIEW_MODEL GATEWAY & INFERENCE.md:curl-auth-header:40
+e0358bbb3b7b22ea88da8b3169162d2d4674eb10:tests/unit/test_full_coverage.py:generic-api-key:466
+e0358bbb3b7b22ea88da8b3169162d2d4674eb10:tests/unit/test_full_coverage.py:generic-api-key:503
+e0358bbb3b7b22ea88da8b3169162d2d4674eb10:tests/unit/test_production_hardening.py:generic-api-key:153
+e0358bbb3b7b22ea88da8b3169162d2d4674eb10:tests/unit/test_ragas_and_langsmith.py:generic-api-key:52
+e0358bbb3b7b22ea88da8b3169162d2d4674eb10:tests/unit/test_security_hardening_v3.py:generic-api-key:153
+e0358bbb3b7b22ea88da8b3169162d2d4674eb10:tests/unit/test_security_hardening_v3.py:generic-api-key:242
+e0358bbb3b7b22ea88da8b3169162d2d4674eb10:tests/unit/test_security_hardening_v3.py:generic-api-key:30
+e0358bbb3b7b22ea88da8b3169162d2d4674eb10:tests/unit/test_security_hardening_v3.py:generic-api-key:78

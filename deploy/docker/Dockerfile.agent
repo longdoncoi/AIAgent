@@ -1,0 +1,58 @@
+# syntax=docker/dockerfile:1.7
+# Multi-architecture OCI indexes pinned by digest; see Dockerfile.api.
+ARG PYTHON_BUILD=cgr.dev/chainguard/python:latest-dev@sha256:9b8ff973c08881c8fee6b26afd2e9ef2ed0ede398a3c1a47d4d177adb3ff14fb
+ARG PYTHON_RUNTIME=cgr.dev/chainguard/python:latest@sha256:1664d9bfd1b02ab52dffaa70e49202296c33eb776a61fec991f344c7d256374d
+ARG UV_VERSION=0.13.10@sha256:a3ea1357342c1a4bf9a0c53a3deb1b55379aefa037338d8113d5771efa01774f
+
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+
+# Stage 1: Build & Dependencies
+FROM ${PYTHON_BUILD} AS builder
+
+USER root
+
+WORKDIR /app
+
+COPY --from=uv /uv /usr/local/bin/uv
+
+ENV VIRTUAL_ENV=/opt/venv \
+    UV_CACHE_DIR=/tmp/uv-cache \
+    UV_LINK_MODE=copy
+RUN uv venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+COPY pyproject.toml uv.lock README.md ./
+COPY src ./src
+# Production enforces the neural reranker + embedding service: ship them.
+RUN uv sync --frozen --no-dev --extra neural --active
+# Bridge Python 3.15 stdlib dataclasses._MISSING_TYPE removal for huggingface_hub
+RUN python -c "import pathlib, site; p = pathlib.Path(site.getsitepackages()[0]) / '_py315_dataclasses_compat.pth'; p.write_text('import dataclasses; hasattr(dataclasses, \"_MISSING_TYPE\") or setattr(dataclasses, \"_MISSING_TYPE\", type(dataclasses.MISSING))\n')" && \
+    mkdir -p /opt/hf-cache && \
+    HF_HOME="/opt/hf-cache" python -c "import rank_bm25, sentence_transformers; from sentence_transformers import CrossEncoder; CrossEncoder('BAAI/bge-reranker-base', revision='2cfc18c9415c912f9d8155881c133215df768a70')"
+
+# Stage 2: Hardened Non-Root Runtime
+FROM ${PYTHON_RUNTIME} AS runtime
+
+WORKDIR /app
+
+COPY --from=builder --chown=65532:65532 /opt/venv /opt/venv
+COPY --from=builder --chown=65532:65532 /opt/hf-cache /opt/hf-cache
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY --chown=65532:65532 . /app
+
+USER 65532:65532
+ENTRYPOINT []
+
+ENV AGENT_MODULE="src.agentic.agents.chat.server"
+ENV AGENT_PORT=9100
+ENV HF_HOME="/opt/hf-cache"
+ENV HF_HUB_OFFLINE="1"
+
+EXPOSE 9100 9101 9102
+
+# A2A servers expose GET /health (create_a2a_server). No auth token needed.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=15s --retries=3 \
+    CMD ["python", "-c", "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.environ['AGENT_PORT']+'/health', timeout=5)"]
+
+CMD ["python", "-m", "src.agentic.runtime_entrypoint", "agent"]

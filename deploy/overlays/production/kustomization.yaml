@@ -1,0 +1,45 @@
+# ==============================================================================
+# Production Environment Overlay Template (Kustomize)
+# ------------------------------------------------------------------------------
+# Replace every cluster-specific template value through the approved GitOps
+# promotion process before deploying.
+# ==============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../k8s
+  - vllm-scheduled-scaling.yaml
+
+patches:
+  - target:
+      kind: Ingress
+      name: agentic-platform-ingress
+    patch: |-
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: api.prod.company.internal
+      - op: replace
+        path: /spec/rules/0/host
+        value: api.prod.company.internal
+  - target:
+      kind: SecretStore
+      name: agentic-vault-store
+    patch: |-
+      - op: replace
+        path: /spec/provider/vault/server
+        value: https://vault.prod.company.internal:8200
+  - target:
+      kind: PersistentVolumeClaim
+      name: agentic-rag-data
+    patch: |-
+      - op: replace
+        path: /spec/storageClassName
+        value: efs-sc
+  - target:
+      kind: PersistentVolumeClaim
+      name: agentic-mcp-scratch
+    patch: |-
+      - op: replace
+        path: /spec/storageClassName
+        value: efs-sc

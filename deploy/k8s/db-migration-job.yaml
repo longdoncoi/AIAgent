@@ -1,0 +1,76 @@
+# ==============================================================================
+# Database Alembic Migration Job (ArgoCD Sync Wave 1)
+# ------------------------------------------------------------------------------
+# Runs `alembic upgrade head` AFTER Namespace, ServiceAccounts, ConfigMap,
+# ExternalSecrets, NetworkPolicies, and PostgreSQL exist (wave <= 0), and
+# BEFORE API/Agent Deployments start (wave 2).
+# ==============================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: agentic-db-migrate
+  namespace: agentic-platform
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  labels:
+    app: agentic-db-migrate
+    tier: maintenance
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "true"
+        proxy.istio.io/config: '{"holdApplicationUntilProxyStarts":true,"terminationDrainDuration":"5s"}'
+      labels:
+        app: agentic-db-migrate
+        tier: maintenance
+    spec:
+      serviceAccountName: agentic-maintenance-sa
+      automountServiceAccountToken: false
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      containers:
+        - name: db-migrate
+          image: ghcr.io/agentic-platform/api:IMMUTABLE_SHA_REQUIRED
+          imagePullPolicy: IfNotPresent
+          command: ["python", "scripts/migrate_db.py"]
+          env:
+            - name: SERVICE_ROLE
+              value: "maintenance"
+            - name: STRICT_MIGRATION
+              value: "true"
+          envFrom:
+            - configMapRef:
+                name: agentic-config
+            - secretRef:
+                name: agentic-maintenance-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

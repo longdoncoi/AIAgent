@@ -1,0 +1,144 @@
+# ==============================================================================
+# Durable Temporal Worker Deployment (CDC RAG Ingestion & Long-Running Tasks)
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentic-temporal-worker
+  namespace: agentic-platform
+  labels:
+    app: agentic-temporal-worker
+    tier: l10-workflows
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: agentic-temporal-worker
+  template:
+    metadata:
+      labels:
+        app: agentic-temporal-worker
+        tier: l10-workflows
+    spec:
+      serviceAccountName: agentic-temporal-worker-sa
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: rag-data
+          persistentVolumeClaim:
+            claimName: agentic-rag-data
+      initContainers:
+        - name: seed-rag-corpus
+          image: ghcr.io/agentic-platform/agent:IMMUTABLE_SHA_REQUIRED
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -c
+            - >
+              import pathlib, shutil;
+              src = pathlib.Path('/app/data/raw');
+              dst = pathlib.Path('/mnt/rag-data/raw');
+              idx = pathlib.Path('/mnt/rag-data/index');
+              dst.mkdir(parents=True, exist_ok=True);
+              idx.mkdir(parents=True, exist_ok=True);
+              [shutil.copy2(p, dst / p.relative_to(src)) for p in src.rglob('*') if p.is_file() and not (dst / p.relative_to(src)).exists() and ((dst / p.relative_to(src)).parent.mkdir(parents=True, exist_ok=True) or True)]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: rag-data
+              mountPath: /mnt/rag-data
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+      containers:
+        - name: temporal-worker
+          image: ghcr.io/agentic-platform/agent:IMMUTABLE_SHA_REQUIRED
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "src.agentic.runtime_entrypoint", "temporal"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: rag-data
+              mountPath: /app/data/raw
+              subPath: raw
+            - name: rag-data
+              mountPath: /app/data/index
+              subPath: index
+          env:
+            - name: SERVICE_ROLE
+              value: "maintenance"
+            - name: TEMPORAL_WORKER_MODULE
+              value: "src.agentic.workflows.worker"
+            - name: TEMPORAL_WORKER_HEALTH_PORT
+              value: "9105"
+            - name: HF_HOME
+              value: "/opt/hf-cache"
+            - name: HF_HUB_OFFLINE
+              value: "1"
+          envFrom:
+            - configMapRef:
+                name: agentic-config
+            - secretRef:
+                name: agentic-temporal-secrets
+          ports:
+            - name: health
+              containerPort: 9105
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "2Gi"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9105
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9105
+            initialDelaySeconds: 10
+            periodSeconds: 10
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: agentic-temporal-worker-pdb
+  namespace: agentic-platform
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: agentic-temporal-worker

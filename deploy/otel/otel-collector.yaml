@@ -1,0 +1,52 @@
+# ==============================================================================
+# OpenTelemetry Collector Configuration (Enterprise Production Standard)
+# ------------------------------------------------------------------------------
+# Canonical collector config. The runnable workload (ServiceAccount + ConfigMap
+# + Deployment + Service `otel-collector-svc:4317`) lives in
+# deploy/k8s/otel-collector.yaml and IS included in the kustomization.
+# ==============================================================================
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 256
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 20
+
+exporters:
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: "agentic"
+  otlp/tempo:
+    endpoint: "tempo:4317"
+    tls:
+      insecure: true
+  logging:
+    verbosity: basic
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  extensions: [health_check, zpages]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/tempo, logging]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]

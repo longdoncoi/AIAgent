@@ -1,0 +1,571 @@
+# ==============================================================================
+# Kubernetes NetworkPolicies: Defense-in-Depth East-West Isolation
+# ------------------------------------------------------------------------------
+# Every egress rule has an explicit destination (podSelector / namespaceSelector
+# or ipBlock). Unscoped "ports-only" egress was removed: it implicitly allowed
+# the entire cluster AND the public internet on those ports.
+# ==============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: agentic-platform
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Cluster DNS is required by every workload; keep it narrow (kube-system only).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-cluster-dns
+  namespace: agentic-platform
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+---
+# Allow API to receive traffic on 8000 and reach sub-agents,
+# pgBouncer and infrastructure services. Caller identity is enforced at the
+# mesh layer by Istio AuthorizationPolicy `allow-ingress-to-api`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-agentic-api
+  namespace: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: agentic-api
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: istio-system
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8000
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              tier: l3-agent
+      ports:
+        - {protocol: TCP, port: 9100}
+        - {protocol: TCP, port: 9101}
+        - {protocol: TCP, port: 9102}
+    # Database traffic terminates at pgBouncer (tier: database-pooler).
+    - to:
+        - podSelector:
+            matchLabels:
+              tier: database-pooler
+      ports:
+        - {protocol: TCP, port: 5432}
+        - {protocol: TCP, port: 6432}
+    # Stateful infrastructure / model gateway / telemetry inside cluster CIDR.
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/8
+            except: ["169.254.169.254/32"]
+      ports:
+        - {protocol: TCP, port: 5432}  # postgres-svc direct (migrations)
+        - {protocol: TCP, port: 6379}  # Redis
+        - {protocol: TCP, port: 6333}  # Qdrant
+        - {protocol: TCP, port: 4000}  # LiteLLM
+        - {protocol: TCP, port: 4317}  # OTel Collector
+        - {protocol: TCP, port: 7233}  # Temporal Frontend gRPC
+        - {protocol: TCP, port: 8081}  # Embedding service (/readyz probe)
+        - {protocol: TCP, port: 443}   # Internal OIDC / IdP JWKS endpoints
+    # External OIDC / IdP JWKS egress over TLS (blocks RFC1918 and cloud metadata SSRF).
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.169.254/32
+              - 127.0.0.0/8
+      ports:
+        - {protocol: TCP, port: 443}
+---
+# Allow Sub-Agents to accept API calls and reach Model Gateway and telemetry.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-subagents
+  namespace: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      tier: l3-agent
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: agentic-api
+        - podSelector:
+            matchLabels:
+              app: agentic-temporal-worker
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - {protocol: TCP, port: 9100}
+        - {protocol: TCP, port: 9101}
+        - {protocol: TCP, port: 9102}
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/8
+            except: ["169.254.169.254/32"]
+      ports:
+        - {protocol: TCP, port: 4000}  # LiteLLM
+        - {protocol: TCP, port: 4317}  # OTel Collector
+---
+# Allow RAG Agent to query Qdrant, Embedding Service, and Redis L2 cache.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-rag-agent-datastores
+  namespace: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: agentic-rag-agent
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/8
+            except: ["169.254.169.254/32"]
+      ports:
+        - {protocol: TCP, port: 6333}  # Qdrant
+        - {protocol: TCP, port: 8081}  # Embedding service
+        - {protocol: TCP, port: 6379}  # Redis L2 RAGCache
+---
+# Least-privilege tool routes: chat -> web search, coding -> repo/code exec.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-chat-to-web-search
+  namespace: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: agentic-chat-agent
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: agentic-mcp-web-search
+      ports:
+        - {protocol: TCP, port: 9003}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-coding-to-approved-tools
+  namespace: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: agentic-coding-agent
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: agentic-mcp-code-exec
+      ports:
+        - {protocol: TCP, port: 9001}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: agentic-mcp-repo
+      ports:
+        - {protocol: TCP, port: 9002}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-code-exec-ingress
+  namespace: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: agentic-mcp-code-exec
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: agentic-coding-agent
+      ports:
+        - {protocol: TCP, port: 9001}
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/8
+            except: ["169.254.169.254/32"]
+        - ipBlock:
+            cidr: 172.16.0.0/12
+            except: ["169.254.169.254/32"]
+      ports:
+        - {protocol: TCP, port: 4317}  # OTel Collector
+        - {protocol: TCP, port: 6379}  # Redis (HITL one-time nonce store)
+        - {protocol: TCP, port: 443}   # Kubernetes API (gVisor sandbox pod control)
+        - {protocol: TCP, port: 6443}  # Kubernetes API server alt HTTPS port
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-repo-ingress
+  namespace: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: agentic-mcp-repo
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: agentic-coding-agent
+      ports:
+        - {protocol: TCP, port: 9002}
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/8
+            except: ["169.254.169.254/32"]
+      ports:
+        - {protocol: TCP, port: 4317}
+        - {protocol: TCP, port: 6379}  # Redis (HITL one-time nonce store)
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-web-search-ingress-egress
+  namespace: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: agentic-mcp-web-search
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: agentic-chat-agent
+      ports:
+        - {protocol: TCP, port: 9003}
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/8
+            except: ["169.254.169.254/32"]
+      ports:
+        - {protocol: TCP, port: 4317}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: ["10.0.0.0/8", "169.254.169.254/32"]
+      ports:
+        - {protocol: TCP, port: 443}   # external web search APIs only
+---
+# pgBouncer: previously selected by default-deny but allowed by NO rule, so it
+# could neither accept connections nor reach postgres. Restore both paths.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-pgbouncer
+  namespace: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: pgbouncer
+      tier: database-pooler
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: agentic-api
+        - podSelector:
+            matchLabels:
+              tier: l3-agent
+        - podSelector:
+            matchLabels:
+              app: agentic-db-backup
+        - podSelector:
+            matchLabels:
+              app: agentic-temporal-worker
+        - podSelector:
+            matchLabels:
+              app: agentic-checkpoint-retention
+      ports:
+        - {protocol: TCP, port: 5432}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres-svc
+      ports:
+        - {protocol: TCP, port: 5432}
+    # Fallback for Postgres exposed as a Service without matching pod labels.
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/8
+            except: ["169.254.169.254/32"]
+      ports:
+        - {protocol: TCP, port: 5432}
+---
+# OTel Collector accepts OTLP from every application tier.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-otel-collector
+  namespace: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: otel-collector
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: agentic-api
+        - podSelector:
+            matchLabels:
+              tier: l3-agent
+        - podSelector:
+            matchLabels:
+              tier: l4-tools
+        - podSelector:
+            matchLabels:
+              app: agentic-db-backup
+        - podSelector:
+            matchLabels:
+              app: agentic-temporal-worker
+      ports:
+        - {protocol: TCP, port: 4317}
+        - {protocol: TCP, port: 4318}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - {protocol: TCP, port: 8889}
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/8
+            except: ["169.254.169.254/32"]
+      ports:
+        - {protocol: TCP, port: 4317}  # Tempo backend
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-tempo-from-otel
+  namespace: agentic-platform
+spec:
+  podSelector:
+    matchLabels: {app: tempo}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app: otel-collector}
+      ports:
+        - {protocol: TCP, port: 4317}
+---
+# Database backup workload: may read Postgres via pgBouncer/postgres and write
+# encrypted objects to approved object storage over TLS. No inbound needed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-db-backup
+  namespace: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: agentic-db-backup
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: pgbouncer
+        - podSelector:
+            matchLabels:
+              app: postgres
+        - ipBlock:
+            cidr: 10.0.0.0/8
+            except: ["169.254.169.254/32"]
+      ports:
+        - {protocol: TCP, port: 5432}
+        - {protocol: TCP, port: 6432}
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/8
+            except: ["169.254.169.254/32"]
+      ports:
+        - {protocol: TCP, port: 4317}  # OTel Collector
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: ["10.0.0.0/8", "169.254.169.254/32"]
+      ports:
+        - {protocol: TCP, port: 443}  # S3/GCS object storage backup target
+---
+# Scheduled checkpoint retention only needs PostgreSQL access.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-checkpoint-retention
+  namespace: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: agentic-checkpoint-retention
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: pgbouncer
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - {protocol: TCP, port: 5432}
+---
+# Temporal worker needs Temporal gRPC (7233), A2A sub-agents, and RAG/DB datastores.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-temporal-worker
+  namespace: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: agentic-temporal-worker
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              tier: l3-agent
+      ports:
+        - {protocol: TCP, port: 9100}
+        - {protocol: TCP, port: 9101}
+        - {protocol: TCP, port: 9102}
+    - to:
+        - podSelector:
+            matchLabels:
+              tier: database-pooler
+      ports:
+        - {protocol: TCP, port: 5432}
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/8
+            except: ["169.254.169.254/32"]
+      ports:
+        - {protocol: TCP, port: 7233}  # Temporal Server
+        - {protocol: TCP, port: 6333}  # Qdrant
+        - {protocol: TCP, port: 8081}  # Embedding service
+        - {protocol: TCP, port: 6379}  # Redis
+        - {protocol: TCP, port: 4317}  # OTel Collector
+        - {protocol: TCP, port: 5432}  # PostgreSQL
+---
+# PreSync database migration Job needs direct PostgreSQL access only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-db-migrate
+  namespace: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: agentic-db-migrate
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+        - ipBlock:
+            cidr: 10.0.0.0/8
+            except: ["169.254.169.254/32"]
+      ports:
+        - {protocol: TCP, port: 5432}
+---
+# Qdrant snapshot backup CronJob needs Qdrant (6333) and HTTPS offsite upload.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-qdrant-backup
+  namespace: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: agentic-qdrant-backup
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/8
+            except: ["169.254.169.254/32"]
+      ports:
+        - {protocol: TCP, port: 6333}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: ["10.0.0.0/8", "169.254.169.254/32"]
+      ports:
+        - {protocol: TCP, port: 443}
+---
+# Initial RAG bootstrap Job needs Qdrant (6333) and Embedding service (8081).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-rag-bootstrap
+  namespace: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: agentic-rag-bootstrap
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/8
+            except: ["169.254.169.254/32"]
+      ports:
+        - {protocol: TCP, port: 6333}
+        - {protocol: TCP, port: 8081}
+        - {protocol: TCP, port: 4317}

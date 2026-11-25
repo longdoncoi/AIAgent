@@ -1,0 +1,50 @@
+# syntax=docker/dockerfile:1.7
+# Multi-architecture OCI indexes pinned by digest for reproducible builds.
+ARG PYTHON_BUILD=cgr.dev/chainguard/python:latest-dev@sha256:9b8ff973c08881c8fee6b26afd2e9ef2ed0ede398a3c1a47d4d177adb3ff14fb
+ARG PYTHON_RUNTIME=cgr.dev/chainguard/python:latest@sha256:1664d9bfd1b02ab52dffaa70e49202296c33eb776a61fec991f344c7d256374d
+ARG UV_VERSION=0.13.10@sha256:a3ea1357342c1a4bf9a0c53a3deb1b55379aefa037338d8113d5771efa01774f
+
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+
+# Stage 1: Build & Dependencies
+FROM ${PYTHON_BUILD} AS builder
+
+USER root
+
+WORKDIR /app
+
+COPY --from=uv /uv /usr/local/bin/uv
+
+ENV VIRTUAL_ENV=/opt/venv \
+    UV_CACHE_DIR=/tmp/uv-cache \
+    UV_LINK_MODE=copy
+RUN uv venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+# Frozen lockfile install (API orchestrates over A2A; no neural weights needed).
+COPY pyproject.toml uv.lock README.md ./
+COPY src ./src
+RUN uv sync --frozen --no-dev --active
+
+# Stage 2: Hardened Non-Root Runtime
+FROM ${PYTHON_RUNTIME} AS runtime
+
+WORKDIR /app
+
+COPY --from=builder --chown=65532:65532 /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY --chown=65532:65532 . /app
+
+USER 65532:65532
+
+# The minimal runtime has no shell; override its default Python entrypoint so
+# the image command is executed directly from the locked virtual environment.
+ENTRYPOINT []
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=15s --retries=3 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)"]
+
+CMD ["uvicorn", "src.agentic.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

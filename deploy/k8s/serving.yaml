@@ -1,0 +1,488 @@
+# ==============================================================================
+# Self-Contained Model Serving & Gateway Stack (vLLM, Embedding, LiteLLM Proxy)
+# ------------------------------------------------------------------------------
+# Included directly in deploy/k8s/kustomization.yaml so base manifests are
+# complete and deploy/docs runbook references (e.g. deployment/vllm) resolve.
+# Override GPU resources / replicas / model images via production Kustomize overlay.
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  namespace: agentic-platform
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  labels:
+    app: vllm
+    tier: l7-serving
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm
+  template:
+    metadata:
+      labels:
+        app: vllm
+        tier: l7-serving
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:v0.7.3@sha256:4f4037303e8c7b69439db1077bb849a0823517c0f785b894dc8e96d58ef3a0c2
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--model"
+            - "Qwen/Qwen2.5-72B-Instruct"
+            - "--port"
+            - "8001"
+            - "--max-model-len"
+            - "32768"
+            - "--tensor-parallel-size"
+            - "4"
+            - "--enable-auto-tool-choice"
+            - "--tool-call-parser"
+            - "hermes"
+            - "--enable-prefix-caching"
+          ports:
+            - containerPort: 8001
+              name: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          readinessProbe:
+            tcpSocket:
+              port: 8001
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "2"
+              memory: "8Gi"
+            limits:
+              cpu: "8"
+              memory: "32Gi"
+              nvidia.com/gpu: 4
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-svc
+  namespace: agentic-platform
+  labels:
+    app: vllm
+    tier: l7-serving
+spec:
+  selector:
+    app: vllm
+  ports:
+    - port: 8001
+      targetPort: 8001
+      protocol: TCP
+      name: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-coding
+  namespace: agentic-platform
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: vllm-coding}
+  template:
+    metadata:
+      labels: {app: vllm-coding, tier: l7-serving}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: vllm-coding
+          image: vllm/vllm-openai:v0.7.3@sha256:4f4037303e8c7b69439db1077bb849a0823517c0f785b894dc8e96d58ef3a0c2
+          args:
+            - "--model"
+            - "Qwen/Qwen2.5-Coder-32B-Instruct"
+            - "--port"
+            - "8002"
+            - "--tensor-parallel-size"
+            - "2"
+            - "--enable-auto-tool-choice"
+            - "--tool-call-parser"
+            - "hermes"
+            - "--enable-prefix-caching"
+          ports: [{containerPort: 8002, name: http}]
+          readinessProbe: {tcpSocket: {port: 8002}, initialDelaySeconds: 30, periodSeconds: 10}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: {drop: ["ALL"]}
+            seccompProfile: {type: RuntimeDefault}
+          resources:
+            requests: {cpu: "2", memory: "8Gi"}
+            limits: {cpu: "8", memory: "32Gi", nvidia.com/gpu: 2}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: vllm-coding-svc, namespace: agentic-platform}
+spec:
+  selector: {app: vllm-coding}
+  ports: [{port: 8002, targetPort: 8002, protocol: TCP, name: http}]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agentic-model-cache
+  namespace: agentic-platform
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  accessModes: ["ReadWriteMany"]
+  storageClassName: efs-sc
+  resources:
+    requests: {storage: 100Gi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llama-fast
+  namespace: agentic-platform
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: llama-fast}
+  template:
+    metadata:
+      labels: {app: llama-fast, tier: l7-serving}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: llama-fast
+          image: ghcr.io/ggml-org/llama.cpp:server-b5350@sha256:8a0a31d0b342f96b2c5453eedadbb0544d6d426bd43c9ea6f62b2bd2489be676
+          args: ["--host", "0.0.0.0", "--port", "8080", "--model", "/models/Qwen2.5-14B-Instruct-Q4_K_M.gguf"]
+          ports: [{containerPort: 8080, name: http}]
+          readinessProbe: {tcpSocket: {port: 8080}, initialDelaySeconds: 20, periodSeconds: 10}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+            seccompProfile: {type: RuntimeDefault}
+          resources:
+            requests: {cpu: "2", memory: "8Gi"}
+            limits: {cpu: "8", memory: "20Gi"}
+          volumeMounts: [{name: models, mountPath: /models, readOnly: true}]
+      volumes: [{name: models, persistentVolumeClaim: {claimName: agentic-model-cache}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: llama-fast-svc, namespace: agentic-platform}
+spec:
+  selector: {app: llama-fast}
+  ports: [{port: 8080, targetPort: 8080, protocol: TCP, name: http}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llama-chat-backup
+  namespace: agentic-platform
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: llama-chat-backup}
+  template:
+    metadata:
+      labels: {app: llama-chat-backup, tier: l7-serving}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: llama-chat-backup
+          image: ghcr.io/ggml-org/llama.cpp:server-b5350@sha256:8a0a31d0b342f96b2c5453eedadbb0544d6d426bd43c9ea6f62b2bd2489be676
+          args: ["--host", "0.0.0.0", "--port", "8080", "--model", "/models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"]
+          ports: [{containerPort: 8080, name: http}]
+          readinessProbe: {tcpSocket: {port: 8080}, initialDelaySeconds: 20, periodSeconds: 10}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+            seccompProfile: {type: RuntimeDefault}
+          resources:
+            requests: {cpu: "1", memory: "4Gi"}
+            limits: {cpu: "4", memory: "10Gi"}
+          volumeMounts: [{name: models, mountPath: /models, readOnly: true}]
+      volumes: [{name: models, persistentVolumeClaim: {claimName: agentic-model-cache}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: llama-chat-backup-svc, namespace: agentic-platform}
+spec:
+  selector: {app: llama-chat-backup}
+  ports: [{port: 8080, targetPort: 8080, protocol: TCP, name: http}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: embedding
+  namespace: agentic-platform
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  labels:
+    app: embedding
+    tier: l7-serving
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: embedding
+  template:
+    metadata:
+      labels:
+        app: embedding
+        tier: l7-serving
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: embedding
+          image: ghcr.io/ggml-org/llama.cpp:server-b5350@sha256:8a0a31d0b342f96b2c5453eedadbb0544d6d426bd43c9ea6f62b2bd2489be676
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8081"
+            - "--embedding"
+            - "--pooling"
+            - "cls"
+          ports:
+            - containerPort: 8081
+              name: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          readinessProbe:
+            tcpSocket:
+              port: 8081
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: embedding-svc
+  namespace: agentic-platform
+  labels:
+    app: embedding
+    tier: l7-serving
+spec:
+  selector:
+    app: embedding
+  ports:
+    - port: 8081
+      targetPort: 8081
+      protocol: TCP
+      name: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm
+  namespace: agentic-platform
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  labels:
+    app: litellm
+    tier: l7-gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: litellm
+  template:
+    metadata:
+      labels:
+        app: litellm
+        tier: l7-gateway
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: litellm
+          image: ghcr.io/berriai/litellm:main-v1.63.0@sha256:9beb998780c7172d164e8c9fcfa82479efe3d64401ac1deecaead7405f88f5f5
+          imagePullPolicy: IfNotPresent
+          args: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "2"]
+          env:
+            - {name: REASONING_LLM_API_BASE, value: "http://vllm-svc:8001/v1"}
+            - {name: FAST_LLM_API_BASE, value: "http://llama-fast-svc:8080/v1"}
+            - {name: CODING_LLM_API_BASE, value: "http://vllm-coding-svc:8002/v1"}
+            - {name: LLAMA_BACKUP_API_BASE, value: "http://llama-chat-backup-svc:8080/v1"}
+            - {name: EMBEDDING_API_BASE, value: "http://embedding-svc:8081/v1"}
+          ports:
+            - containerPort: 4000
+              name: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          readinessProbe:
+            tcpSocket:
+              port: 4000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          volumeMounts:
+            - name: litellm-config
+              mountPath: /app/config.yaml
+              subPath: config.yaml
+              readOnly: true
+      volumes:
+        - name: litellm-config
+          configMap:
+            name: litellm-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm-svc
+  namespace: agentic-platform
+  labels:
+    app: litellm
+    tier: l7-gateway
+spec:
+  selector:
+    app: litellm
+  ports:
+    - port: 4000
+      targetPort: 4000
+      protocol: TCP
+      name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-model-serving
+  namespace: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      tier: l7-serving
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              tier: l7-gateway
+        - podSelector:
+            matchLabels:
+              tier: l3-agent
+        - podSelector:
+            matchLabels:
+              app: agentic-api
+        - podSelector:
+            matchLabels:
+              tier: maintenance
+      ports:
+        - {protocol: TCP, port: 8001}
+        - {protocol: TCP, port: 8081}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-litellm-gateway
+  namespace: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: litellm
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: agentic-api
+        - podSelector:
+            matchLabels:
+              tier: l3-agent
+        - podSelector:
+            matchLabels:
+              app: agentic-temporal-worker
+      ports:
+        - {protocol: TCP, port: 4000}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              tier: l7-serving
+      ports:
+        - {protocol: TCP, port: 8001}
+        - {protocol: TCP, port: 8081}
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/8
+            except: ["169.254.169.254/32"]
+      ports:
+        - {protocol: TCP, port: 5432}
+        - {protocol: TCP, port: 8001}
+        - {protocol: TCP, port: 8002}
+        - {protocol: TCP, port: 8080}
+        - {protocol: TCP, port: 8081}

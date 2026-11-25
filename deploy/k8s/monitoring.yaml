@@ -1,0 +1,212 @@
+# ==============================================================================
+# Prometheus Operator: ServiceMonitor + PrometheusRule
+# ------------------------------------------------------------------------------
+# deploy/monitoring/alerts.yaml is the canonical alert source; these manifests
+# mirror it into the Kustomize base so alerts are actually deployed.
+# ==============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: agentic-platform-servicemonitor
+  namespace: agentic-platform
+  labels:
+    app: agentic-platform
+    release: prometheus
+spec:
+  namespaceSelector:
+    matchNames:
+      - agentic-platform
+  selector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - agentic-api
+          - agentic-chat-agent
+          - agentic-rag-agent
+          - agentic-coding-agent
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: otel-collector-servicemonitor
+  namespace: agentic-platform
+  labels:
+    app: otel-collector
+    release: prometheus
+spec:
+  namespaceSelector:
+    matchNames:
+      - agentic-platform
+  selector:
+    matchLabels:
+      app: otel-collector
+  endpoints:
+    - port: prometheus
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: agentic-platform-alerts
+  namespace: agentic-platform
+  labels:
+    app: agentic-platform
+    release: prometheus
+spec:
+  groups:
+    - name: agentic_platform_alerts
+      rules:
+        - alert: HighAPIErrorRate
+          expr: |
+            sum(rate(agent_request_duration_seconds_count{status="error"}[5m]))
+            /
+            sum(rate(agent_request_duration_seconds_count[5m])) > 0.001
+          for: 2m
+          labels:
+            severity: critical
+            tier: l1-interface
+          annotations:
+            summary: "API error rate exceeds the 99.9% availability SLO"
+            description: "High rate of failed requests detected on Agentic Platform API."
+        - alert: APIErrorBudgetFastBurn
+          expr: |
+            (
+              sum(rate(agent_request_duration_seconds_count{status="error"}[5m]))
+              / sum(rate(agent_request_duration_seconds_count[5m])) > (14.4 * 0.001)
+            ) and (
+              sum(rate(agent_request_duration_seconds_count{status="error"}[1h]))
+              / sum(rate(agent_request_duration_seconds_count[1h])) > (14.4 * 0.001)
+            )
+          for: 2m
+          labels: {severity: critical, tier: l1-interface}
+          annotations:
+            summary: "API availability error budget is burning rapidly"
+            description: "The 5m and 1h windows both exceed the 14.4x burn-rate threshold."
+        - alert: BackupJobFailed
+          expr: |
+            kube_job_status_failed{namespace="agentic-platform",job_name=~"agentic-(db|qdrant)-backup.*"} > 0
+          for: 0m
+          labels: {severity: critical, tier: backup}
+          annotations:
+            summary: "A production backup job failed"
+            description: "Inspect the failed Postgres or Qdrant backup job and offsite upload logs."
+        - alert: HighLLMLatencyP99
+          expr: |
+            histogram_quantile(0.99, sum(rate(agent_node_duration_seconds_bucket{node_name=~"planner|reflector|finalize"}[5m])) by (le)) > 5.0
+          for: 3m
+          labels:
+            severity: warning
+            tier: l7-gateway
+          annotations:
+            summary: "LLM orchestration node P99 latency exceeds 5 seconds"
+            description: "Planner/Reflector/Finalize reasoning latency is degraded."
+        - alert: GPUOOMAlert
+          expr: |
+            increase(kube_pod_container_status_last_terminated_reason{namespace="agentic-platform",container="vllm",reason="OOMKilled"}[5m]) > 0
+          for: 0m
+          labels:
+            severity: critical
+            tier: l7-serving
+          annotations:
+            summary: "vLLM container was OOM-killed"
+            description: "The vLLM serving container exhausted memory and was terminated; inspect GPU/host memory pressure before restart loops exhaust capacity."
+        - alert: ModelCircuitBreakerTripped
+          expr: |
+            (
+              increase(agent_tokens_total{model_alias="llama-chat-backup"}[5m]) > 0
+              and
+              rate(agent_tokens_total{model_alias="reasoning-llm"}[5m]) == 0
+            )
+            or
+            increase(agent_model_proxy_fallback_total[5m]) > 0
+          for: 1m
+          labels:
+            severity: critical
+            tier: l7-gateway
+          annotations:
+            summary: "Model Circuit Breaker tripped to CPU / Fallback endpoint"
+            description: "Primary reasoning-llm (GPU/vLLM) is unresponsive; traffic redirected to CPU fallback."
+        - alert: HighPendingApprovalsQueue
+          expr: |
+            agent_hitl_pending_approvals > 10
+          for: 10m
+          labels:
+            severity: warning
+            tier: l2-orchestration
+          annotations:
+            summary: "High volume of paused workflows waiting for Human-in-the-Loop review"
+            description: "Backlog of high-risk actions awaiting supervisor approval."
+        - alert: HITLPendingApprovalsMetricMissing
+          expr: |
+            absent(agent_hitl_pending_approvals) == 1
+          for: 30m
+          labels:
+            severity: info
+            tier: l2-orchestration
+          annotations:
+            summary: "HITL pending-approval gauge is not exported"
+            description: "HighPendingApprovalsQueue cannot evaluate until the gauge is instrumented."
+        - alert: RAGCacheMissSpike
+          expr: |
+            rate(agent_rag_cache_misses_total[5m])
+            /
+            (rate(agent_rag_cache_hits_total[5m]) + rate(agent_rag_cache_misses_total[5m])) > 0.8
+          for: 10m
+          labels:
+            severity: info
+            tier: l5-knowledge
+          annotations:
+            summary: "RAG Semantic Cache miss rate exceeds 80%"
+            description: "Cache efficiency low; check vector store load and query diversity."
+        - alert: TokenSpikeAnomalyAlert
+          expr: |
+            sum(increase(agent_tokens_total[15m]))
+            > 2 * sum(increase(agent_tokens_total[15m] offset 1w))
+            and sum(increase(agent_tokens_total[15m])) > 1000
+          for: 5m
+          labels:
+            severity: warning
+            tier: finops
+          annotations:
+            summary: "Token consumption in the last 15m is >2x the same window last week"
+            description: "Possible runaway agent loop or abuse. Notify the FinOps channel and review per-tenant budgets in configs/litellm_config.yaml."
+        - alert: CheckpointPersistErrors
+          expr: |
+            increase(agent_checkpoint_persist_errors_total[5m]) > 0
+          for: 2m
+          labels:
+            severity: critical
+            tier: l6-memory
+          annotations:
+            summary: "LangGraph checkpoint persistence errors detected"
+            description: "PostgreSQL or Redis checkpointer failed to persist state."
+        - alert: RateLimitUnavailable
+          expr: |
+            increase(agent_rate_limit_rejections_total{layer="unavailable"}[5m]) > 0
+          for: 1m
+          labels:
+            severity: critical
+            tier: l1-interface
+          annotations:
+            summary: "Distributed rate limiter unavailable (returning HTTP 503)"
+            description: "Redis rate limiter connectivity lost; API traffic is being rejected fail-closed."
+        - alert: RAGRetrievalDegraded
+          expr: |
+            increase(agent_rag_retrieval_degraded_total[5m]) > 0
+            or
+            increase(agent_rag_reranker_fallback_total[5m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+            tier: l5-knowledge
+          annotations:
+            summary: "RAG retrieval degraded or neural reranker fell back"
+            description: "Dense/lexical/reranker subsystem is degraded; check Qdrant, embedding service, and neural reranker."

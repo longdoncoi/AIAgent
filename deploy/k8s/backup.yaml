@@ -1,0 +1,230 @@
+# Logical database backups (REVIEW_SRE 10.2 — PARTIAL).
+# HONEST SCOPE: nightly logical dumps with 14-day retention on a PVC. This is
+# NOT PITR (RPO=0). True PITR needs WAL archiving + off-cluster replication,
+# owned by the managed DB provider. The DR runbook must state this gap.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agentic-db-backups
+  namespace: agentic-platform
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: standard
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agentic-qdrant-backups
+  namespace: agentic-platform
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: standard
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: agentic-db-backup
+  namespace: agentic-platform
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "true"
+            proxy.istio.io/config: '{"holdApplicationUntilProxyStarts":true,"terminationDrainDuration":"5s"}'
+          labels:
+            app: agentic-db-backup
+            tier: backup
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: pg-dump
+              image: postgres:16-alpine@sha256:f2f98726820d0342055351c6e9d36e705f5bfffb3dd53ff556325114b08afb6d
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                capabilities:
+                  drop: ["ALL"]
+                seccompProfile:
+                  type: RuntimeDefault
+              env:
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: agentic-database-secrets
+                      key: POSTGRES_PASSWORD
+                - name: POSTGRES_URI
+                  valueFrom:
+                    secretKeyRef:
+                      name: agentic-database-secrets
+                      key: POSTGRES_URI
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+                  OUT="/backups/agentic-${STAMP}.dump"
+                  echo "Starting logical backup at ${STAMP}"
+                  pg_dump --format=custom --no-owner --no-privileges \
+                    --dbname="${POSTGRES_URI}" --file="${OUT}"
+                  gzip -f "${OUT}"
+                  gzip -t "${OUT}.gz"
+                  sha256sum "${OUT}.gz" > "${OUT}.gz.sha256"
+                  sha256sum -c "${OUT}.gz.sha256"
+                  if [ -n "${BACKUP_UPLOAD_URL:-}" ]; then
+                    echo "Uploading backup to configured offsite endpoint..."
+                    if command -v curl >/dev/null 2>&1; then
+                      curl -fsSL -X PUT -T "${OUT}.gz" "${BACKUP_UPLOAD_URL}/agentic-${STAMP}.dump.gz"
+                      curl -fsSL -X PUT -T "${OUT}.gz.sha256" "${BACKUP_UPLOAD_URL}/agentic-${STAMP}.dump.gz.sha256"
+                    else
+                      echo "ERROR: BACKUP_UPLOAD_URL set but curl unavailable in image" >&2
+                      exit 1
+                    fi
+                  fi
+                  echo "Backup verified complete: ${OUT}.gz"
+                  find /backups -type f \( -name 'agentic-*.dump.gz' -o -name 'agentic-*.dump.gz.sha256' \) -mtime +14 -delete
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+                - name: tmp
+                  mountPath: /tmp
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: agentic-db-backups
+            - name: tmp
+              emptyDir: {}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: agentic-qdrant-backup
+  namespace: agentic-platform
+spec:
+  schedule: "30 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "true"
+            proxy.istio.io/config: '{"holdApplicationUntilProxyStarts":true,"terminationDrainDuration":"5s"}'
+          labels:
+            app: agentic-qdrant-backup
+            tier: backup
+        spec:
+          serviceAccountName: agentic-maintenance-sa
+          automountServiceAccountToken: false
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: qdrant-snapshot
+              image: ghcr.io/agentic-platform/api:IMMUTABLE_SHA_REQUIRED
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                capabilities:
+                  drop: ["ALL"]
+                seccompProfile:
+                  type: RuntimeDefault
+              envFrom:
+                - configMapRef:
+                    name: agentic-config
+                - secretRef:
+                    name: agentic-maintenance-secrets
+              command: ["python", "-c"]
+              args:
+                - |
+                  import hashlib, json, os, pathlib, time, urllib.request
+                  base = f"http://{os.environ.get('QDRANT_HOST', 'qdrant-svc')}:{os.environ.get('QDRANT_PORT', '6333')}"
+                  col = os.environ.get("QDRANT_COLLECTION_NAME", "agentic_knowledge")
+                  headers = {"api-key": os.environ["QDRANT_API_KEY"]} if os.environ.get("QDRANT_API_KEY") else {}
+                  req = urllib.request.Request(f"{base}/collections/{col}/snapshots?wait=true", method="POST", headers=headers)
+                  with urllib.request.urlopen(req, timeout=60) as resp:
+                      snap = json.loads(resp.read().decode("utf-8"))["result"]["name"]
+                  dl_req = urllib.request.Request(f"{base}/collections/{col}/snapshots/{snap}", headers=headers)
+                  backup_dir = pathlib.Path("/backups")
+                  out = backup_dir / f"qdrant-{col}-{snap}"
+                  hasher = hashlib.sha256()
+                  with urllib.request.urlopen(dl_req, timeout=300) as r, out.open("wb") as fh:
+                      while True:
+                          chunk = r.read(1024 * 1024)
+                          if not chunk:
+                              break
+                          fh.write(chunk)
+                          hasher.update(chunk)
+                  digest = hasher.hexdigest()
+                  out.with_name(out.name + ".sha256").write_text(f"{digest}  {out.name}\n", encoding="utf-8")
+                  upload_base = os.environ.get("BACKUP_UPLOAD_URL", "").rstrip("/")
+                  if upload_base:
+                      for fpath in (out, out.with_name(out.name + ".sha256")):
+                          up_req = urllib.request.Request(f"{upload_base}/{fpath.name}", data=fpath.read_bytes(), method="PUT")
+                          with urllib.request.urlopen(up_req, timeout=120) as up_resp:
+                              if up_resp.status >= 400:
+                                  raise RuntimeError(f"Offsite snapshot upload failed: {up_resp.status}")
+                  cutoff = time.time() - (14 * 86400)
+                  for old in backup_dir.glob(f"qdrant-{col}-*"):
+                      if old.is_file() and old.stat().st_mtime < cutoff:
+                          old.unlink(missing_ok=True)
+                  print(f"Qdrant snapshot saved: {out} sha256={digest[:16]}")
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+                - name: tmp
+                  mountPath: /tmp
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: agentic-qdrant-backups
+            - name: tmp
+              emptyDir: {}

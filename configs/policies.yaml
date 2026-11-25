@@ -1,0 +1,79 @@
+version: "1.0"
+
+# Tool Risk Classification & Approvals
+tools:
+  web_search:
+    risk_level: low
+    description: "Search external web information"
+    require_approval: false
+    timeout_seconds: 15
+
+  repo_list_files:
+    risk_level: low
+    description: "List directory contents or file tree"
+    require_approval: false
+    timeout_seconds: 10
+
+  repo_read_file:
+    risk_level: low
+    description: "Read contents of a file"
+    require_approval: false
+    timeout_seconds: 10
+
+  repo_search_symbol:
+    risk_level: low
+    description: "Search code symbol or regex in codebase"
+    require_approval: false
+    timeout_seconds: 15
+
+  search_policy:
+    risk_level: low
+    description: "Query enterprise policy and documentation via RAG"
+    require_approval: false
+    timeout_seconds: 20
+
+  code_exec_python:
+    risk_level: high
+    description: "Execute arbitrary Python code in isolated sandbox"
+    require_approval: true
+    timeout_seconds: 30
+
+  code_exec_bash:
+    risk_level: high
+    description: "Execute bash or terminal shell command"
+    require_approval: true
+    timeout_seconds: 30
+
+  repo_write_file:
+    risk_level: high
+    description: "Create or overwrite file in project workspace"
+    require_approval: true
+    timeout_seconds: 10
+
+# Sub-Agent Allowed Tools Matrix
+agent_allowlist:
+  chat_agent:
+    - web_search
+  rag_agent:
+    - search_policy
+  coding_agent:
+    - repo_list_files
+    - repo_read_file
+    - repo_search_symbol
+    - repo_write_file
+    - code_exec_python
+    - code_exec_bash
+
+# Guardrails Constraints
+guardrails:
+  max_output_tokens: 4096
+  block_prompt_injection: true
+  mask_pii: true
+  sensitive_keywords:
+    - "rm -rf /"
+    - "DROP DATABASE"
+    - "TRUNCATE TABLE"
+    - "format c:"
+    - "shutdown -h"
+    - "shutdown now"
+    - "shutdown /s"

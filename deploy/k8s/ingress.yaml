@@ -1,0 +1,63 @@
+# ==============================================================================
+# Kubernetes Ingress: Enterprise SSL/TLS Termination & SSE Stream Proxy
+# ==============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: agentic-platform-ingress
+  namespace: agentic-platform
+  # `namespace: default` stranded this Ingress away from agentic-api-svc.
+  labels:
+    app: agentic-platform
+    tier: l1-interface
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    # SSE Streaming & Long-Polling Optimizations
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header Connection '';
+      chunked_transfer_encoding on;
+      proxy_cache off;
+    # Edge Rate Limiting & Protection
+    nginx.ingress.kubernetes.io/limit-rps: "60"
+    nginx.ingress.kubernetes.io/limit-connections: "100"
+    # CORS is enforced solely by agentic-api FastAPI CORSMiddleware (ALLOWED_ORIGINS)
+    # so Ingress and API never emit conflicting dual Access-Control-Allow-* headers.
+    nginx.ingress.kubernetes.io/enable-cors: "false"
+spec:
+  tls:
+    - hosts:
+        # Template host: override in deploy/overlays/production/kustomization.yaml
+        - api.agentic.example.com
+      secretName: agentic-api-tls-cert
+  rules:
+    - host: api.agentic.example.com
+      http:
+        paths:
+          # Expose only public chat, HITL approval, and health routes.
+          # /api/v1/admin/* is intentionally excluded from public Ingress.
+          - path: /api/v1/chat
+            pathType: Prefix
+            backend:
+              service:
+                name: agentic-api-svc
+                port:
+                  number: 8000
+          - path: /api/v1/approvals
+            pathType: Prefix
+            backend:
+              service:
+                name: agentic-api-svc
+                port:
+                  number: 8000
+          - path: /healthz
+            pathType: Exact
+            backend:
+              service:
+                name: agentic-api-svc
+                port:
+                  number: 8000

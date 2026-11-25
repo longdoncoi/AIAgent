@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-config
+  namespace: agentic-platform
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+data:
+  config.yaml: |
+    general_settings:
+      max_budget: 500.0
+      budget_duration: 30d
+      enforce_budget_on_fallbacks: true
+    litellm_settings:
+      drop_params: true
+    model_list:
+      - model_name: reasoning-llm
+        litellm_params:
+          model: openai/Qwen/Qwen2.5-72B-Instruct
+          api_base: os.environ/REASONING_LLM_API_BASE
+          api_key: sk-vllm-dummy
+      - model_name: fast-llm
+        litellm_params:
+          model: openai/Qwen/Qwen2.5-14B-Instruct
+          api_base: os.environ/FAST_LLM_API_BASE
+          api_key: sk-llama-dummy
+      - model_name: coding-llm
+        litellm_params:
+          model: openai/Qwen/Qwen2.5-Coder-32B-Instruct
+          api_base: os.environ/CODING_LLM_API_BASE
+          api_key: sk-vllm-dummy
+      - model_name: llama-chat-backup
+        litellm_params:
+          model: openai/llama-server
+          api_base: os.environ/LLAMA_BACKUP_API_BASE
+          api_key: sk-llama-dummy
+      - model_name: text-embedding-bge
+        litellm_params:
+          model: openai/BAAI/bge-m3
+          api_base: os.environ/EMBEDDING_API_BASE
+          api_key: sk-embed-dummy
+    router_settings:
+      routing_strategy: least-busy
+      num_retries: 2
+      timeout: 60.0
+      allowed_fails: 3
+      fallbacks:
+        - reasoning-llm: [llama-chat-backup]
+        - coding-llm: [llama-chat-backup]
+        - fast-llm: [llama-chat-backup]

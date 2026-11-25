@@ -1,0 +1,86 @@
+# REVIEW_QUALITY GATES - DEEPEVAL & RAGAS.md — Trụ Cột 6: Cổng Đánh Giá Chất Lượng Tác Tử
+
+> **Tài liệu kiểm định chuyên biệt (Production Readiness Review - Pillar 06 / 14)**  
+> **Đơn vị phụ trách**: AI Evaluation Lead & Data Quality Engineer  
+> **Tài liệu tham chiếu**: [REVIEW.md](REVIEW.md) · [Architecture.md](../../Architecture.md) · [AGENTS.md](../../AGENTS.md) · [configs/eval_thresholds.yaml](../../configs/eval_thresholds.yaml)
+
+---
+
+## 1. Mục Tiêu & Phạm Vi Kiểm Định
+
+Trụ cột này thiết lập cổng đánh giá chất lượng (Quality Gate) tự động trước khi cho phép merge mã nguồn và phát hành sản phẩm:
+
+1. **Độ chính xác Định tuyến (Routing Accuracy Gate)**: Supervisor điều phối chính xác $\ge 95\%$ tác vụ đến đúng Sub-Agent.
+2. **Độ căn cứ & Ảo giác (Groundedness & Hallucination Gate)**: Câu trả lời bám sát context, Groundedness $\ge 0.85$, tỷ lệ ảo giác $\le 5\%$.
+3. **Bộ chỉ số RAGAS Framework**:
+   - **Faithfulness**: $\ge 0.80$ (Độ trung thực).
+   - **Answer Relevance**: $\ge 0.80$ (Độ liên quan câu trả lời).
+   - **Context Precision**: $\ge 0.75$ (Độ chính xác xếp hạng chunk).
+   - **Context Recall**: $\ge 0.75$ (Độ bao phủ tri thức cần thiết).
+4. **Tập Dữ Liệu Kiểm Thử Vàng (Golden Dataset)**: Bảo trì tập `evals/datasets/golden_v1.jsonl` và `rag_qa.jsonl` chứa đủ các trường hợp biên.
+5. **Tích hợp LangSmith Run Feedback**: Tự động đồng bộ kết quả chấm điểm lên LangSmith.
+
+---
+
+## 2. Danh Mục Checklist Kiểm Tra Chi Tiết
+
+| ID | Trạng Thái | Mức Độ | Tiêu Chí Kiểm Tra (Verification Criteria) | Tệp Mã Nguồn / Cấu Hình | Phương Pháp & Lệnh Kiểm Chứng |
+| :---: | :---: | :---: | :--- | :--- | :--- |
+| **6.1** | `[ ]` | **P0** | **Độ Chính Xác Điều Phối (Routing Accuracy Gate)**: Supervisor phải phân rã yêu cầu và điều phối chính xác $\ge 95\%$ tác vụ vào đúng Sub-Agent phụ trách (ChatAgent, RAGAgent, CodingAgent), đo bằng `planner_mode=llm` trong `evals/release_gate.py` (cấm heuristic proxy). | [configs/eval_thresholds.yaml](../../configs/eval_thresholds.yaml)<br>[evals/run_eval.py](../../evals/run_eval.py)<br>[evals/release_gate.py](../../evals/release_gate.py) | Chạy strict release gate:<br>`python evals/release_gate.py`<br>*(Ngưỡng yêu cầu: $\ge 0.95$)* |
+| **6.2** | `[ ]` | **P0** | **Độ Căn Cứ & Không Ảo Giác (Groundedness & Hallucination Gate)**: Câu trả lời của RAGAgent phải bám sát tài liệu nguồn, Groundedness Score $\ge 0.85$, tỷ lệ ảo giác (Hallucination Ratio) $\le 5\%$. | [configs/eval_thresholds.yaml](../../configs/eval_thresholds.yaml)<br>[evals/deepeval_runner.py](../../evals/deepeval_runner.py) | Chạy DeepEval Suite:<br>`python evals/deepeval_runner.py --mode release`<br>*(Ngưỡng yêu cầu: $\ge 0.85$)* |
+| **6.3** | `[ ]` | **P0** | **Bộ Chỉ Số RAGAS Framework Toàn Diện**: Kiểm định 4 chỉ số cốt lõi của RAG: Faithfulness $\ge 0.80$, Answer Relevance $\ge 0.80$, Context Precision $\ge 0.75$, Context Recall $\ge 0.75$. | [configs/eval_thresholds.yaml](../../configs/eval_thresholds.yaml)<br>[evals/ragas_runner.py](../../evals/ragas_runner.py) | Chạy RAGAS benchmark runner:<br>`python evals/ragas_runner.py --mode release` |
+| **6.4** | `[ ]` | **P1** | **Tập Dữ Liệu Kiểm Thử Vàng (Golden Benchmark Dataset)**: Bộ `golden_v1.jsonl` (`100` mẫu routing/risk), `rag_qa.jsonl` (`50` mẫu RAG gồm cả negative abstention) và `red_teaming.jsonl` (`60` mẫu tấn công/lành tính); `seed_eval.py` bảo vệ chống ghi đè ngoài ý muốn bằng `--force`. | [evals/datasets/](../../evals/datasets)<br>[scripts/seed_eval.py](../../scripts/seed_eval.py) | Kiểm tra số lượng mẫu JSONL (`100` / `50` / `60`) và chạy `python evals/red_teaming_runner.py`. |
+| **6.5** | `[ ]` | **P1** | **Đồng Bộ Dữ Liệu Lên LangSmith**: Khi kích hoạt `LANGCHAIN_TRACING_V2=true`, hệ thống phải tự động đồng bộ kết quả đánh giá và log feedback trực tiếp lên LangSmith Project. | [src/agentic/observability/langsmith_tracer.py](../../src/agentic/observability/langsmith_tracer.py) | Chạy test tích hợp LangSmith runner:<br>`pytest tests/unit/test_ragas_and_langsmith.py` |
+
+---
+
+## 3. Quy Trình Xác Minh & Lệnh Thực Thi (Pre-Flight Runbook)
+
+### Bước 1: Thực Thi Bộ Ba Runners Đánh Giá Chất Lượng
+
+```bash
+# 1. Chạy CI Quality Gate chuẩn
+python evals/run_eval.py
+
+# 2. Chạy DeepEval runner
+python evals/deepeval_runner.py
+
+# 3. Chạy RAGAS runner
+python evals/ragas_runner.py
+```
+
+### Bước 2: Kiểm Tra Đối Soát Ngưỡng Trong CI/CD
+
+```bash
+pytest tests/unit/test_ragas_and_langsmith.py -v
+```
+
+---
+
+## 4. Danh Mục Giám Sát Sau Triển Khai (Post-Deployment Hypercare)
+
+Sau khi hệ thống vận hành chính thức:
+
+- [ ] **T+1 Giờ**: Xác nhận 100% các phiên tương tác được gửi traces và spans đầy đủ lên LangSmith Dashboard (`LANGCHAIN_TRACING_V2=true`).
+- [ ] **T+24 Giờ**: Lấy mẫu ngẫu nhiên 50 hội thoại thực tế của người dùng, thực thi LLM-as-a-judge kiểm tra: Groundedness $\ge 0.85$, Faithfulness $\ge 0.80$, tỷ lệ ảo giác $\le 5\%$.
+- [ ] **T+7 Ngày**: Thu thập các trường hợp phản hồi bị người dùng đánh giá thấp (negative user feedback / thumbs down) để bổ sung vào Golden Dataset `golden_v1.jsonl`.
+
+---
+
+## 5. Trạng Thái Nghiệm Thu & Liên Kết Ký Duyệt
+
+- **Tổng số tiêu chí kiểm định**: 5 (P0: 3, P1: 2, P2: 0)
+- **Đạt**: _____ / 5
+- **Kết luận**: [ ] ĐẠT (PASS) &nbsp;&nbsp;&nbsp; [ ] CẦN KHẮC PHỤC (REJECT)
+
+> 🎯 **Biên Bản Ký Duyệt**: Kết quả đánh giá của Trụ cột này được tổng hợp và ký duyệt chính thức tại [Bảng Chữ Ký Phê Chuẩn Của Hội Đồng Đánh Giá (Mục 6.3 - REVIEW.md)](REVIEW.md#63-bảng-chữ-ký-phê-chuẩn-của-hội-đồng-đánh-giá).
+
+---
+
+## 6. Bằng Chứng Kiểm Định Tự Động (Auto-Evidence Status)
+
+> **AUTO-EVIDENCE PENDING** — chờ đối soát và **ký bởi Release Board**. Không có nhãn `PASSED` được tự động gán cho tài liệu này.
+
+- Artifact: [evidence/prr/latest.json](../../evidence/prr/latest.json) (`commit_sha`, `timestamp_utc`, exit code của `ruff` / `mypy --no-incremental` / `pytest -n auto --cov=src --cov-fail-under=85` / `eval --mode smoke` / `red_teaming_runner` / `restore_drill --smoke` / parse YAML).
+- Sinh artifact: `python scripts/generate_prr_evidence.py`. Tất cả ô trạng thái `[]` ở các mục trên vẫn giữ nguyên cho đến khi Hội đồng đối soát artifact và ký duyệt.
+- Bảng chữ ký 9 đại diện: [REVIEW.md mục 6.3](REVIEW.md#63-bảng-chữ-ký-phê-chuẩn-của-hội-đồng-đánh-giá).

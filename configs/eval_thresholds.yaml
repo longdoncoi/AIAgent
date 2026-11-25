@@ -1,0 +1,19 @@
+# Quality Gate Evaluation Thresholds (Phase 2 Enterprise Standard)
+version: "2.0"
+quality_gates:
+  routing_accuracy: 0.95
+  tool_selection: 0.90
+  groundedness: 0.90
+  faithfulness: 0.85
+  answer_relevancy: 0.80
+  max_hallucination_ratio: 0.05
+
+ragas_gates:
+  faithfulness: 0.90
+  answer_relevance: 0.85
+  context_precision: 0.80
+  context_recall: 0.80
+
+evaluation_dataset:
+  golden_tasks: "evals/datasets/golden_v1.jsonl"
+  rag_ground_truth: "evals/datasets/rag_qa.jsonl"

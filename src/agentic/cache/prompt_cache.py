@@ -1,0 +1,404 @@
+"""Exact Match Prompt and Completion Cache with Multi-Tier (L1 In-Memory + L2 Distributed Redis) Architecture.
+
+Integration guide (LLM gateway stream)
+--------------------------------------
+``PromptCache`` is intentionally decoupled from ``llm/gateway.py`` so the cache
+subsystem stays dependency-inverted. The model gateway should call::
+
+    from src.agentic.cache.prompt_cache import get_prompt_cache
+
+    cached = await asyncio.to_thread(
+        get_prompt_cache().get_response, alias, messages, temperature
+    )
+    if cached is not None:
+        return cached
+    response = await call_model(...)           # existing gateway path
+    await asyncio.to_thread(
+        get_prompt_cache().set_response, alias, messages, temperature, response
+    )
+
+Or use the single-call helper ``get_or_compute_async(alias, messages, compute_fn)``
+which handles stampede locking, L1/L2 lookups and population in one place.
+Both paths are no-ops when ``settings.enable_prompt_cache`` is false or
+``temperature > 0.7`` (non-deterministic requests are never cached).
+"""
+
+import asyncio
+import hashlib
+import json
+import logging
+import threading
+import time
+from collections import OrderedDict
+from typing import Any
+
+from src.agentic.cache.locking import (
+    acquire_owned_lock,
+    adesynchronize_waiters,
+    desynchronize_waiters,
+    release_owned_lock,
+)
+from src.agentic.cache.redaction import redact_pii
+from src.agentic.core.config import get_settings
+from src.agentic.observability.metrics import (
+    PROMPT_CACHE_HITS_TOTAL,
+    PROMPT_CACHE_MISSES_TOTAL,
+    PROMPT_CACHE_TIER_HITS_TOTAL,
+)
+
+logger = logging.getLogger(__name__)
+
+PROMPT_CACHE_KEY_PREFIX = "prompt_cache:"
+PROMPT_LOCK_PREFIX = "lock:prompt:"
+
+
+class PromptCache:
+    """Thread-safe Multi-Tier exact match response cache for LLM queries.
+
+    Tier 1 (L1): In-memory LRU for low-latency local hits.
+    Tier 2 (L2): Distributed Redis cache shared across multi-replica pods.
+
+    Public API
+    ----------
+    * ``get_response`` / ``set_response`` — direct L1/L2 access (sync).
+    * ``get_or_compute`` / ``get_or_compute_async`` — stampede-guarded
+      lookup-and-compute helpers; synchronous ``compute_fn`` passed to the
+      async variant is always executed with ``asyncio.to_thread``.
+    * ``clear`` / ``stats`` — maintenance and observability.
+
+    See the module docstring for the recommended ``llm/gateway.py`` wiring.
+    """
+
+    def __init__(
+        self,
+        max_entries: int = 2048,
+        default_ttl: int = 3600,
+        redis_url: str | None = None,
+        enable_redis: bool = False,
+    ) -> None:
+        self.settings = get_settings()
+        self.max_entries = max_entries
+        self.default_ttl = default_ttl
+        self._cache: OrderedDict[str, tuple[float, str, dict[str, Any]]] = OrderedDict()
+        self._lock = threading.Lock()
+        self._inflight_locks: set[str] = set()
+        self._hits = 0
+        self._misses = 0
+        self._redis_client: Any = None
+        self._lock_tokens: dict[str, str] = {}
+
+        target_redis_url = redis_url or self.settings.redis_url
+        should_use_redis = (
+            enable_redis
+            or self.settings.enable_redis_cache
+            or self.settings.enable_redis_rate_limit
+        )
+
+        if should_use_redis and target_redis_url:
+            try:
+                from src.agentic.core.redis import get_redis_client
+
+                client = get_redis_client(target_redis_url)
+                if client is None:
+                    import redis
+
+                    client = redis.Redis.from_url(
+                        target_redis_url, socket_timeout=0.5, decode_responses=True
+                    )
+                client.ping()
+                self._redis_client = client
+                logger.info(
+                    f"Initialized Distributed Redis L2 backend for PromptCache at {target_redis_url}"
+                )
+            except Exception as e:
+                logger.debug(
+                    f"Redis L2 backend not reachable for PromptCache ({e}). Operating in L1 local memory mode."
+                )
+
+    @staticmethod
+    def _as_text(value: Any) -> str:
+        """Decode a Redis value regardless of the client's decode_responses flag."""
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        if isinstance(value, (bytearray, memoryview)):
+            return bytes(value).decode("utf-8", errors="replace")
+        return str(value)
+
+    @staticmethod
+    def _serialize_messages(messages: list[Any]) -> str:
+        """Serializes messages to deterministic JSON."""
+        clean_list: list[dict[str, str]] = []
+        for m in messages:
+            if hasattr(m, "type") and hasattr(m, "content"):
+                clean_list.append({"role": str(m.type), "content": str(m.content)})
+            elif isinstance(m, dict):
+                clean_list.append(
+                    {"role": str(m.get("role", "")), "content": str(m.get("content", ""))}
+                )
+            else:
+                clean_list.append({"role": "user", "content": str(m)})
+        return json.dumps(clean_list, sort_keys=True, ensure_ascii=False)
+
+    def _hash_key(self, model_alias: str, messages: list[Any], temperature: float) -> str:
+        serialized = self._serialize_messages(messages)
+        raw_key = f"{model_alias}:{temperature:.2f}:{serialized}"
+        return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+
+    def get_response(
+        self, model_alias: str, messages: list[Any], temperature: float = 0.2
+    ) -> str | None:
+        """Returns cached completion if hit and not expired (checking L1 then L2)."""
+        if not self.settings.enable_prompt_cache:
+            return None
+
+        # Non-deterministic requests with high temperature should skip cache
+        if temperature > 0.7:
+            return None
+
+        key = self._hash_key(model_alias, messages, temperature)
+        now = time.time()
+
+        # 1. Check L1 Memory
+        with self._lock:
+            if key in self._cache:
+                expire_at, response, _ = self._cache[key]
+                if now < expire_at:
+                    self._cache.move_to_end(key)
+                    self._hits += 1
+                    PROMPT_CACHE_HITS_TOTAL.labels(model_alias=model_alias).inc()
+                    PROMPT_CACHE_TIER_HITS_TOTAL.labels(model_alias=model_alias, tier="l1").inc()
+                    logger.debug("Prompt Cache L1 HIT for model='%s' (key=%s)", model_alias, key[:8])
+                    return response
+                else:
+                    del self._cache[key]
+
+        # 2. Check L2 Distributed Redis
+        if self._redis_client is not None:
+            try:
+                redis_key = PROMPT_CACHE_KEY_PREFIX + key
+                cached_data = self._redis_client.get(redis_key)
+                if cached_data is not None:
+                    ttl_left = max(60, self._redis_client.ttl(redis_key))
+                    # L2 values are already redacted at write time; keep the
+                    # hot-path read cheap and avoid ever logging message text.
+                    response = self._as_text(cached_data)
+                    with self._lock:
+                        if len(self._cache) >= self.max_entries:
+                            self._cache.popitem(last=False)
+                        self._cache[key] = (now + ttl_left, response, {})
+                    self._hits += 1
+                    PROMPT_CACHE_HITS_TOTAL.labels(model_alias=model_alias).inc()
+                    PROMPT_CACHE_TIER_HITS_TOTAL.labels(model_alias=model_alias, tier="l2").inc()
+                    logger.debug(
+                        "Prompt Cache L2 (Redis) HIT for model='%s' (key=%s)", model_alias, key[:8]
+                    )
+                    return response
+            except Exception as ex:
+                logger.debug(f"Redis L2 read exception in PromptCache: {ex}")
+
+        with self._lock:
+            self._misses += 1
+        PROMPT_CACHE_MISSES_TOTAL.labels(model_alias=model_alias).inc()
+        return None
+
+    def set_response(
+        self,
+        model_alias: str,
+        messages: list[Any],
+        temperature: float,
+        response: str,
+        ttl: int | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Stores LLM response into both L1 memory and L2 distributed Redis."""
+        if not self.settings.enable_prompt_cache or temperature > 0.7:
+            return
+
+        key = self._hash_key(model_alias, messages, temperature)
+        effective_ttl = ttl if ttl is not None else self.settings.prompt_cache_ttl_seconds
+        expire_at = time.time() + effective_ttl
+
+        # Never persist a raw LLM response (which may contain PII or secrets)
+        # into the shared Redis instance. L1 is redacted as well for consistency
+        # with what is returned on a later L2 rehydration.
+        safe_response = redact_pii(response)
+        with self._lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+            elif len(self._cache) >= self.max_entries:
+                self._cache.popitem(last=False)
+            self._cache[key] = (expire_at, safe_response, metadata or {})
+
+        # 2. Set in L2 Distributed Redis Cache
+        if self._redis_client is not None:
+            try:
+                redis_key = PROMPT_CACHE_KEY_PREFIX + key
+                self._redis_client.set(redis_key, safe_response, ex=effective_ttl)
+                logger.debug(
+                    "Prompt Cache L2 (Redis) SET for model='%s' (TTL=%ss)",
+                    model_alias,
+                    effective_ttl,
+                )
+            except Exception as ex:
+                logger.debug("Redis L2 write exception in PromptCache: %s", ex)
+
+    def acquire_lock(self, key: str, timeout: float = 5.0) -> bool:
+        """Acquires a distributed Redis or in-memory lock for a key to prevent cache stampede.
+
+        A unique ownership token is stored with the Redis key, so a computation
+        that outlives its TTL cannot delete a later request's lock.
+        """
+        token = acquire_owned_lock(
+            self._redis_client, PROMPT_LOCK_PREFIX, key, timeout, self._inflight_locks, self._lock
+        )
+        if token is None:
+            return False
+        with self._lock:
+            self._lock_tokens[key] = token
+        return True
+
+    def release_lock(self, key: str) -> None:
+        """Releases the stampede lock for a key (only if still owned by us)."""
+        with self._lock:
+            token = self._lock_tokens.pop(key, None)
+        release_owned_lock(
+            self._redis_client, PROMPT_LOCK_PREFIX, key, token, self._inflight_locks, self._lock
+        )
+
+    async def get_or_compute_async(
+        self,
+        model_alias: str,
+        messages: list[Any],
+        compute_fn: Any,
+        temperature: float = 0.2,
+        ttl: int | None = None,
+        timeout: float = 5.0,
+    ) -> str:
+        """Async stampede-guarded completion generation.
+
+        All synchronous cache I/O and any synchronous ``compute_fn`` are
+        offloaded with ``asyncio.to_thread`` so the event loop is never blocked.
+        """
+        cached = await asyncio.to_thread(
+            self.get_response, model_alias, messages, temperature
+        )
+        if cached is not None:
+            return cached
+
+        key = self._hash_key(model_alias, messages, temperature)
+        has_lock = await asyncio.to_thread(self.acquire_lock, key, timeout)
+
+        if has_lock:
+            try:
+                import inspect
+
+                if inspect.iscoroutinefunction(compute_fn):
+                    computed = await compute_fn()
+                else:
+                    computed = await asyncio.to_thread(compute_fn)
+                await asyncio.to_thread(
+                    self.set_response,
+                    model_alias,
+                    messages,
+                    temperature,
+                    str(computed),
+                    ttl,
+                    None,
+                )
+                return str(computed)
+            finally:
+                await asyncio.to_thread(self.release_lock, key)
+        else:
+            start_wait = time.time()
+            while time.time() - start_wait < timeout:
+                await asyncio.sleep(0.05)
+                cached = await asyncio.to_thread(
+                    self.get_response, model_alias, messages, temperature
+                )
+                if cached is not None:
+                    return cached
+            await adesynchronize_waiters()
+            import inspect
+
+            if inspect.iscoroutinefunction(compute_fn):
+                return str(await compute_fn())
+            return str(await asyncio.to_thread(compute_fn))
+
+    def get_or_compute(
+        self,
+        model_alias: str,
+        messages: list[Any],
+        compute_fn: Any,
+        temperature: float = 0.2,
+        ttl: int | None = None,
+        timeout: float = 5.0,
+    ) -> str:
+        """Synchronous stampede-guarded counterpart of :meth:`get_or_compute_async`."""
+        cached = self.get_response(model_alias, messages, temperature)
+        if cached is not None:
+            return cached
+
+        key = self._hash_key(model_alias, messages, temperature)
+        if self.acquire_lock(key, timeout=timeout):
+            try:
+                computed = str(compute_fn())
+                self.set_response(model_alias, messages, temperature, computed, ttl=ttl)
+                return computed
+            finally:
+                self.release_lock(key)
+
+        start_wait = time.time()
+        while time.time() - start_wait < timeout:
+            time.sleep(0.05)
+            cached = self.get_response(model_alias, messages, temperature)
+            if cached is not None:
+                return cached
+        desynchronize_waiters()
+        return str(compute_fn())
+
+    def clear(self) -> None:
+        """Flushes all cached entries from L1 and L2."""
+        with self._lock:
+            self._cache.clear()
+        if self._redis_client is not None:
+            try:
+                from src.agentic.core.redis import iter_redis_keys
+
+                keys = iter_redis_keys(self._redis_client, "prompt_cache:*", count=200)
+                for i in range(0, len(keys), 200):
+                    batch = keys[i : i + 200]
+                    if batch:
+                        self._redis_client.delete(*batch)
+            except Exception as ex:
+                logger.debug(f"Redis L2 clear exception: {ex}")
+
+    @property
+    def stats(self) -> dict[str, Any]:
+        """Returns cache metrics."""
+        with self._lock:
+            total = self._hits + self._misses
+            hit_rate = (self._hits / total) if total > 0 else 0.0
+            return {
+                "size": len(self._cache),
+                "hits": self._hits,
+                "misses": self._misses,
+                "hit_rate": round(hit_rate, 4),
+                "has_redis_backend": self._redis_client is not None,
+            }
+
+
+_prompt_cache_instance: PromptCache | None = None
+
+
+def get_prompt_cache() -> PromptCache:
+    """Returns singleton PromptCache instance."""
+    global _prompt_cache_instance
+    if _prompt_cache_instance is None:
+        settings = get_settings()
+        _prompt_cache_instance = PromptCache(
+            max_entries=settings.cache_max_entries,
+            default_ttl=settings.prompt_cache_ttl_seconds,
+            redis_url=settings.redis_url,
+            enable_redis=settings.enable_redis_cache,
+        )
+    return _prompt_cache_instance

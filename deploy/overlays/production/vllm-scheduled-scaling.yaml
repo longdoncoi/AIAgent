@@ -1,0 +1,46 @@
+# KEDA is a production-cluster prerequisite. This schedule keeps four vLLM
+# replicas during the 06:00-23:00 business window and returns to the bounded
+# minimum of one replica overnight. Times are evaluated in Vietnam time.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: vllm-scheduled-scaler
+  namespace: agentic-platform
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  labels:
+    app: vllm
+    tier: l7-serving
+spec:
+  scaleTargetRef:
+    name: vllm
+  pollingInterval: 30
+  cooldownPeriod: 300
+  minReplicaCount: 1
+  maxReplicaCount: 4
+  fallback:
+    failureThreshold: 3
+    replicas: 1
+  advanced:
+    restoreToOriginalReplicaCount: false
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 60
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 60
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 60
+  triggers:
+    - type: cron
+      metadata:
+        timezone: Asia/Ho_Chi_Minh
+        start: "0 6 * * *"
+        end: "0 23 * * *"
+        desiredReplicas: "4"

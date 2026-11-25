@@ -1,0 +1,724 @@
+"""Redis Checkpointer for LangGraph Multi-Replica State Persistence."""
+
+import hashlib
+import hmac
+import logging
+import pickle
+import re
+from collections.abc import Sequence
+from typing import Any
+
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import (
+    ChannelVersions,
+    Checkpoint,
+    CheckpointMetadata,
+    CheckpointTuple,
+    get_checkpoint_id,
+)
+from langgraph.checkpoint.memory import MemorySaver
+
+from src.agentic.core.config import get_settings, is_strict_env
+from src.agentic.observability.metrics import CHECKPOINT_PERSIST_ERRORS_TOTAL
+
+logger = logging.getLogger(__name__)
+
+# MemorySaver's in-process dicts are unbounded by design. In a long-lived pod
+# they grow forever; Redis remains the durable source of truth, so the local
+# mirror is deliberately capped and the oldest entries are evicted first.
+_MAX_LOCAL_THREADS = 512
+_MAX_LOCAL_CHECKPOINTS_PER_THREAD = 256
+
+# Glob metacharacters supplied by a caller must never be able to widen a SCAN
+# pattern into another tenant's namespace.
+_GLOB_SPECIAL = re.compile(r"([*?\[\]{}])")
+
+
+def _escape_glob(value: str) -> str:
+    """Escape Redis glob metacharacters in a tenant scope component."""
+    return _GLOB_SPECIAL.sub(r"\\\1", value)
+
+
+class RedisSaver(MemorySaver):
+    """Distributed Redis Checkpointer with multi-tier memory caching, async I/O, and HMAC verification.
+
+    Persists LangGraph checkpoints *and* pending writes (interrupt/resume state)
+    to Redis with TTL for multi-pod consistency. Supports both synchronous and
+    asynchronous (aput/aput_writes/aget_tuple) LangGraph execution.
+    """
+
+    def __init__(
+        self,
+        redis_url: str | None = None,
+        ttl_seconds: int | None = None,
+        key_prefix: str = "agentic:checkpoint",
+        tenant_scope: str | None = None,
+    ) -> None:
+        super().__init__()
+        self.settings = get_settings()
+        # Namespace every key with the owning tenant/principal. Maintenance
+        # operations can then only ever touch this saver's own namespace.
+        self.tenant_scope = str(tenant_scope or "default").strip() or "default"
+        self.redis_url = redis_url if redis_url is not None else (
+            self.settings.redis_state_url or self.settings.redis_url
+        )
+        self.ttl = (
+            ttl_seconds if ttl_seconds is not None else self.settings.redis_checkpoint_ttl_seconds
+        )
+        self.key_prefix = key_prefix
+        self._secret_key = self.settings.checkpoint_signing_key.encode("utf-8")
+        self._secret_keys: tuple[bytes, ...] = tuple(
+            k.encode("utf-8")
+            for k in getattr(
+                self.settings, "checkpoint_signing_keys", (self.settings.checkpoint_signing_key,)
+            )
+        )
+        self._redis_client: Any = None
+        self._async_redis_client: Any = None
+        self._init_redis()
+
+    def _init_redis(self) -> None:
+        """Initializes both sync and async connections to Redis server."""
+        if not self.redis_url:
+            return
+        try:
+            import redis
+
+            client = redis.Redis.from_url(self.redis_url, socket_timeout=1.0)
+            client.ping()
+            self._redis_client = client
+            logger.info(
+                f"Initialized sync RedisSaver backend at {self.redis_url} (TTL={self.ttl}s)"
+            )
+        except Exception:
+            try:
+                from src.agentic.core.redis import get_redis_client
+
+                # Binary payloads MUST NOT go through a decode_responses=True
+                # pool: redis-py would UTF-8 decode arbitrary pickle bytes.
+                pool_client = get_redis_client(self.redis_url, decode_responses=False)
+                if pool_client is not None:
+                    pool_client.ping()
+                    self._redis_client = pool_client
+                    logger.info(
+                        f"Initialized sync RedisSaver backend from connection pool at {self.redis_url}"
+                    )
+            except Exception as e:
+                logger.debug(
+                    f"Redis backend not reachable for RedisSaver ({e}). Operating in memory mode."
+                )
+                self._redis_client = None
+
+        if self._redis_client is not None:
+            try:
+                import redis.asyncio as aioredis
+
+                self._async_redis_client = aioredis.from_url(self.redis_url, socket_timeout=1.0)
+                logger.info(f"Initialized async RedisSaver backend at {self.redis_url}")
+            except Exception:
+                try:
+                    from src.agentic.core.redis import get_async_redis_client
+
+                    self._async_redis_client = get_async_redis_client(
+                        self.redis_url, decode_responses=False
+                    )
+                except Exception as e:
+                    logger.debug(f"Async Redis backend not reachable for RedisSaver ({e}).")
+                    self._async_redis_client = None
+        else:
+            self._async_redis_client = None
+
+    @property
+    def is_redis_active(self) -> bool:
+        return self._redis_client is not None or self._async_redis_client is not None
+
+    def _namespace(self) -> str:
+        """Stable, escaped namespace component for this tenant."""
+        return f"tenant:{_escape_glob(self.tenant_scope)}"
+
+    def _redis_key(self, thread_id: str, checkpoint_ns: str, checkpoint_id: str) -> str:
+        return f"{self.key_prefix}:{self._namespace()}:{thread_id}:{checkpoint_ns}:{checkpoint_id}"
+
+    def _writes_key(self, thread_id: str, checkpoint_ns: str, checkpoint_id: str) -> str:
+        return (
+            f"{self.key_prefix}:writes:{self._namespace()}:"
+            f"{thread_id}:{checkpoint_ns}:{checkpoint_id}"
+        )
+
+    def _thread_index_key(self, thread_id: str, checkpoint_ns: str) -> str:
+        return f"{self.key_prefix}:index:{self._namespace()}:{thread_id}:{checkpoint_ns}"
+
+    @staticmethod
+    def _record_persist_error(
+        operation: str, exc: BaseException, backend: str, thread_id: str, checkpoint_id: str
+    ) -> None:
+        """Emit an actionable ERROR log plus a labelled persistence-failure metric."""
+        CHECKPOINT_PERSIST_ERRORS_TOTAL.labels(
+            backend=backend, operation=operation
+        ).inc()
+        logger.error(
+            "Checkpoint %s failure: thread_id=%s checkpoint_id=%s backend=%s error=%s",
+            operation,
+            thread_id,
+            checkpoint_id,
+            backend,
+            exc,
+        )
+
+    @staticmethod
+    def _coerce_payload_bytes(payload: Any) -> bytes | None:
+        """Normalize str/bytearray payloads coming from decoding Redis clients."""
+        if isinstance(payload, bytes):
+            return payload
+        if isinstance(payload, (bytearray, memoryview)):
+            return bytes(payload)
+        if isinstance(payload, str):
+            return payload.encode("utf-8", errors="replace")
+        return None
+
+    def _sign_and_serialize(self, obj: Any, use_json: bool = False) -> bytes:
+        """Serializes checkpoint object and prefixes with HMAC signature to prevent tampering.
+        Defaults to HMAC-SHA256 Pickle for full Python object fidelity; supports use_json=True.
+        """
+        if use_json and isinstance(obj, (dict, list, str, int, float, bool)):
+            try:
+                import json
+
+                raw_json = json.dumps(obj).encode("utf-8")
+                sig = (
+                    hmac.new(self._secret_key, raw_json, hashlib.sha256).hexdigest().encode("ascii")
+                )
+                return b"HMAC-JSON:" + sig + b":" + raw_json
+            except (TypeError, ValueError):
+                pass
+
+        raw = pickle.dumps(obj)
+        sig = hmac.new(self._secret_key, raw, hashlib.sha256).hexdigest().encode("ascii")
+        return b"HMAC-SHA256:" + sig + b":" + raw
+
+    def _verify_and_deserialize(self, payload: Any) -> Any | None:
+        """Verifies HMAC signature and deserializes checkpoint payload securely (supporting JSON & Pickle)."""
+        raw_payload = self._coerce_payload_bytes(payload)
+        if raw_payload is None:
+            return None
+
+        secret_keys = getattr(self, "_secret_keys", (self._secret_key,))
+        if self._secret_key not in secret_keys:
+            secret_keys = (self._secret_key, *secret_keys)
+
+        def _matches_any_key(sig: bytes, raw: bytes) -> bool:
+            for key in secret_keys:
+                expected = hmac.new(key, raw, hashlib.sha256).hexdigest().encode("ascii")
+                if hmac.compare_digest(sig, expected):
+                    return True
+            return False
+
+        if raw_payload.startswith(b"HMAC-JSON:"):
+            parts = raw_payload.split(b":", 2)
+            if len(parts) == 3:
+                sig = parts[1]
+                raw = parts[2]
+                if not _matches_any_key(sig, raw):
+                    CHECKPOINT_PERSIST_ERRORS_TOTAL.labels(
+                        backend="redis", operation="verify"
+                    ).inc()
+                    logger.error(
+                        "Security Alert: Redis checkpoint HMAC-JSON signature mismatch! "
+                        "Tampered payload rejected (thread/checkpoint unknown)."
+                    )
+                    return None
+                import json
+
+                return json.loads(raw.decode("utf-8"))
+
+        if raw_payload.startswith(b"HMAC-SHA256:"):
+            parts = raw_payload.split(b":", 2)
+            if len(parts) == 3:
+                sig = parts[1]
+                raw = parts[2]
+                if not _matches_any_key(sig, raw):
+                    CHECKPOINT_PERSIST_ERRORS_TOTAL.labels(
+                        backend="redis", operation="verify"
+                    ).inc()
+                    logger.error(
+                        "Security Alert: Redis checkpoint HMAC signature mismatch! "
+                        "Tampered payload rejected (thread/checkpoint unknown)."
+                    )
+                    return None
+                return pickle.loads(raw)
+        production_invariants = is_strict_env(self.settings)
+        if getattr(self.settings, "allow_legacy_unsigned_checkpoints", False) and not production_invariants:
+            # Pickle is executed ONLY after HMAC verification has succeeded for
+            # signed payloads. Unsigned legacy payloads are a non-production
+            # migration escape hatch and are never permitted in production.
+            logger.warning("Loading an unsigned legacy checkpoint; migrate it immediately.")
+            try:
+                return pickle.loads(raw_payload)
+            except Exception as exc:
+                logger.warning("Could not deserialize legacy Redis payload: %s", exc)
+        else:
+            CHECKPOINT_PERSIST_ERRORS_TOTAL.labels(
+                backend="redis", operation="verify"
+            ).inc()
+            logger.error("Security Alert: rejected unsigned Redis checkpoint payload.")
+        return None
+
+    def _checkpoint_payload(
+        self,
+        thread_id: str,
+        checkpoint_ns: str,
+        checkpoint_id: str,
+        new_versions: ChannelVersions,
+    ) -> bytes | None:
+        """Builds the signed payload for one checkpoint (same HMAC envelope as before)."""
+        saved = self.storage.get(thread_id, {}).get(checkpoint_ns, {}).get(checkpoint_id)
+        if saved is None:
+            return None
+        blobs = {
+            (k, v): self.blobs[(thread_id, checkpoint_ns, k, v)]
+            for k, v in new_versions.items()
+            if (thread_id, checkpoint_ns, k, v) in self.blobs
+        }
+        return self._sign_and_serialize(
+            {
+                "storage_entry": saved,
+                "blobs": blobs,
+                # Snapshot any writes already recorded for this checkpoint.
+                # Later put_writes() calls persist the authoritative copy.
+                "writes": self.writes.get((thread_id, checkpoint_ns, checkpoint_id), {}),
+            }
+        )
+
+    def _writes_payload(
+        self, thread_id: str, checkpoint_ns: str, checkpoint_id: str
+    ) -> bytes:
+        """Signs the complete pending-write map for one checkpoint."""
+        writes = self.writes.get((thread_id, checkpoint_ns, checkpoint_id), {})
+        return self._sign_and_serialize(writes)
+
+    @staticmethod
+    def _is_writes_payload(data: Any) -> bool:
+        """Validates the shape of a deserialized pending-write mapping."""
+        if not isinstance(data, dict) or not data:
+            return False
+        return all(
+            isinstance(key, tuple)
+            and len(key) == 2
+            and isinstance(value, tuple)
+            and len(value) == 4
+            for key, value in data.items()
+        )
+
+    def _restore_payload(
+        self, thread_id: str, checkpoint_ns: str, checkpoint_id: str, data: Any
+    ) -> None:
+        """Rehydrates checkpoint, blob and pending-write local mirrors from Redis."""
+        if not isinstance(data, dict):
+            return
+        storage_entry = data.get("storage_entry")
+        if storage_entry is not None:
+            self.storage[thread_id][checkpoint_ns][checkpoint_id] = storage_entry
+        blobs = data.get("blobs")
+        if isinstance(blobs, dict):
+            for (channel, version), blob in blobs.items():
+                self.blobs[(thread_id, checkpoint_ns, channel, version)] = blob
+        writes = data.get("writes")
+        if writes is not None and self._is_writes_payload(writes):
+            self.writes[(thread_id, checkpoint_ns, checkpoint_id)] = writes
+
+    def _restore_writes(
+        self, thread_id: str, checkpoint_ns: str, checkpoint_id: str, data: Any
+    ) -> bool:
+        """Restores pending writes from the dedicated Redis writes key."""
+        if not self._is_writes_payload(data):
+            return False
+        self.writes[(thread_id, checkpoint_ns, checkpoint_id)] = data
+        return True
+
+    def _enforce_memory_bounds(self) -> None:
+        """Evicts oldest local checkpoints/threads; Redis is the durable store."""
+        for thread_id, namespaces in list(self.storage.items()):
+            for checkpoint_ns, checkpoints in list(namespaces.items()):
+                while len(checkpoints) > _MAX_LOCAL_CHECKPOINTS_PER_THREAD:
+                    oldest_id = next(iter(checkpoints))
+                    checkpoints.pop(oldest_id, None)
+                    self.writes.pop((thread_id, checkpoint_ns, oldest_id), None)
+        while len(self.storage) > _MAX_LOCAL_THREADS:
+            thread_id = next(iter(self.storage))
+            del self.storage[thread_id]
+            for write_key in [key for key in self.writes if key[0] == thread_id]:
+                del self.writes[write_key]
+            for blob_key in [key for key in self.blobs if key[0] == thread_id]:
+                del self.blobs[blob_key]
+
+    def put(
+        self,
+        config: RunnableConfig,
+        checkpoint: Checkpoint,
+        metadata: CheckpointMetadata,
+        new_versions: ChannelVersions,
+    ) -> RunnableConfig:
+        """Saves checkpoint to in-memory state and persists signed serialized payload to Redis."""
+        res_config = super().put(config, checkpoint, metadata, new_versions)
+
+        thread_id = str(config["configurable"]["thread_id"])
+        checkpoint_ns = str(config["configurable"].get("checkpoint_ns", ""))
+        checkpoint_id = str(checkpoint["id"])
+
+        if self._redis_client is not None:
+            try:
+                effective_ttl = int(config["configurable"].get("checkpoint_ttl") or self.ttl)
+                payload = self._checkpoint_payload(
+                    thread_id, checkpoint_ns, checkpoint_id, new_versions
+                )
+                if payload is not None:
+                    r_key = self._redis_key(thread_id, checkpoint_ns, checkpoint_id)
+                    self._redis_client.set(r_key, payload, ex=effective_ttl)
+
+                    idx_key = self._thread_index_key(thread_id, checkpoint_ns)
+                    self._redis_client.sadd(idx_key, checkpoint_id)
+                    self._redis_client.expire(idx_key, effective_ttl)
+            except Exception as e:
+                self._record_persist_error("put", e, "redis", thread_id, checkpoint_id)
+                if is_strict_env(self.settings):
+                    raise RuntimeError(
+                        f"Production Redis checkpoint persistence failed during put for '{thread_id}'."
+                    ) from e
+
+        self._enforce_memory_bounds()
+        return res_config
+
+    async def aput(
+        self,
+        config: RunnableConfig,
+        checkpoint: Checkpoint,
+        metadata: CheckpointMetadata,
+        new_versions: ChannelVersions,
+    ) -> RunnableConfig:
+        """Asynchronously saves checkpoint to in-memory state and Redis without event loop blocking."""
+        res_config = await super().aput(config, checkpoint, metadata, new_versions)
+
+        thread_id = str(config["configurable"]["thread_id"])
+        checkpoint_ns = str(config["configurable"].get("checkpoint_ns", ""))
+        checkpoint_id = str(checkpoint["id"])
+
+        if self._async_redis_client is not None:
+            try:
+                effective_ttl = int(config["configurable"].get("checkpoint_ttl") or self.ttl)
+                payload = self._checkpoint_payload(
+                    thread_id, checkpoint_ns, checkpoint_id, new_versions
+                )
+                if payload is not None:
+                    r_key = self._redis_key(thread_id, checkpoint_ns, checkpoint_id)
+                    await self._async_redis_client.set(r_key, payload, ex=effective_ttl)
+
+                    idx_key = self._thread_index_key(thread_id, checkpoint_ns)
+                    await self._async_redis_client.sadd(idx_key, checkpoint_id)
+                    await self._async_redis_client.expire(idx_key, effective_ttl)
+            except Exception as e:
+                self._record_persist_error("aput", e, "redis-async", thread_id, checkpoint_id)
+                if is_strict_env(self.settings):
+                    raise RuntimeError(
+                        f"Production Redis checkpoint persistence failed during aput for '{thread_id}'."
+                    ) from e
+
+        self._enforce_memory_bounds()
+        return res_config
+
+    def put_writes(
+        self,
+        config: RunnableConfig,
+        writes: Sequence[tuple[str, Any]],
+        task_id: str,
+        task_path: str = "",
+    ) -> None:
+        """Persists pending writes (interrupt/resume state) so any pod can resume."""
+        super().put_writes(config, writes, task_id, task_path)
+
+        thread_id = str(config["configurable"]["thread_id"])
+        checkpoint_ns = str(config["configurable"].get("checkpoint_ns", ""))
+        checkpoint_id = str(config["configurable"]["checkpoint_id"])
+
+        if self._redis_client is not None:
+            try:
+                effective_ttl = int(config["configurable"].get("checkpoint_ttl") or self.ttl)
+                self._redis_client.set(
+                    self._writes_key(thread_id, checkpoint_ns, checkpoint_id),
+                    self._writes_payload(thread_id, checkpoint_ns, checkpoint_id),
+                    ex=effective_ttl,
+                )
+            except Exception as e:
+                self._record_persist_error("put_writes", e, "redis", thread_id, checkpoint_id)
+                if is_strict_env(self.settings):
+                    raise RuntimeError(
+                        f"Production Redis checkpoint persistence failed during put_writes for '{thread_id}'."
+                    ) from e
+
+        self._enforce_memory_bounds()
+
+    async def aput_writes(
+        self,
+        config: RunnableConfig,
+        writes: Sequence[tuple[str, Any]],
+        task_id: str,
+        task_path: str = "",
+    ) -> None:
+        """Async counterpart of :meth:`put_writes`."""
+        await super().aput_writes(config, writes, task_id, task_path)
+
+        thread_id = str(config["configurable"]["thread_id"])
+        checkpoint_ns = str(config["configurable"].get("checkpoint_ns", ""))
+        checkpoint_id = str(config["configurable"]["checkpoint_id"])
+
+        if self._async_redis_client is not None:
+            try:
+                effective_ttl = int(config["configurable"].get("checkpoint_ttl") or self.ttl)
+                await self._async_redis_client.set(
+                    self._writes_key(thread_id, checkpoint_ns, checkpoint_id),
+                    self._writes_payload(thread_id, checkpoint_ns, checkpoint_id),
+                    ex=effective_ttl,
+                )
+            except Exception as e:
+                self._record_persist_error("aput_writes", e, "redis-async", thread_id, checkpoint_id)
+                if is_strict_env(self.settings):
+                    raise RuntimeError(
+                        f"Production Redis checkpoint persistence failed during aput_writes for '{thread_id}'."
+                    ) from e
+
+        self._enforce_memory_bounds()
+
+    def _assert_tenant_scope(self, tenant_scope: str | None) -> None:
+        """Reject cleanup calls that attempt to target a different tenant."""
+        if tenant_scope is not None and str(tenant_scope) != self.tenant_scope:
+            raise PermissionError(
+                "Cross-tenant checkpoint cleanup is forbidden: "
+                f"saver scope={self.tenant_scope!r}, requested={tenant_scope!r}."
+            )
+
+    def cleanup_inactive_threads(
+        self, max_idle_seconds: int = 86400 * 30, tenant_scope: str | None = None
+    ) -> int:
+        """Evict expired/inactive checkpoints, scoped to this saver's tenant.
+
+        ``tenant_scope`` must either be omitted or match the saver's configured
+        scope; cross-tenant cleanup is rejected. The pattern is tenant-scoped;
+        the async counterpart uses SCAN for large deployments.
+        """
+        self._assert_tenant_scope(tenant_scope)
+        cleaned_threads = 0
+        if self._redis_client is not None:
+            try:
+                from src.agentic.core.redis import iter_redis_keys
+
+                index_pattern = f"{self.key_prefix}:index:{self._namespace()}:*"
+                for idx_key in iter_redis_keys(self._redis_client, index_pattern, count=200):
+                    ttl_left = self._redis_client.ttl(idx_key)
+                    members = self._redis_client.smembers(idx_key)
+                    if not members or ttl_left == -2:
+                        self._redis_client.delete(idx_key)
+                        cleaned_threads += 1
+                    elif ttl_left == -1:
+                        self._redis_client.expire(idx_key, max_idle_seconds)
+            except Exception as e:
+                logger.warning(f"Error during RedisSaver cleanup_inactive_threads: {e}")
+
+        # Also purge any empty in-memory threads
+        for t_id in list(self.storage.keys()):
+            if not self.storage[t_id] or all(not v for v in self.storage[t_id].values()):
+                del self.storage[t_id]
+                cleaned_threads += 1
+        return cleaned_threads
+
+    async def acleanup_inactive_threads(
+        self, max_idle_seconds: int = 86400 * 30, tenant_scope: str | None = None
+    ) -> int:
+        """Asynchronously scan this tenant's indexes; never call Redis KEYS."""
+        self._assert_tenant_scope(tenant_scope)
+        cleaned_threads = 0
+        if self._async_redis_client is not None:
+            try:
+                pattern = f"{self.key_prefix}:index:{self._namespace()}:*"
+                async for idx_key in self._async_redis_client.scan_iter(match=pattern, count=200):
+                    ttl_left = await self._async_redis_client.ttl(idx_key)
+                    members = await self._async_redis_client.scard(idx_key)
+                    if not members or ttl_left == -2:
+                        await self._async_redis_client.delete(idx_key)
+                        cleaned_threads += 1
+                    elif ttl_left == -1:
+                        await self._async_redis_client.expire(idx_key, max_idle_seconds)
+            except Exception as exc:
+                logger.warning("Error during async Redis checkpoint cleanup: %s", exc)
+
+        for thread_id in list(self.storage.keys()):
+            if not self.storage[thread_id] or all(
+                not namespace for namespace in self.storage[thread_id].values()
+            ):
+                del self.storage[thread_id]
+                cleaned_threads += 1
+        return cleaned_threads
+
+    @staticmethod
+    def _latest_checkpoint_id(members: Any) -> str:
+        """Return the lexicographically newest checkpoint ID from Redis SET members."""
+        return max(m.decode("utf-8") if isinstance(m, bytes) else str(m) for m in members)
+
+    def get_tuple(self, config: RunnableConfig) -> CheckpointTuple | None:
+        """Retrieves the authoritative latest checkpoint across pods, using Redis as source of truth."""
+        thread_id = str(config["configurable"]["thread_id"])
+        checkpoint_ns = str(config["configurable"].get("checkpoint_ns", ""))
+        checkpoint_id = get_checkpoint_id(config)
+
+        # Immutable explicit checkpoint lookups can safely hit local memory first.
+        if checkpoint_id:
+            local_result = super().get_tuple(config)
+            if local_result is not None:
+                return local_result
+
+        if self._redis_client is not None:
+            try:
+                if checkpoint_id:
+                    target_id = checkpoint_id
+                else:
+                    idx_key = self._thread_index_key(thread_id, checkpoint_ns)
+                    members = self._redis_client.smembers(idx_key)
+                    if not members:
+                        return None
+                    target_id = self._latest_checkpoint_id(members)
+                    local_latest = super().get_tuple(
+                        {
+                            "configurable": {
+                                "thread_id": thread_id,
+                                "checkpoint_ns": checkpoint_ns,
+                                "checkpoint_id": target_id,
+                            }
+                        }
+                    )
+                    if local_latest is not None:
+                        return local_latest
+
+                r_key = self._redis_key(thread_id, checkpoint_ns, target_id)
+                raw_payload = self._redis_client.get(r_key)
+                if raw_payload:
+                    data = self._verify_and_deserialize(raw_payload)
+                    if data is not None:
+                        self._restore_payload(thread_id, checkpoint_ns, target_id, data)
+                        writes_payload = self._redis_client.get(
+                            self._writes_key(thread_id, checkpoint_ns, target_id)
+                        )
+                        if writes_payload:
+                            self._restore_writes(
+                                thread_id,
+                                checkpoint_ns,
+                                target_id,
+                                self._verify_and_deserialize(writes_payload),
+                            )
+                        result = super().get_tuple(
+                            {
+                                "configurable": {
+                                    "thread_id": thread_id,
+                                    "checkpoint_ns": checkpoint_ns,
+                                    "checkpoint_id": target_id,
+                                }
+                            }
+                        )
+                        if result is not None:
+                            self._enforce_memory_bounds()
+                            return result
+                return None
+            except Exception as e:
+                self._record_persist_error("get_tuple", e, "redis", thread_id, str(checkpoint_id))
+
+        return super().get_tuple(config)
+
+    async def aget_tuple(self, config: RunnableConfig) -> CheckpointTuple | None:
+        """Asynchronously retrieves the authoritative checkpoint tuple across pods."""
+        thread_id = str(config["configurable"]["thread_id"])
+        checkpoint_ns = str(config["configurable"].get("checkpoint_ns", ""))
+        checkpoint_id = get_checkpoint_id(config)
+
+        if checkpoint_id:
+            local_result = await super().aget_tuple(config)
+            if local_result is not None:
+                return local_result
+
+        if self._async_redis_client is not None:
+            try:
+                if checkpoint_id:
+                    target_id = checkpoint_id
+                else:
+                    idx_key = self._thread_index_key(thread_id, checkpoint_ns)
+                    members = await self._async_redis_client.smembers(idx_key)
+                    if not members:
+                        return None
+                    target_id = self._latest_checkpoint_id(members)
+                    local_latest = await super().aget_tuple(
+                        {
+                            "configurable": {
+                                "thread_id": thread_id,
+                                "checkpoint_ns": checkpoint_ns,
+                                "checkpoint_id": target_id,
+                            }
+                        }
+                    )
+                    if local_latest is not None:
+                        return local_latest
+
+                r_key = self._redis_key(thread_id, checkpoint_ns, target_id)
+                raw_payload = await self._async_redis_client.get(r_key)
+                if raw_payload:
+                    data = self._verify_and_deserialize(raw_payload)
+                    if data is not None:
+                        self._restore_payload(thread_id, checkpoint_ns, target_id, data)
+                        writes_payload = await self._async_redis_client.get(
+                            self._writes_key(thread_id, checkpoint_ns, target_id)
+                        )
+                        if writes_payload:
+                            self._restore_writes(
+                                thread_id,
+                                checkpoint_ns,
+                                target_id,
+                                self._verify_and_deserialize(writes_payload),
+                            )
+                        result = await super().aget_tuple(
+                            {
+                                "configurable": {
+                                    "thread_id": thread_id,
+                                    "checkpoint_ns": checkpoint_ns,
+                                    "checkpoint_id": target_id,
+                                }
+                            }
+                        )
+                        if result is not None:
+                            self._enforce_memory_bounds()
+                            return result
+                return None
+            except Exception as e:
+                self._record_persist_error(
+                    "aget_tuple", e, "redis-async", thread_id, str(checkpoint_id)
+                )
+
+        return await super().aget_tuple(config)
+
+    async def aclose(self) -> None:
+        """Releases the private Redis clients on application shutdown.
+
+        Fallback clients borrow shared pools, so closing them only returns the
+        connection; the pools themselves are closed by ``aclose_redis_pools``.
+        """
+        if self._redis_client is not None:
+            try:
+                close = getattr(self._redis_client, "close", None)
+                if close is not None:
+                    close()
+            except Exception as e:
+                logger.debug("Error closing sync RedisSaver client: %s", e)
+            finally:
+                self._redis_client = None
+
+        if self._async_redis_client is not None:
+            try:
+                await self._async_redis_client.aclose()
+            except Exception as e:
+                logger.debug("Error closing async RedisSaver client: %s", e)
+            finally:
+                self._async_redis_client = None

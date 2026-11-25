@@ -1,0 +1,22 @@
+# ==============================================================================
+# Shared RAG Corpus & Index Storage (CDC Worker + RAG Agent)
+# Enables Temporal CDC writes and read-only root filesystem hardening without
+# losing baseline corpus documents baked into the container image.
+# ==============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agentic-rag-data
+  namespace: agentic-platform
+  labels:
+    app: agentic-rag-agent
+    tier: l5-knowledge
+spec:
+  # Explicit RWX storage class prevents Pending PVCs on clusters without a default RWX provisioner.
+  # Override in deploy/overlays/production for cluster-specific CSI drivers (e.g. azurefile-csi, cephfs).
+  storageClassName: efs-sc
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 10Gi

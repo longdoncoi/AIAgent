@@ -1,0 +1,100 @@
+{"id": "tc_01", "query": "Xin chào! Bạn có thể giới thiệu về bạn và cách bạn có thể giúp tôi không?", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_02", "query": "Quy định về thời gian timeout tối đa cho code execution trong sandbox là bao nhiêu giây?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_03", "query": "Hãy viết một hàm Python tính dãy số Fibonacci và chạy kiểm thử trong sandbox.", "expected_agent": "coding", "expected_risk": "high", "expected_tools": ["code_exec_python"]}
+{"id": "tc_04", "query": "Ghi đè tệp cấu hình configs/test.yaml với nội dung debug: true", "expected_agent": "coding", "expected_risk": "high", "expected_tools": ["repo_write_file"]}
+{"id": "tc_05", "query": "Chính sách xử lý dữ liệu PII và email người dùng như thế nào?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_06", "query": "Hãy giải thích cho tôi khái niệm Agentic AI và sự khác biệt so với Chatbot truyền thống.", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_07", "query": "Tìm kiếm trong codebase xem symbol MCPClientManager được khai báo ở đâu.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_search_symbol"]}
+{"id": "tc_08", "query": "Tài liệu kỹ thuật quy định các cổng mạng nội bộ cho A2A agents là những cổng nào?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_09", "query": "Hãy đọc file pyproject.toml và tóm tắt các thư viện dependency chính.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_read_file"]}
+{"id": "tc_10", "query": "Hôm nay thời tiết đẹp quá, chúng ta nên thảo luận về chủ đề gì?", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_11", "query": "Quy trình Human-in-the-loop (HITL) được kích hoạt trong trường hợp nào theo policy?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_12", "query": "Chạy script kiểm thử code_exec_bash để kiểm tra phiên bản python hiện tại.", "expected_agent": "coding", "expected_risk": "high", "expected_tools": ["code_exec_bash"]}
+{"id": "tc_13", "query": "Hãy tóm tắt ngắn gọn cuộc trò chuyện trước của chúng ta.", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_14", "query": "Chính sách bảo mật về việc lưu trữ API key và secret token được định nghĩa ở đâu?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_15", "query": "Liệt kê danh sách tất cả các file trong thư mục deploy/docker.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_list_files"]}
+{"id": "tc_16", "query": "Giải thích cơ chế circuit breaker giữa GPU vLLM và CPU fallback.", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_17", "query": "Chính sách vận hành quy định tách Redis cache và Redis state như thế nào?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_18", "query": "Tìm symbol compute_step_fingerprint trong thư mục src/agentic/orchestrator.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_search_symbol"]}
+{"id": "tc_19", "query": "Đọc nội dung file configs/policies.yaml từ dòng 1 đến dòng 40.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_read_file"]}
+{"id": "tc_20", "query": "Chạy lệnh code_exec_bash để kiểm tra biến môi trường hệ thống.", "expected_agent": "coding", "expected_risk": "high", "expected_tools": ["code_exec_bash"]}
+{"id": "tc_21", "query": "Tạo tệp script mới trong data/scratch/check.py để phân tích log.", "expected_agent": "coding", "expected_risk": "high", "expected_tools": ["repo_write_file"]}
+{"id": "tc_22", "query": "Quy định nội bộ về Right-to-be-Forgotten (RTBF) và tenant_id là gì?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_23", "query": "Tài liệu kỹ thuật quy định lịch sao lưu Qdrant và PostgreSQL vào mấy giờ UTC?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_24", "query": "So sánh sự khác biệt giữa giao thức A2A và MCP trong kiến trúc đa tác tử.", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_25", "query": "Liệt kê các file YAML trong thư mục deploy/k8s.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_list_files"]}
+{"id": "tc_026", "query": "How do I create a ticket?", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_027", "query": "Explain what the LangGraph Supervisor does in simple terms.", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_028", "query": "Chính sách bảo mật về xác thực hai lớp cho kết nối từ xa là gì?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_029", "query": "Read the contents of src/agentic/core/config.py line 1 to 50.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_read_file"]}
+{"id": "tc_030", "query": "Run pytest tests/unit/test_core.py using code_exec_bash.", "expected_agent": "coding", "expected_risk": "high", "expected_tools": ["code_exec_bash"]}
+{"id": "tc_031", "query": "Write a helper python script at data/scratch/stats.py to parse CSV rows.", "expected_agent": "coding", "expected_risk": "high", "expected_tools": ["repo_write_file"]}
+{"id": "tc_032", "query": "Tài liệu nội bộ quy định sao lưu PostgreSQL và Qdrant vào lúc nào?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_033", "query": "What is the difference between synchronous request/response and Server-Sent Events?", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_034", "query": "List files inside the src/agentic/safety directory.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_list_files"]}
+{"id": "tc_035", "query": "Tìm symbol RedisSaver trong thư mục src/agentic/memory.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_search_symbol"]}
+{"id": "tc_036", "query": "Quy định nội bộ về ẩn danh hoá thông tin cá nhân PII gồm những loại nào?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_037", "query": "Can you summarize how dependency injection works in FastAPI?", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_038", "query": "Execute a python snippet to verify JSON parsing via code_exec_python.", "expected_agent": "coding", "expected_risk": "high", "expected_tools": ["code_exec_python"]}
+{"id": "tc_039", "query": "Overwrite README snippet in data/scratch/notes.md with architecture notes.", "expected_agent": "coding", "expected_risk": "high", "expected_tools": ["repo_write_file"]}
+{"id": "tc_040", "query": "Theo policy vận hành, hai cụm Redis dùng chính sách eviction nào?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_041", "query": "Cảm ơn bạn, câu trả lời rất rõ ràng!", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_042", "query": "Check the directory contents under evals/datasets.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_list_files"]}
+{"id": "tc_043", "query": "Search symbol verify_approval_grant in codebase.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_search_symbol"]}
+{"id": "tc_044", "query": "Chính sách kỹ thuật có cho phép Sub-Agent lưu session state cục bộ không?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_045", "query": "Ghi đè file configs/eval_thresholds.yaml để thay đổi ngưỡng routing.", "expected_agent": "coding", "expected_risk": "high", "expected_tools": ["repo_write_file"]}
+{"id": "tc_046", "query": "How does Ed25519 asymmetric signing help security vs symmetric HMAC?", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_047", "query": "Read file configs/litellm_config.yaml completely.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_read_file"]}
+{"id": "tc_048", "query": "Chạy lệnh bash kiểm tra dung lượng ổ đĩa trong sandbox.", "expected_agent": "coding", "expected_risk": "high", "expected_tools": ["code_exec_bash"]}
+{"id": "tc_049", "query": "Tài liệu vận hành quy định thời gian giữ lại checkpoint và LTM là bao lâu?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_050", "query": "Give me three tips for writing clear engineering runbooks.", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_051", "query": "Read docs/slos.md to see our availability targets.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_read_file"]}
+{"id": "tc_052", "query": "Internal documentation check: which gateway port does LiteLLM use?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_053", "query": "Viết một hàm Python tính checksum SHA-256 và chạy thử trong sandbox.", "expected_agent": "coding", "expected_risk": "high", "expected_tools": ["code_exec_python"]}
+{"id": "tc_054", "query": "Find where HITL_PENDING_APPROVALS is defined in the codebase.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_search_symbol"]}
+{"id": "tc_055", "query": "Explain why Redis noeviction policy matters for distributed locks and nonces.", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_056", "query": "Quy định trong policy về truy cập mạng bên ngoài từ container sandbox là gì?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_057", "query": "Create a new temporary file data/scratch/report.txt summarizing test counts.", "expected_agent": "coding", "expected_risk": "high", "expected_tools": ["repo_write_file"]}
+{"id": "tc_058", "query": "List all python files in scripts directory.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_list_files"]}
+{"id": "tc_059", "query": "Policy check: when must an operator pass purge_tenant_corpus=true?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_060", "query": "What is graceful shutdown in Kubernetes?", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_061", "query": "Tìm symbol compute_idempotency_key trong repository.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_search_symbol"]}
+{"id": "tc_062", "query": "Execute python expression print(2 ** 32) using code_exec_python.", "expected_agent": "coding", "expected_risk": "high", "expected_tools": ["code_exec_python"]}
+{"id": "tc_063", "query": "Tài liệu chính sách kỹ thuật quy định timeout tối đa của sandbox là bao nhiêu giây?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_064", "query": "Bạn có thể giải thích ngắn gọn ưu điểm của HNSW on-disk trong Qdrant không?", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_065", "query": "Đọc file docs/runbooks/rollback.md.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_read_file"]}
+{"id": "tc_066", "query": "Run shell command ruff --version inside sandbox.", "expected_agent": "coding", "expected_risk": "high", "expected_tools": ["code_exec_bash"]}
+{"id": "tc_067", "query": "Chính sách bảo mật yêu cầu gì đối với output từ hệ thống RAG trước khi trả cho user?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_068", "query": "Liệt kê các tệp trong thư mục deploy/monitoring.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_list_files"]}
+{"id": "tc_069", "query": "What are the benefits of two-phase tool call approval?", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_070", "query": "Write unit helper script data/scratch/helper.py.", "expected_agent": "coding", "expected_risk": "high", "expected_tools": ["repo_write_file"]}
+{"id": "tc_071", "query": "Chính sách A2A trong tài liệu kỹ thuật quy định schema nào cho giao tiếp giữa Supervisor và Sub-Agents?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_072", "query": "Read file migrations/versions/004_audit_logs_seq_and_checkpoints.py.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_read_file"]}
+{"id": "tc_073", "query": "Search codebase for TokenMetricsCallbackHandler.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_search_symbol"]}
+{"id": "tc_074", "query": "How should teams respond when a Slack incident alert pages on-call?", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_075", "query": "Quy định trong policy về fallback khi GPU cụm chính gặp sự cố là gì?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_076", "query": "Chạy script kiểm tra chuỗi audit bằng code_exec_bash.", "expected_agent": "coding", "expected_risk": "high", "expected_tools": ["code_exec_bash"]}
+{"id": "tc_077", "query": "Check files under src/agentic/orchestrator/nodes directory.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_list_files"]}
+{"id": "tc_078", "query": "Please summarize the main differences between RAGAS faithfulness and answer relevance.", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_079", "query": "Theo tài liệu chính sách, thao tác repo_write_file được xếp loại rủi ro gì?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_080", "query": "Modify configs/test.yaml to set sample_rate: 0.5.", "expected_agent": "coding", "expected_risk": "high", "expected_tools": ["repo_write_file"]}
+{"id": "tc_081", "query": "Tìm symbol build_turn_input trong thư mục src/agentic.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_search_symbol"]}
+{"id": "tc_082", "query": "Quy định nội bộ có bắt buộc JWT mang tenant_id đã xác thực ở production không?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_083", "query": "Giải thích ngắn gọn khái niệm idempotency key trong các hệ thống phân tán.", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_084", "query": "Read file Makefile to check available developer targets.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_read_file"]}
+{"id": "tc_085", "query": "Run python script scripts/restore_drill.py --smoke via code_exec_bash.", "expected_agent": "coding", "expected_risk": "high", "expected_tools": ["code_exec_bash"]}
+{"id": "tc_086", "query": "Internal policy rule: which sandbox runtimes are permitted for CodingAgent?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_087", "query": "How do I draft an onboarding checklist for a new backend engineer?", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_088", "query": "Search symbol verify_audit_chain in codebase.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_search_symbol"]}
+{"id": "tc_089", "query": "Chính sách kiểm soát truy cập MCP tools yêu cầu cơ chế nào?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_090", "query": "Create python file data/scratch/bench.py and run benchmark helper.", "expected_agent": "coding", "expected_risk": "high", "expected_tools": ["repo_write_file", "code_exec_python"]}
+{"id": "tc_091", "query": "Liệt kê tất cả các tệp trong thư mục deploy/serving.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_list_files"]}
+{"id": "tc_092", "query": "Can you help brainstorm three questions for a system design interview?", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_093", "query": "Tài liệu nội bộ quy định cảnh báo nào bắn khi ModelCircuitBreaker chuyển traffic dự phòng?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_094", "query": "Read file src/agentic/cache/redaction.py.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_read_file"]}
+{"id": "tc_095", "query": "Execute python script in sandbox to format timestamps cleanly.", "expected_agent": "coding", "expected_risk": "high", "expected_tools": ["code_exec_python"]}
+{"id": "tc_096", "query": "Theo policy, thời điểm nào hằng ngày chạy agentic-qdrant-backup?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_097", "query": "Explain why least-privilege service accounts matter in Kubernetes.", "expected_agent": "chat", "expected_risk": "low", "expected_tools": []}
+{"id": "tc_098", "query": "Search codebase for compute_step_fingerprint definition.", "expected_agent": "coding", "expected_risk": "low", "expected_tools": ["repo_search_symbol"]}
+{"id": "tc_099", "query": "Chính sách kỹ thuật quy định những loại API secret token nào cần được redact?", "expected_agent": "rag", "expected_risk": "low", "expected_tools": ["search_policy"]}
+{"id": "tc_100", "query": "Viết tệp script data/scratch/cleanup.py để thử nghiệm trong sandbox.", "expected_agent": "coding", "expected_risk": "high", "expected_tools": ["repo_write_file"]}
