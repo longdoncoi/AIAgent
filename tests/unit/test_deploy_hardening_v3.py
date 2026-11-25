@@ -354,9 +354,19 @@ def test_dockerfiles_are_pinned_frozen_and_healthchecked(name: str) -> None:
     ]
     body = "\n".join(directives)
     assert (
-        "ARG PYTHON_BASE=python:3.12-slim-trixie@"
-        "sha256:191083cdf6c7bda8c76158983163ead5d5cf7b77cf3033e805bb0f5296f51b4b"
+        "ARG PYTHON_BUILD=cgr.dev/chainguard/python:latest-dev@"
+        "sha256:9b8ff973c08881c8fee6b26afd2e9ef2ed0ede398a3c1a47d4d177adb3ff14fb"
     ) in body
+    assert (
+        "ARG PYTHON_RUNTIME=cgr.dev/chainguard/python:latest@"
+        "sha256:1664d9bfd1b02ab52dffaa70e49202296c33eb776a61fec991f344c7d256374d"
+    ) in body
+    assert (
+        "ARG UV_VERSION=0.13.10@"
+        "sha256:a3ea1357342c1a4bf9a0c53a3deb1b55379aefa037338d8113d5771efa01774f"
+    ) in body
+    assert "FROM ${PYTHON_BUILD} AS builder" in body
+    assert "FROM ${PYTHON_RUNTIME} AS runtime" in body
     assert not re.search(r"^FROM python:3\.12-slim\b", body, re.MULTILINE)
     assert "ghcr.io/astral-sh/uv:latest" not in body
     assert re.search(r"^FROM ghcr\.io/astral-sh/uv:\$\{UV_VERSION\} AS uv$", body, re.MULTILINE)
@@ -367,6 +377,7 @@ def test_dockerfiles_are_pinned_frozen_and_healthchecked(name: str) -> None:
     assert "--extra neural" in body
     assert "COPY pyproject.toml uv.lock" in body
     assert "HEALTHCHECK" in body
+    assert 'CMD ["sh", "-c"' not in body
 
 
 def test_agent_and_mcp_healthchecks_match_runtime_routes() -> None:

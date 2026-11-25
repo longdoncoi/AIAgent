@@ -1,4 +1,4 @@
-﻿# REVIEW_SIGN-OFF & GO-LIVE APPROVAL.md — Biên Bản Nghiệm Thu & Phê Chuẩn Go-Live Cấp Quản Lý
+# REVIEW_SIGN-OFF & GO-LIVE APPROVAL.md — Biên Bản Nghiệm Thu & Phê Chuẩn Go-Live Cấp Quản Lý
 
 > **Tài liệu kiểm định chuyên biệt (Production Readiness Review - Governance Domain 04 / 04)**  
 > **Đơn vị phụ trách**: Ban Đánh Giá Phát Hành (Release Board)  

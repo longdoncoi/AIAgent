@@ -85,3 +85,9 @@
 - Triệu chứng: image build thành công nhưng Trivy báo hàng loạt HIGH/CRITICAL OS CVE, ví dụ `apt 2.6.1`, dù tag Python vẫn thuộc dòng 3.12/bookworm.
 - Nguyên nhân: digest bất biến đang trỏ tới snapshot Debian 12.12 cũ; pin digest bảo đảm tái lập nhưng không tự nhận bản vá bảo mật.
 - Khắc phục: tra OCI index hiện hành từ registry, cập nhật đồng bộ cả ba Dockerfile sang digest đã rà soát và thêm regression exact-reference. Không dùng `ignore-unfixed`, severity waiver hoặc hạ `exit-code`; CI phải chứng minh Trivy sạch theo policy hiện hữu.
+
+## Debian slim hiện hành vẫn không đạt zero HIGH/CRITICAL
+
+- Triệu chứng: Bookworm 12.15 còn `101` vulnerability (`99 HIGH`, `2 CRITICAL`); Trixie 13.8 còn `53 HIGH`; Distroless Debian 13 còn `35 HIGH` theo cùng Trivy DB.
+- Nguyên nhân: image Debian tổng quát vẫn mang package hệ điều hành không cần cho workload và nhiều CVE ở trạng thái `affected`, `fix_deferred` hoặc `will_not_fix`; đổi digest/`apt upgrade` không thể đạt gate zero-CVE.
+- Khắc phục: scan candidate trực tiếp trước khi sửa Dockerfile; dùng Chainguard/Wolfi minimal runtime đã pin digest (`0 HIGH/CRITICAL`), dev image riêng cho build, chạy UID 65532 và loại shell/package manager khỏi runtime. Thay `sh -c` bằng Python launcher allowlist + port validation để giữ fail-closed.

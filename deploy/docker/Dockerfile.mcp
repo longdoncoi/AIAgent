@@ -1,19 +1,17 @@
 # syntax=docker/dockerfile:1.7
 # Multi-architecture OCI indexes pinned by digest; see Dockerfile.api.
-ARG PYTHON_BASE=python:3.12-slim-trixie@sha256:191083cdf6c7bda8c76158983163ead5d5cf7b77cf3033e805bb0f5296f51b4b
-ARG UV_VERSION=0.7.13@sha256:6c1e19020ec221986a210027040044a5df8de762eb36d5240e382bc41d7a9043
+ARG PYTHON_BUILD=cgr.dev/chainguard/python:latest-dev@sha256:9b8ff973c08881c8fee6b26afd2e9ef2ed0ede398a3c1a47d4d177adb3ff14fb
+ARG PYTHON_RUNTIME=cgr.dev/chainguard/python:latest@sha256:1664d9bfd1b02ab52dffaa70e49202296c33eb776a61fec991f344c7d256374d
+ARG UV_VERSION=0.13.10@sha256:a3ea1357342c1a4bf9a0c53a3deb1b55379aefa037338d8113d5771efa01774f
 
 FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
 
 # Stage 1: Build & Dependencies
-FROM ${PYTHON_BASE} AS builder
+FROM ${PYTHON_BUILD} AS builder
+
+USER root
 
 WORKDIR /app
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=uv /uv /usr/local/bin/uv
 
@@ -28,20 +26,17 @@ COPY src ./src
 RUN uv sync --frozen --no-dev --extra neural --active
 
 # Stage 2: Hardened Runtime
-FROM ${PYTHON_BASE} AS runtime
-
-# No `apt-get upgrade`: pinned, scanned base image only.
-RUN groupadd -g 10001 appgroup && \
-    useradd -u 10001 -g appgroup -s /bin/bash -m appuser
+FROM ${PYTHON_RUNTIME} AS runtime
 
 WORKDIR /app
 
-COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder --chown=65532:65532 /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-COPY --chown=appuser:appgroup . /app
+COPY --chown=65532:65532 . /app
 
-USER 10001:10001
+USER 65532:65532
+ENTRYPOINT []
 
 ENV MCP_SERVER_MODULE="src.agentic.tools.servers.code_exec_server"
 ENV MCP_PORT=9001
@@ -53,4 +48,4 @@ EXPOSE 9001 9002 9003
 HEALTHCHECK --interval=15s --timeout=5s --start-period=15s --retries=3 \
     CMD ["python", "-c", "import os,socket; s=socket.create_connection(('127.0.0.1', int(os.environ['MCP_PORT'])), timeout=5); s.close()"]
 
-CMD ["sh", "-c", "python -m ${MCP_SERVER_MODULE} --port ${MCP_PORT} --transport sse"]
+CMD ["python", "-m", "src.agentic.runtime_entrypoint", "mcp"]
